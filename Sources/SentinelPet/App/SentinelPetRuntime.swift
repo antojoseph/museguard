@@ -56,7 +56,7 @@ final class SentinelPetRuntime: ObservableObject {
         refreshAccessibilityStatus()
 
         guard accessibilityTrusted else {
-            requestAccessibilityPermission()
+            showAccessibilityRequiredMessage()
             return
         }
 
@@ -79,7 +79,7 @@ final class SentinelPetRuntime: ObservableObject {
         refreshFireworksAPIKeyStatus()
 
         guard accessibilityTrusted else {
-            requestAccessibilityPermission()
+            showAccessibilityRequiredMessage()
             return
         }
 
@@ -129,6 +129,14 @@ final class SentinelPetRuntime: ObservableObject {
 
     func refreshFireworksAPIKeyStatus() {
         hasFireworksAPIKey = KeychainStore.hasFireworksAPIKey()
+    }
+
+    private func showAccessibilityRequiredMessage() {
+        petViewModel.show(
+            "Accessibility access is not active for this running app yet. Use Enable accessibility access or restart Sentinel Pet after granting access.",
+            mood: .scanning,
+            clearAfter: 10
+        )
     }
 
     private func runFocusedAnalysis() async {
