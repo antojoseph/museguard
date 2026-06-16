@@ -40,6 +40,9 @@ with the first available Apple Development identity so Accessibility permissions
 survive rebuilds. If no development identity is available, it falls back to
 ad-hoc signing and you may need to re-grant Accessibility after rebuilds.
 
+If Accessibility, signing, or local settings get confusing, see
+[`docs/DEVELOPMENT_LEARNINGS.md`](docs/DEVELOPMENT_LEARNINGS.md).
+
 The Xcode project is generated from `project.yml` using
 [XcodeGen](https://github.com/yonyz/XcodeGen) so the repo stays clean and
 diff-friendly.
