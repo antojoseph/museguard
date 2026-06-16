@@ -79,7 +79,9 @@ final class PetViewModel: ObservableObject {
             chatMessages.append(
                 PetChatMessage(
                     role: .assistant,
-                    text: bubbleText.replacingOccurrences(of: "\nTap to ask me why.", with: "")
+                    text: bubbleText
+                        .replacingOccurrences(of: "\nWhy? Tap to learn more.", with: "")
+                        .replacingOccurrences(of: "\nTap to ask me why.", with: "")
                 )
             )
         }

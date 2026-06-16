@@ -751,7 +751,7 @@ final class SentinelPetRuntime: ObservableObject {
         }
 
         let detail = compactDetail(from: verdict)
-        return "\(headline)\n\(action)\n\(detail)\nTap to ask me why."
+        return "\(headline)\n\(action)\n\(detail)\nWhy? Tap to learn more."
     }
 
     private func verificationMessage(for verdict: RiskVerdict) -> String {
