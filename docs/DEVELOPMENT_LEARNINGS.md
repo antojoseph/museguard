@@ -143,6 +143,21 @@ Before continuous monitoring:
 - Add pause controls and a visible scanning indicator.
 - Avoid persisting raw screen text.
 
+## Continuous Monitoring
+
+Continuous monitoring is opt-in from the menu. It does not start automatically
+on launch.
+
+Current behavior:
+
+- `Start monitoring` requires Accessibility and a Fireworks API key.
+- The loop samples the focused window every 45 seconds.
+- It fingerprints normalized focused-window text and skips duplicate screens.
+- Safe and low-risk verdicts update status silently.
+- Medium, high, and unknown verdicts show a pet intervention bubble.
+- Accessibility or missing-key failures stop the loop.
+- Transient read/model errors are shown once and then de-duplicated.
+
 ## Known Good Recovery Sequence
 
 When the app gets stuck in an Accessibility mismatch:

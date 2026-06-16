@@ -11,11 +11,18 @@ final class SentinelPetRuntime: ObservableObject {
     @Published private(set) var accessibilityTrusted: Bool
     @Published private(set) var hasFireworksAPIKey: Bool
     @Published private(set) var settings: AppSettings
+    @Published private(set) var isMonitoring = false
+    @Published private(set) var monitorStatus = MonitorLoopStatus.idle.label
 
     private let screenReader = ScreenReader()
     private let riskAnalyzer = FireworksRiskAnalyzer()
+    private lazy var monitorLoop = MonitorLoop(
+        screenReader: screenReader,
+        riskAnalyzer: riskAnalyzer
+    )
     private let settingsWindowController = SettingsWindowController()
     private var analyzeTask: Task<Void, Never>?
+    private var lastMonitorErrorMessage: String?
 
     private init() {
         settings = AppSettingsStore.load()
@@ -101,6 +108,79 @@ final class SentinelPetRuntime: ObservableObject {
         }
     }
 
+    func toggleMonitoring() {
+        if isMonitoring {
+            stopMonitoring(showMessage: true)
+        } else {
+            startMonitoring()
+        }
+    }
+
+    func startMonitoring() {
+        refreshAccessibilityStatus()
+        refreshFireworksAPIKeyStatus()
+
+        guard accessibilityTrusted else {
+            showAccessibilityRequiredMessage()
+            return
+        }
+
+        guard hasFireworksAPIKey else {
+            petViewModel.show(
+                "Add a Fireworks API key in Settings before I can monitor continuously.",
+                mood: .scanning,
+                clearAfter: 8
+            )
+            showSettings()
+            return
+        }
+
+        guard let apiKey = DevCredentialStore.readFireworksAPIKey() else {
+            refreshFireworksAPIKeyStatus()
+            petViewModel.show(
+                "Add a Fireworks API key in Settings before I can monitor continuously.",
+                mood: .scanning,
+                clearAfter: 8
+            )
+            showSettings()
+            return
+        }
+
+        lastMonitorErrorMessage = nil
+        monitorLoop.start(
+            model: settings.fireworksModel,
+            apiKey: apiKey,
+            onStatus: { [weak self] status in
+                self?.handleMonitorStatus(status)
+            },
+            onVerdict: { [weak self] verdict in
+                self?.handleMonitorVerdict(verdict)
+            },
+            onError: { [weak self] error in
+                self?.handleMonitorError(error)
+            }
+        )
+
+        isMonitoring = true
+        monitorStatus = "Monitoring"
+        petViewModel.show(
+            "Monitoring started. I'll stay quiet unless I see something risky.",
+            mood: .idle,
+            clearAfter: 6
+        )
+    }
+
+    func stopMonitoring(showMessage: Bool = false) {
+        monitorLoop.stop()
+        isMonitoring = false
+        monitorStatus = MonitorLoopStatus.idle.label
+        lastMonitorErrorMessage = nil
+
+        if showMessage {
+            petViewModel.show("Monitoring paused.", mood: .idle, clearAfter: 4)
+        }
+    }
+
     func showSettings() {
         settingsWindowController.show(runtime: self)
     }
@@ -119,11 +199,16 @@ final class SentinelPetRuntime: ObservableObject {
 
         refreshFireworksAPIKeyStatus()
         petViewModel.show("Settings saved.", mood: .idle, clearAfter: 4)
+
+        if isMonitoring {
+            startMonitoring()
+        }
     }
 
     func deleteFireworksAPIKey() throws {
         DevCredentialStore.deleteFireworksAPIKey()
         refreshFireworksAPIKeyStatus()
+        stopMonitoring()
         petViewModel.show("Fireworks API key deleted.", mood: .idle, clearAfter: 4)
     }
 
@@ -176,6 +261,52 @@ final class SentinelPetRuntime: ObservableObject {
             return "I can access \(snapshot.appName), but I did not find readable text there."
         }
         return "I can read \(snapshot.appName): \(preview)"
+    }
+
+    private func handleMonitorStatus(_ status: MonitorLoopStatus) {
+        monitorStatus = status.label
+    }
+
+    private func handleMonitorVerdict(_ verdict: RiskVerdict) {
+        monitorStatus = "Last check: \(verdict.riskLevel.rawValue)"
+
+        switch verdict.riskLevel {
+        case .safe, .low:
+            return
+        case .medium, .high, .unknown:
+            petViewModel.show(
+                message(for: verdict),
+                mood: mood(for: verdict.riskLevel),
+                clearAfter: clearDelay(for: verdict.riskLevel)
+            )
+        }
+    }
+
+    private func handleMonitorError(_ error: Error) {
+        let message = error.localizedDescription
+        monitorStatus = "Monitor issue"
+
+        if shouldStopMonitoring(after: error) {
+            stopMonitoring()
+            monitorStatus = "Monitoring stopped"
+        }
+
+        guard message != lastMonitorErrorMessage else {
+            return
+        }
+        lastMonitorErrorMessage = message
+
+        petViewModel.show(message, mood: .alert, clearAfter: 10)
+    }
+
+    private func shouldStopMonitoring(after error: Error) -> Bool {
+        switch error {
+        case ScreenReaderError.accessibilityPermissionRequired,
+             FireworksRiskAnalyzerError.missingAPIKey:
+            return true
+        default:
+            return false
+        }
     }
 
     private func message(for verdict: RiskVerdict) -> String {

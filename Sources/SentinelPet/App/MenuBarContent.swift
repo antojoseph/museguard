@@ -20,6 +20,11 @@ struct MenuBarContent: View {
             systemImage: runtime.hasFireworksAPIKey ? "checkmark.circle" : "key"
         )
 
+        Label(
+            runtime.isMonitoring ? runtime.monitorStatus : "Monitoring paused",
+            systemImage: runtime.isMonitoring ? "eye" : "pause.circle"
+        )
+
         Button(runtime.accessibilityTrusted ? "Check accessibility access" : "Enable accessibility access") {
             runtime.requestAccessibilityPermission()
         }
@@ -39,8 +44,9 @@ struct MenuBarContent: View {
 
         Divider()
 
-        Button("Pause monitoring") {}
-            .disabled(true)
+        Button(runtime.isMonitoring ? "Pause monitoring" : "Start monitoring") {
+            runtime.toggleMonitoring()
+        }
 
         Button("Settings…") {
             runtime.showSettings()

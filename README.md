@@ -25,6 +25,9 @@ link, fall for a scam, etc.).
   choose the model, and can send the currently focused window's text to
   Fireworks for a JSON risk verdict. Continuous monitoring and production-grade
   secret storage are still planned.
+- ✅ **Milestone 4 — Continuous monitor loop.** Start monitoring from the menu
+  to periodically sample the focused window, skip duplicate text, and surface
+  only medium/high/unknown findings through the pet.
 
 ## Building & running
 
@@ -74,7 +77,7 @@ window once, or quit.
 | `SpeechBubbleView` / `PetViewModel` | Mood-aware speech bubble for greetings and interventions. |
 | `AccessibilityPermissionController` / `ScreenReader` | Requests Accessibility trust and reads focused-window text via the Accessibility API. |
 | `FireworksRiskAnalyzer` / `RiskVerdict` | Sends focused-window text to Kimi K2 on Fireworks; parses a structured JSON verdict. |
-| `MonitorLoop` *(planned)* | Debounced continuous sampling, de-duplication, rate limiting. |
+| `MonitorLoop` | Debounced continuous sampling, duplicate suppression, and periodic risk checks. |
 | `InterventionEngine` *(planned)* | Turns risk verdicts into pet alerts with guidance. |
 | `SettingsView` / `DevCredentialStore` | Development API key storage and model selection. Keychain, sensitivity, app allow/deny list, and pause are still planned. |
 
@@ -83,7 +86,7 @@ window once, or quit.
 1. ✅ Scaffold + animated pet overlay.
 2. ✅ Accessibility screen reader + permission flow.
 3. ✅ Fireworks/Kimi K2 client + development API key settings.
-4. ⬜ Continuous monitor loop wired to interventions.
+4. ✅ Continuous monitor loop wired to interventions.
 5. ⬜ Privacy controls: app allow/deny list, pause, sensitivity, onboarding/consent.
 6. ⬜ Deepfake & media support — contextual warnings first; optional
    screenshot/image URL parts later. The current app sends accessible text only.
