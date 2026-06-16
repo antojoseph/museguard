@@ -1,0 +1,37 @@
+name: SentinelPet
+options:
+  deploymentTarget:
+    macOS: "13.0"
+  bundleIdPrefix: com.sentinelpet
+  createIntermediateGroups: true
+
+settings:
+  base:
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+    SWIFT_VERSION: "5.9"
+    GENERATE_INFOPLIST_FILE: NO
+    CODE_SIGN_STYLE: Automatic
+    ENABLE_HARDENED_RUNTIME: YES
+
+targets:
+  SentinelPet:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources/SentinelPet
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.sentinelpet.app
+        PRODUCT_NAME: Sentinel Pet
+    info:
+      path: Sources/SentinelPet/Resources/Info.plist
+      properties:
+        CFBundleDisplayName: Sentinel Pet
+        CFBundleName: SentinelPet
+        # Agent app: lives in the menu bar, no Dock icon.
+        LSUIElement: true
+        LSMinimumSystemVersion: "13.0"
+        NSHumanReadableCopyright: ""
+        # Shown if/when we use Apple Events to read other apps' contents.
+        NSAppleEventsUsageDescription: "Sentinel Pet reads on-screen text to warn you about phishing, scams, and other risky situations."
