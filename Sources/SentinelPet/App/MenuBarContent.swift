@@ -15,6 +15,11 @@ struct MenuBarContent: View {
             systemImage: runtime.accessibilityTrusted ? "checkmark.shield" : "exclamationmark.triangle"
         )
 
+        Label(
+            runtime.hasFireworksAPIKey ? "Fireworks configured" : "Fireworks API key required",
+            systemImage: runtime.hasFireworksAPIKey ? "checkmark.circle" : "key"
+        )
+
         Button(runtime.accessibilityTrusted ? "Check accessibility access" : "Enable accessibility access") {
             runtime.requestAccessibilityPermission()
         }
@@ -24,13 +29,18 @@ struct MenuBarContent: View {
         }
         .disabled(!runtime.accessibilityTrusted)
 
+        Button("Analyze focused window") {
+            runtime.analyzeFocusedContext()
+        }
+
         Divider()
 
         Button("Pause monitoring") {}
             .disabled(true)
 
-        Button("Settings…") {}
-            .disabled(true)
+        Button("Settings…") {
+            runtime.showSettings()
+        }
 
         Divider()
 

@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         runtime.refreshAccessibilityStatus()
+        runtime.refreshFireworksAPIKeyStatus()
 
         let overlay = PetOverlayController(viewModel: runtime.petViewModel)
         overlay.show()
@@ -20,5 +21,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         runtime.refreshAccessibilityStatus()
+        runtime.refreshFireworksAPIKeyStatus()
     }
 }
