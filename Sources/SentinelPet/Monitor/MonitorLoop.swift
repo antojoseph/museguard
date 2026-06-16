@@ -7,6 +7,7 @@ enum MonitorLoopStatus: Equatable {
     case skippedOwnApp
     case skippedDeniedApp(String)
     case analyzing(String)
+    case analyzingScreenshot(String)
     case sleeping
 
     var label: String {
@@ -23,6 +24,8 @@ enum MonitorLoopStatus: Equatable {
             return "Skipping \(appName)"
         case let .analyzing(appName):
             return "Analyzing \(appName)"
+        case let .analyzingScreenshot(appName):
+            return "Adding screenshot context for \(appName)"
         case .sleeping:
             return "Monitoring"
         }
@@ -36,12 +39,18 @@ enum MonitorLoopStatus: Equatable {
 final class MonitorLoop {
     private let screenReader: ScreenReader
     private let riskAnalyzer: FireworksRiskAnalyzer
+    private let screenshotCapture: ScreenshotCapture
     private var task: Task<Void, Never>?
     private var lastFingerprint: Int?
 
-    init(screenReader: ScreenReader, riskAnalyzer: FireworksRiskAnalyzer) {
+    init(
+        screenReader: ScreenReader,
+        riskAnalyzer: FireworksRiskAnalyzer,
+        screenshotCapture: ScreenshotCapture
+    ) {
         self.screenReader = screenReader
         self.riskAnalyzer = riskAnalyzer
+        self.screenshotCapture = screenshotCapture
     }
 
     var isRunning: Bool {
@@ -52,9 +61,10 @@ final class MonitorLoop {
         model: String,
         apiKey: String,
         deniedAppNames: [String],
+        screenshotContextEnabled: Bool,
         intervalSeconds: Double = 45,
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
-        onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot) -> Void,
+        onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Void,
         onError: @escaping @MainActor (Error, ScreenSnapshot?) -> Void
     ) {
         stop()
@@ -68,6 +78,7 @@ final class MonitorLoop {
                     model: model,
                     apiKey: apiKey,
                     deniedAppNames: deniedAppNames,
+                    screenshotContextEnabled: screenshotContextEnabled,
                     onStatus: onStatus,
                     onVerdict: onVerdict,
                     onError: onError
@@ -89,8 +100,9 @@ final class MonitorLoop {
         model: String,
         apiKey: String,
         deniedAppNames: [String],
+        screenshotContextEnabled: Bool,
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
-        onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot) -> Void,
+        onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Void,
         onError: @escaping @MainActor (Error, ScreenSnapshot?) -> Void
     ) async {
         var snapshot: ScreenSnapshot?
@@ -113,6 +125,26 @@ final class MonitorLoop {
             }
             lastFingerprint = fingerprint
 
+            if screenshotContextEnabled, MeetingContextDetector.isMeetingContext(readSnapshot) {
+                onStatus(.analyzingScreenshot(readSnapshot.appName))
+                do {
+                    let screenshot = try screenshotCapture.capture()
+                    let verdict = try await riskAnalyzer.analyze(
+                        snapshot: readSnapshot,
+                        screenshotDataURL: screenshot.dataURL,
+                        model: model,
+                        apiKey: apiKey
+                    )
+
+                    guard !Task.isCancelled else { return }
+                    onVerdict(verdict, readSnapshot, true)
+                    return
+                } catch {
+                    onError(error, readSnapshot)
+                    guard !Task.isCancelled else { return }
+                }
+            }
+
             onStatus(.analyzing(readSnapshot.appName))
             let verdict = try await riskAnalyzer.analyze(
                 snapshot: readSnapshot,
@@ -121,7 +153,7 @@ final class MonitorLoop {
             )
 
             guard !Task.isCancelled else { return }
-            onVerdict(verdict, readSnapshot)
+            onVerdict(verdict, readSnapshot, false)
         } catch ScreenReaderError.ownAppIsFocused {
             onStatus(.skippedOwnApp)
         } catch {

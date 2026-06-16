@@ -5,6 +5,7 @@ enum AnalysisLogSource {
     case screenshot
     case screenshotVerification
     case monitor
+    case monitorScreenshot
 
     var label: String {
         switch self {
@@ -16,6 +17,8 @@ enum AnalysisLogSource {
             return "High-detail verification"
         case .monitor:
             return "Monitor"
+        case .monitorScreenshot:
+            return "Monitor screenshot"
         }
     }
 
@@ -29,6 +32,8 @@ enum AnalysisLogSource {
             return "checkmark.seal"
         case .monitor:
             return "eye"
+        case .monitorScreenshot:
+            return "eye.circle"
         }
     }
 }

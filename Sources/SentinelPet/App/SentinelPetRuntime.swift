@@ -21,7 +21,8 @@ final class SentinelPetRuntime: ObservableObject {
     private let riskAnalyzer = FireworksRiskAnalyzer()
     private lazy var monitorLoop = MonitorLoop(
         screenReader: screenReader,
-        riskAnalyzer: riskAnalyzer
+        riskAnalyzer: riskAnalyzer,
+        screenshotCapture: screenshotCapture
     )
     private let settingsWindowController = SettingsWindowController()
     private let analysisLogsWindowController = AnalysisLogsWindowController()
@@ -197,6 +198,7 @@ final class SentinelPetRuntime: ObservableObject {
 
     func startMonitoring() {
         refreshAccessibilityStatus()
+        refreshScreenCaptureStatus()
         refreshFireworksAPIKeyStatus()
 
         guard settings.monitoringConsentGranted else {
@@ -240,11 +242,16 @@ final class SentinelPetRuntime: ObservableObject {
             model: settings.fireworksModel,
             apiKey: apiKey,
             deniedAppNames: settings.deniedAppNames,
+            screenshotContextEnabled: settings.monitoringScreenshotContextEnabled && screenCaptureTrusted,
             onStatus: { [weak self] status in
                 self?.handleMonitorStatus(status)
             },
-            onVerdict: { [weak self] verdict, snapshot in
-                self?.handleMonitorVerdict(verdict, snapshot: snapshot)
+            onVerdict: { [weak self] verdict, snapshot, includesScreenshot in
+                self?.handleMonitorVerdict(
+                    verdict,
+                    snapshot: snapshot,
+                    includesScreenshot: includesScreenshot
+                )
             },
             onError: { [weak self] error, snapshot in
                 self?.handleMonitorError(error, snapshot: snapshot)
@@ -253,11 +260,7 @@ final class SentinelPetRuntime: ObservableObject {
 
         isMonitoring = true
         monitorStatus = "Monitoring"
-        petViewModel.show(
-            "Monitoring started. I'll stay quiet unless I see something risky.",
-            mood: .idle,
-            clearAfter: 6
-        )
+        petViewModel.show(monitoringStartedMessage(), mood: .idle, clearAfter: 6)
     }
 
     func stopMonitoring(showMessage: Bool = false) {
@@ -339,6 +342,7 @@ final class SentinelPetRuntime: ObservableObject {
         model: String,
         apiKey: String,
         monitoringConsentGranted: Bool,
+        monitoringScreenshotContextEnabled: Bool,
         alertSensitivity: AlertSensitivity,
         deniedAppNames: [String]
     ) throws {
@@ -346,6 +350,8 @@ final class SentinelPetRuntime: ObservableObject {
         settings = AppSettings(
             fireworksModel: trimmedModel.isEmpty ? AppSettings.defaultModel : trimmedModel,
             monitoringConsentGranted: monitoringConsentGranted,
+            monitoringScreenshotContextEnabled: monitoringConsentGranted
+                && monitoringScreenshotContextEnabled,
             alertSensitivity: alertSensitivity,
             deniedAppNames: deniedAppNames
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -602,13 +608,28 @@ final class SentinelPetRuntime: ObservableObject {
         monitorStatus = status.label
     }
 
-    private func handleMonitorVerdict(_ verdict: RiskVerdict, snapshot: ScreenSnapshot) {
+    private func monitoringStartedMessage() -> String {
+        if settings.monitoringScreenshotContextEnabled {
+            if screenCaptureTrusted {
+                return "Monitoring started. Meeting windows can use screenshot context."
+            }
+            return "Monitoring started. Meeting screenshots need Screen Recording access."
+        }
+
+        return "Monitoring started. I'll stay quiet unless I see something risky."
+    }
+
+    private func handleMonitorVerdict(
+        _ verdict: RiskVerdict,
+        snapshot: ScreenSnapshot,
+        includesScreenshot: Bool
+    ) {
         monitorStatus = "Last check: \(verdict.riskLevel.rawValue)"
         logVerdict(
             verdict,
-            source: .monitor,
+            source: includesScreenshot ? .monitorScreenshot : .monitor,
             snapshot: snapshot,
-            includesScreenshot: false
+            includesScreenshot: includesScreenshot
         )
 
         guard settings.alertSensitivity.shouldInterrupt(for: verdict.riskLevel) else {

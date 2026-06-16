@@ -126,8 +126,16 @@ and direct dev runs can behave differently.
 Screenshots are captured for the manual `Analyze screenshot` action. If that
 first screenshot verdict is medium/high risk, Sentinel Pet automatically tells
 the user it is running high-detail verification, captures multiple higher-quality
-frames, and sends them as a second Fireworks request. Continuous monitoring
-remains text-only.
+frames, and sends them as a second Fireworks request.
+
+Continuous monitoring is text-first. It can add a single downscaled screenshot
+only when all of these are true:
+
+- Monitoring consent is enabled.
+- Meeting screenshot context is enabled in Settings.
+- Screen Recording access is active.
+- The focused app/window/text looks like a meeting or video-call context.
+- The snapshot does not match the sensitive deny list.
 
 ## Build And Typecheck
 
@@ -157,6 +165,8 @@ Current development defaults:
   same context plus an `image_url` part containing a downscaled JPEG data URL.
   Medium/high screenshot verdicts trigger a second high-detail verification
   request with multiple chronological `image_url` frames.
+  Monitoring can optionally use one `image_url` part for detected meeting/call
+  contexts; it falls back to text-only if screenshot capture fails.
 - Response mode: JSON object parsed into `RiskVerdict`
 - Follow-up chat uses the same Fireworks endpoint, returns plain text, and is
   grounded in the latest verdict metadata: source, app/window name, risk level,
@@ -185,6 +195,9 @@ Current behavior:
 - It fingerprints normalized focused-window text and skips duplicate screens.
 - It skips app/window names that match the sensitive deny list before sending
   text to Fireworks.
+- If meeting screenshot context is enabled and Screen Recording is active, the
+  loop can send one downscaled screenshot with detected meeting/video-call
+  contexts.
 - Safe and low-risk verdicts update status silently.
 - The sensitivity setting controls which risk levels show a pet intervention
   bubble.
@@ -196,6 +209,8 @@ Current behavior:
 Current privacy controls are deliberately simple:
 
 - Monitoring consent is required before continuous monitoring starts.
+- Meeting screenshot context requires separate settings consent and Screen
+  Recording access.
 - Manual and continuous analysis both skip snapshots matching the deny list.
 - Deny-list matching checks the focused app name and focused window title.
 - Manual screenshot analysis applies the deny list when focused-window context

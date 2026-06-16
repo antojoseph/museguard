@@ -86,9 +86,9 @@ quit.
 | `PetView` / `PetSprite` | Procedural 8-bit Claude mascot (no image assets) with bob + blink animations. |
 | `SpeechBubbleView` / `PetChatBubbleView` / `PetViewModel` | Mood-aware speech bubble, pinned risky interventions, and in-bubble follow-up chat. |
 | `AccessibilityPermissionController` / `ScreenReader` | Requests Accessibility trust and reads focused-window text via the Accessibility API. |
-| `ScreenCapturePermissionController` / `ScreenshotCapture` | Checks Screen Recording trust, captures a downscaled manual screenshot for image analysis, and captures high-detail verification frames after medium/high screenshot findings. |
+| `ScreenCapturePermissionController` / `ScreenshotCapture` | Checks Screen Recording trust, captures manual screenshots for image analysis, captures high-detail verification frames after medium/high screenshot findings, and can add opt-in meeting screenshot context during monitoring. |
 | `FireworksRiskAnalyzer` / `RiskVerdict` | Sends focused-window text to Kimi K2 on Fireworks; parses a structured JSON verdict. |
-| `MonitorLoop` | Debounced continuous sampling, duplicate suppression, and periodic risk checks. |
+| `MonitorLoop` / `MeetingContextDetector` | Debounced continuous sampling, duplicate suppression, meeting/call context detection, and periodic risk checks. |
 | `InterventionEngine` *(planned)* | Turns risk verdicts into pet alerts with guidance. |
 | `AnalysisLogsView` | Scrollable session log of verdicts and model errors without raw screen text or stored screenshots. |
 | `SettingsView` / `DevCredentialStore` | Development API key storage, model selection, consent, sensitivity, and sensitive app/window deny list. |
@@ -102,8 +102,9 @@ quit.
 5. ✅ Privacy controls: app/window deny list, pause, sensitivity, onboarding/consent.
 6. ✅ Deepfake & media support — manual screenshot analysis sends an explicit
    image part with optional focused-window context, then automatically captures
-   high-detail verification frames for medium/high screenshot findings.
-   Continuous monitoring remains text-only.
+   high-detail verification frames for medium/high screenshot findings. With
+   extra settings consent, monitoring can add a single screenshot for detected
+   meeting/video-call contexts.
 7. ⬜ Polish: refined art, edge-snapping, intervention history.
 
 ## Privacy
@@ -114,9 +115,11 @@ text when you choose **Analyze focused window**, sends one downscaled screenshot
 when you choose **Analyze screenshot**, automatically sends several high-detail
 verification frames only if that screenshot returns medium/high risk, or sends
 changed focused-window text when you explicitly start continuous monitoring after
-enabling consent in Settings. Current safeguards: monitoring consent, a
-sensitive app/window deny list for text-backed contexts, no persistence of raw
-screen text or screenshots, duplicate suppression, visible menu status, one-click
-pause, session-only judgement logs, and follow-up chat grounded in verdict
-metadata rather than raw screen captures. Planned safeguards before broader use:
+enabling consent in Settings. If you also enable meeting screenshot context,
+monitoring may send one downscaled screenshot when meeting/video-call activity is
+detected. Current safeguards: monitoring consent, separate screenshot-context
+consent, a sensitive app/window deny list, no persistence of raw screen text or
+screenshots, duplicate suppression, visible menu status, one-click pause,
+session-only judgement logs, and follow-up chat grounded in verdict metadata
+rather than raw screen captures. Planned safeguards before broader use:
 client-side redaction of obvious secrets and a production secret-storage path.
