@@ -42,6 +42,7 @@ final class FireworksRiskAnalyzer {
         var request = URLRequest(url: endpoint)
         request.httpMethod = "POST"
         request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.timeoutInterval = 45
         request.httpBody = try JSONEncoder().encode(
@@ -49,8 +50,12 @@ final class FireworksRiskAnalyzer {
                 model: model,
                 messages: messages(for: snapshot),
                 responseFormat: ResponseFormat(type: "json_object"),
-                temperature: 0.1,
-                maxTokens: 360
+                maxTokens: 32_768,
+                topP: 1,
+                topK: 40,
+                presencePenalty: 0,
+                frequencyPenalty: 0,
+                temperature: 0.6
             )
         )
 
@@ -77,19 +82,23 @@ final class FireworksRiskAnalyzer {
         [
             ChatMessage(
                 role: "system",
-                content: """
-                You are Sentinel Pet, a local desktop security assistant. Evaluate text from a focused macOS window for user-facing risk: phishing, credential theft, payment scams, remote-access scams, malware/social engineering, suspicious links, impersonation, urgency pressure, and account takeover. Return only JSON with keys risk_level, summary, guidance, categories. risk_level must be one of safe, low, medium, high. Keep summary and guidance concise.
-                """
+                content: [
+                    .text("""
+                    You are Sentinel Pet, a local desktop security assistant. Evaluate text from a focused macOS window for user-facing risk: phishing, credential theft, payment scams, remote-access scams, malware/social engineering, suspicious links, impersonation, urgency pressure, and account takeover. Return only JSON with keys risk_level, summary, guidance, categories. risk_level must be one of safe, low, medium, high. Keep summary and guidance concise.
+                    """)
+                ]
             ),
             ChatMessage(
                 role: "user",
-                content: """
-                App: \(snapshot.appName)
-                Window: \(snapshot.windowTitle ?? "unknown")
+                content: [
+                    .text("""
+                    App: \(snapshot.appName)
+                    Window: \(snapshot.windowTitle ?? "unknown")
 
-                Focused-window text:
-                \(snapshot.text)
-                """
+                    Focused-window text:
+                    \(snapshot.text)
+                    """)
+                ]
             )
         ]
     }
@@ -112,21 +121,61 @@ private struct ChatCompletionRequest: Encodable {
     let model: String
     let messages: [ChatMessage]
     let responseFormat: ResponseFormat
-    let temperature: Double
     let maxTokens: Int
+    let topP: Double
+    let topK: Int
+    let presencePenalty: Double
+    let frequencyPenalty: Double
+    let temperature: Double
 
     enum CodingKeys: String, CodingKey {
         case model
         case messages
         case responseFormat = "response_format"
-        case temperature
         case maxTokens = "max_tokens"
+        case topP = "top_p"
+        case topK = "top_k"
+        case presencePenalty = "presence_penalty"
+        case frequencyPenalty = "frequency_penalty"
+        case temperature
     }
 }
 
 private struct ChatMessage: Encodable {
     let role: String
-    let content: String
+    let content: [ChatMessageContentPart]
+}
+
+private enum ChatMessageContentPart: Encodable {
+    case text(String)
+    case imageURL(String)
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case text
+        case imageURL = "image_url"
+    }
+
+    enum ImageURLCodingKeys: String, CodingKey {
+        case url
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+
+        switch self {
+        case let .text(text):
+            try container.encode("text", forKey: .type)
+            try container.encode(text, forKey: .text)
+        case let .imageURL(url):
+            try container.encode("image_url", forKey: .type)
+            var imageContainer = container.nestedContainer(
+                keyedBy: ImageURLCodingKeys.self,
+                forKey: .imageURL
+            )
+            try imageContainer.encode(url, forKey: .url)
+        }
+    }
 }
 
 private struct ResponseFormat: Encodable {

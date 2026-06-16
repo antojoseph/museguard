@@ -86,8 +86,7 @@ window once, or quit.
 4. ⬜ Continuous monitor loop wired to interventions.
 5. ⬜ Privacy controls: app allow/deny list, pause, sensitivity, onboarding/consent.
 6. ⬜ Deepfake & media support — contextual warnings first; optional
-   screenshot + vision-model pipeline later (Kimi K2 is text-only, so actual
-   image analysis needs a multimodal model — TBD).
+   screenshot/image URL parts later. The current app sends accessible text only.
 7. ⬜ Polish: refined art, edge-snapping, intervention history.
 
 ## Privacy

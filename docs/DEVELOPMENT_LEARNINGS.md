@@ -128,8 +128,12 @@ chooses `Analyze focused window`.
 
 Current development defaults:
 
-- Model: `accounts/fireworks/models/kimi-k2-instruct-0905`
+- Model: `accounts/fireworks/models/kimi-k2p7-code`
 - API key storage: `DevCredentialStore` in `UserDefaults`
+- Endpoint: `https://api.fireworks.ai/inference/v1/chat/completions`
+- Request shape: OpenAI-compatible messages with typed content parts. The
+  current analyzer sends text parts only; the client shape can be extended with
+  image URL parts when screenshot or media analysis is added.
 - Response mode: JSON object parsed into `RiskVerdict`
 
 Before continuous monitoring:
