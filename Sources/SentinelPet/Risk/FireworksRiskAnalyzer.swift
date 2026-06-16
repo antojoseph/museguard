@@ -24,6 +24,16 @@ enum FireworksRiskAnalyzerError: LocalizedError {
     }
 }
 
+struct RiskReportChatContext {
+    let sourceLabel: String
+    let appName: String
+    let windowTitle: String?
+    let riskLevel: RiskLevel
+    let summary: String
+    let guidance: String
+    let categories: [String]
+}
+
 final class FireworksRiskAnalyzer {
     private let endpoint = URL(string: "https://api.fireworks.ai/inference/v1/chat/completions")!
     private let session: URLSession
@@ -70,6 +80,21 @@ final class FireworksRiskAnalyzer {
             model: model,
             apiKey: apiKey,
             timeoutInterval: 90
+        )
+    }
+
+    func answerQuestion(
+        _ question: String,
+        context: RiskReportChatContext?,
+        model: String,
+        apiKey: String
+    ) async throws -> String {
+        try await performText(
+            messages: chatMessages(question: question, context: context),
+            model: model,
+            apiKey: apiKey,
+            maxTokens: 1_200,
+            timeoutInterval: 45
         )
     }
 
@@ -121,6 +146,57 @@ final class FireworksRiskAnalyzer {
         }
 
         return try decodeVerdict(from: content)
+    }
+
+    private func performText(
+        messages: [ChatMessage],
+        model: String,
+        apiKey: String,
+        maxTokens: Int,
+        timeoutInterval: TimeInterval
+    ) async throws -> String {
+        let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedKey.isEmpty else {
+            throw FireworksRiskAnalyzerError.missingAPIKey
+        }
+
+        var request = URLRequest(url: endpoint)
+        request.httpMethod = "POST"
+        request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.timeoutInterval = timeoutInterval
+        request.httpBody = try JSONEncoder().encode(
+            ChatCompletionRequest(
+                model: model,
+                messages: messages,
+                responseFormat: nil,
+                maxTokens: maxTokens,
+                topP: 1,
+                topK: 40,
+                presencePenalty: 0,
+                frequencyPenalty: 0,
+                temperature: 0.4
+            )
+        )
+
+        let (data, response) = try await session.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw FireworksRiskAnalyzerError.invalidResponse
+        }
+
+        guard 200..<300 ~= httpResponse.statusCode else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw FireworksRiskAnalyzerError.requestFailed(httpResponse.statusCode, body)
+        }
+
+        let completion = try decoder.decode(ChatCompletionResponse.self, from: data)
+        guard let content = completion.choices.first?.message.content,
+              !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw FireworksRiskAnalyzerError.emptyResponse
+        }
+
+        return content.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func messages(for snapshot: ScreenSnapshot) -> [ChatMessage] {
@@ -219,6 +295,47 @@ final class FireworksRiskAnalyzer {
         ]
     }
 
+    private func chatMessages(question: String, context: RiskReportChatContext?) -> [ChatMessage] {
+        [
+            ChatMessage(
+                role: "system",
+                content: [
+                    .text("""
+                    You are Sentinel Pet, a concise desktop security assistant. Answer the user's follow-up question about the current Sentinel Pet report. Use only the report metadata provided here; do not invent unseen screen contents or claim certainty beyond the report. Be practical, calm, and specific about next steps. Keep the answer under 120 words unless the user asks for detail.
+                    """)
+                ]
+            ),
+            ChatMessage(
+                role: "user",
+                content: [
+                    .text("""
+                    Current report:
+                    \(formattedChatContext(context))
+
+                    User question:
+                    \(question)
+                    """)
+                ]
+            )
+        ]
+    }
+
+    private func formattedChatContext(_ context: RiskReportChatContext?) -> String {
+        guard let context else {
+            return "No active report is available. Answer as a general Sentinel Pet security assistant."
+        }
+
+        return """
+        Source: \(context.sourceLabel)
+        App: \(context.appName)
+        Window: \(context.windowTitle ?? "unknown")
+        Risk level: \(context.riskLevel.rawValue)
+        Categories: \(context.categories.joined(separator: ", "))
+        Summary: \(context.summary)
+        Guidance: \(context.guidance)
+        """
+    }
+
     private func decodeVerdict(from content: String) throws -> RiskVerdict {
         let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let data = trimmed.data(using: .utf8) else {
@@ -236,7 +353,7 @@ final class FireworksRiskAnalyzer {
 private struct ChatCompletionRequest: Encodable {
     let model: String
     let messages: [ChatMessage]
-    let responseFormat: ResponseFormat
+    let responseFormat: ResponseFormat?
     let maxTokens: Int
     let topP: Double
     let topK: Int

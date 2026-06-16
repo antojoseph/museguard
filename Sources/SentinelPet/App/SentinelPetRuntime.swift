@@ -27,7 +27,9 @@ final class SentinelPetRuntime: ObservableObject {
     private let analysisLogsWindowController = AnalysisLogsWindowController()
     private var analyzeTask: Task<Void, Never>?
     private var screenshotTask: Task<Void, Never>?
+    private var chatTask: Task<Void, Never>?
     private var lastMonitorErrorMessage: String?
+    private var latestChatContext: RiskReportChatContext?
     private let verificationFrameCount = 4
     private let verificationFrameIntervalNanoseconds: UInt64 = 650_000_000
     private let verificationMaxPixelDimension = 2_400
@@ -279,6 +281,58 @@ final class SentinelPetRuntime: ObservableObject {
 
     func clearAnalysisLogs() {
         analysisLogs.removeAll()
+    }
+
+    func openPetChat() {
+        petViewModel.openChat()
+    }
+
+    func dismissPetBubble() {
+        latestChatContext = nil
+        chatTask?.cancel()
+        petViewModel.dismissBubble()
+    }
+
+    func askPetChat(_ question: String) {
+        let trimmedQuestion = question.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuestion.isEmpty else { return }
+
+        refreshFireworksAPIKeyStatus()
+        petViewModel.openChat()
+        petViewModel.appendUserChat(trimmedQuestion)
+
+        guard hasFireworksAPIKey, let apiKey = DevCredentialStore.readFireworksAPIKey() else {
+            petViewModel.appendAssistantChat(
+                "Add a Fireworks API key in Settings before I can answer follow-up questions."
+            )
+            showSettings()
+            return
+        }
+
+        chatTask?.cancel()
+        petViewModel.setChatThinking(true)
+        let context = latestChatContext
+        chatTask = Task { [weak self] in
+            guard let self else { return }
+
+            do {
+                let answer = try await self.riskAnalyzer.answerQuestion(
+                    trimmedQuestion,
+                    context: context,
+                    model: self.settings.fireworksModel,
+                    apiKey: apiKey
+                )
+
+                guard !Task.isCancelled else { return }
+                self.petViewModel.appendAssistantChat(answer)
+            } catch {
+                guard !Task.isCancelled else { return }
+                self.petViewModel.appendAssistantChat(error.localizedDescription)
+            }
+
+            guard !Task.isCancelled else { return }
+            self.petViewModel.setChatThinking(false)
+        }
     }
 
     func saveSettings(
@@ -622,6 +676,16 @@ final class SentinelPetRuntime: ObservableObject {
         snapshot: ScreenSnapshot,
         includesScreenshot: Bool
     ) {
+        latestChatContext = RiskReportChatContext(
+            sourceLabel: source.label,
+            appName: snapshot.appName,
+            windowTitle: snapshot.windowTitle,
+            riskLevel: verdict.riskLevel,
+            summary: verdict.summary,
+            guidance: verdict.guidance,
+            categories: verdict.categories
+        )
+
         appendAnalysisLog(
             AnalysisLogEntry(
                 timestamp: Date(),
@@ -698,6 +762,11 @@ final class SentinelPetRuntime: ObservableObject {
     }
 
     private func clearDelay(for riskLevel: RiskLevel) -> Double? {
-        riskLevel == .high ? nil : 14
+        switch riskLevel {
+        case .safe, .low:
+            return 14
+        case .medium, .high, .unknown:
+            return nil
+        }
     }
 }

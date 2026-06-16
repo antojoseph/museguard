@@ -158,6 +158,10 @@ Current development defaults:
   Medium/high screenshot verdicts trigger a second high-detail verification
   request with multiple chronological `image_url` frames.
 - Response mode: JSON object parsed into `RiskVerdict`
+- Follow-up chat uses the same Fireworks endpoint, returns plain text, and is
+  grounded in the latest verdict metadata: source, app/window name, risk level,
+  categories, summary, and guidance. It does not include raw screen text or
+  screenshot bytes.
 - Logs: verdicts and model errors are kept in a session-only scrollable logs
   window. Raw screen text and screenshots are not stored in the log.
 
@@ -207,6 +211,8 @@ Current privacy controls are deliberately simple:
   They intentionally do not store raw focused-window text or screenshot bytes.
 - High-detail verification frames are sent to Fireworks but are not persisted.
   The pet displays a message while that verification is happening.
+- Medium, high, and unknown verdict bubbles stay pinned until dismissed. After a
+  pinned bubble is dismissed, idle thoughts may resume.
 
 ## Known Good Recovery Sequence
 

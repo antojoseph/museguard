@@ -6,11 +6,28 @@ import SwiftUI
 struct SpeechBubbleView: View {
     let text: String
     let mood: PetMood
+    var isDismissible = false
+    var onDismiss: (() -> Void)?
 
     var body: some View {
         let style = BubbleStyle(mood: mood)
 
-        messageContent(style: style)
+        ZStack(alignment: .topTrailing) {
+            messageContent(style: style)
+                .padding(.trailing, isDismissible ? 20 : 0)
+
+            if isDismissible {
+                Button {
+                    onDismiss?()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.bold))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .padding(.top, 1)
+            }
+        }
             .padding(.horizontal, style.horizontalPadding)
             .padding(.vertical, style.verticalPadding)
             .frame(maxWidth: style.maxWidth, alignment: .leading)

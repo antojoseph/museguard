@@ -81,6 +81,10 @@ private final class PetHostingView: NSHostingView<PetRootView> {
     }
 
     private var activeHitRects: [NSRect] {
+        if viewModel.isChatOpen {
+            return [petHitRect, bubbleHitRect(for: .alert)]
+        }
+
         guard viewModel.bubbleText != nil else {
             return [petHitRect]
         }

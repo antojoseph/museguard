@@ -7,9 +7,31 @@ struct PetRootView: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
-            if let message = viewModel.bubbleText {
-                SpeechBubbleView(text: message, mood: viewModel.bubbleMood)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            if viewModel.isChatOpen {
+                PetChatBubbleView(
+                    viewModel: viewModel,
+                    onSend: { question in
+                        SentinelPetRuntime.shared.askPetChat(question)
+                    },
+                    onDismiss: {
+                        SentinelPetRuntime.shared.dismissPetBubble()
+                    }
+                )
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let message = viewModel.bubbleText {
+                SpeechBubbleView(
+                    text: message,
+                    mood: viewModel.bubbleMood,
+                    isDismissible: viewModel.bubbleIsDismissible,
+                    onDismiss: {
+                        SentinelPetRuntime.shared.dismissPetBubble()
+                    }
+                )
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    SentinelPetRuntime.shared.openPetChat()
+                }
+                .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             PetView(mood: viewModel.mood)
         }

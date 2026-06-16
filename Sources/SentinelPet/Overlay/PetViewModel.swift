@@ -8,12 +8,26 @@ enum PetMood {
     case alert     // detected something risky
 }
 
+enum PetChatRole: Equatable {
+    case user
+    case assistant
+}
+
+struct PetChatMessage: Identifiable {
+    let id = UUID()
+    let role: PetChatRole
+    let text: String
+}
+
 /// Observable state shared between the pet sprite and its speech bubble.
 @MainActor
 final class PetViewModel: ObservableObject {
     @Published var mood: PetMood = .idle
     @Published var message: String?
     @Published private var idleThought: String?
+    @Published var isChatOpen = false
+    @Published var isChatThinking = false
+    @Published var chatMessages: [PetChatMessage] = []
 
     private var clearTask: Task<Void, Never>?
     private var idleThoughtTask: Task<Void, Never>?
@@ -24,6 +38,10 @@ final class PetViewModel: ObservableObject {
 
     var bubbleMood: PetMood {
         message == nil ? .idle : mood
+    }
+
+    var bubbleIsDismissible: Bool {
+        message != nil
     }
 
     /// Friendly first-launch greeting.
@@ -41,6 +59,9 @@ final class PetViewModel: ObservableObject {
         clearTask?.cancel()
         self.message = text
         self.mood = mood
+        isChatOpen = false
+        isChatThinking = false
+        chatMessages.removeAll()
 
         guard let seconds else { return }
         clearTask = Task { [weak self] in
@@ -49,6 +70,37 @@ final class PetViewModel: ObservableObject {
             self?.message = nil
             self?.mood = .idle
         }
+    }
+
+    func openChat() {
+        clearTask?.cancel()
+
+        if chatMessages.isEmpty, let bubbleText {
+            chatMessages.append(PetChatMessage(role: .assistant, text: bubbleText))
+        }
+
+        isChatOpen = true
+    }
+
+    func dismissBubble() {
+        clearTask?.cancel()
+        message = nil
+        mood = .idle
+        isChatOpen = false
+        isChatThinking = false
+        chatMessages.removeAll()
+    }
+
+    func appendUserChat(_ text: String) {
+        chatMessages.append(PetChatMessage(role: .user, text: text))
+    }
+
+    func appendAssistantChat(_ text: String) {
+        chatMessages.append(PetChatMessage(role: .assistant, text: text))
+    }
+
+    func setChatThinking(_ isThinking: Bool) {
+        isChatThinking = isThinking
     }
 
     private func startIdleThoughts() {

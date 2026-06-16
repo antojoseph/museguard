@@ -25,8 +25,8 @@ final class PetPanel: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
     }
 
-    // Never steal focus / app activation when the user drags or clicks the pet.
-    override var canBecomeKey: Bool { false }
+    // The panel can become key so the in-bubble chat text field accepts input.
+    override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
 
     /// Place the pet at its last saved location, or default to the bottom-right

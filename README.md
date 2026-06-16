@@ -35,7 +35,8 @@ link, fall for a scam, etc.).
   action captures the screen only when requested, sends it to Fireworks as an
   image part, automatically runs high-detail multi-frame verification for
   medium/high screenshot findings, and logs session verdicts/errors in a
-  scrollable logs window.
+  scrollable logs window. Pet bubbles can be opened as a follow-up chat, and
+  medium/high/unknown reports stay visible until dismissed.
 
 ## Building & running
 
@@ -83,7 +84,7 @@ quit.
 |-----------|----------------|
 | `PetPanel` / `PetOverlayController` | Borderless floating panel hosting the pet; dragging + position persistence. |
 | `PetView` / `PetSprite` | Procedural 8-bit Claude mascot (no image assets) with bob + blink animations. |
-| `SpeechBubbleView` / `PetViewModel` | Mood-aware speech bubble for greetings and interventions. |
+| `SpeechBubbleView` / `PetChatBubbleView` / `PetViewModel` | Mood-aware speech bubble, pinned risky interventions, and in-bubble follow-up chat. |
 | `AccessibilityPermissionController` / `ScreenReader` | Requests Accessibility trust and reads focused-window text via the Accessibility API. |
 | `ScreenCapturePermissionController` / `ScreenshotCapture` | Checks Screen Recording trust, captures a downscaled manual screenshot for image analysis, and captures high-detail verification frames after medium/high screenshot findings. |
 | `FireworksRiskAnalyzer` / `RiskVerdict` | Sends focused-window text to Kimi K2 on Fireworks; parses a structured JSON verdict. |
@@ -116,5 +117,6 @@ changed focused-window text when you explicitly start continuous monitoring afte
 enabling consent in Settings. Current safeguards: monitoring consent, a
 sensitive app/window deny list for text-backed contexts, no persistence of raw
 screen text or screenshots, duplicate suppression, visible menu status, one-click
-pause, and session-only judgement logs. Planned safeguards before broader use:
+pause, session-only judgement logs, and follow-up chat grounded in verdict
+metadata rather than raw screen captures. Planned safeguards before broader use:
 client-side redaction of obvious secrets and a production secret-storage path.
