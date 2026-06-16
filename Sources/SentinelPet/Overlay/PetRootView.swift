@@ -7,14 +7,14 @@ struct PetRootView: View {
 
     var body: some View {
         VStack(alignment: .trailing, spacing: 8) {
-            if let message = viewModel.message {
-                SpeechBubbleView(text: message, mood: viewModel.mood)
+            if let message = viewModel.bubbleText {
+                SpeechBubbleView(text: message, mood: viewModel.bubbleMood)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
             PetView(mood: viewModel.mood)
         }
-        .frame(width: 220, height: 240, alignment: .bottomTrailing)
+        .frame(width: 344, height: 404, alignment: .bottomTrailing)
         .padding(8)
-        .animation(.spring(response: 0.45, dampingFraction: 0.82), value: viewModel.message)
+        .animation(.spring(response: 0.45, dampingFraction: 0.82), value: viewModel.bubbleText)
     }
 }

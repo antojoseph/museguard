@@ -13,11 +13,22 @@ enum PetMood {
 final class PetViewModel: ObservableObject {
     @Published var mood: PetMood = .idle
     @Published var message: String?
+    @Published private var idleThought: String?
 
     private var clearTask: Task<Void, Never>?
+    private var idleThoughtTask: Task<Void, Never>?
+
+    var bubbleText: String? {
+        message ?? idleThought
+    }
+
+    var bubbleMood: PetMood {
+        message == nil ? .idle : mood
+    }
 
     /// Friendly first-launch greeting.
     func greet() {
+        startIdleThoughts()
         show(
             "Hi! I'm Claude, your security buddy. I'll keep an eye out for phishing, scams, and other sketchy stuff. 🛡️",
             mood: .idle,
@@ -38,5 +49,34 @@ final class PetViewModel: ObservableObject {
             self?.message = nil
             self?.mood = .idle
         }
+    }
+
+    private func startIdleThoughts() {
+        guard idleThoughtTask == nil else { return }
+
+        let thoughts = [
+            "Thinking about suspicious links...",
+            "Watching for sketchy vibes.",
+            "Tiny shield, big opinions.",
+            "Wondering if that login page is real.",
+            "Sniffing for scammy urgency.",
+            "Keeping an eye on the fine print."
+        ]
+        idleThought = thoughts[0]
+
+        idleThoughtTask = Task { [weak self] in
+            var index = 1
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 18 * 1_000_000_000)
+                guard !Task.isCancelled else { return }
+                self?.idleThought = thoughts[index % thoughts.count]
+                index += 1
+            }
+        }
+    }
+
+    deinit {
+        clearTask?.cancel()
+        idleThoughtTask?.cancel()
     }
 }

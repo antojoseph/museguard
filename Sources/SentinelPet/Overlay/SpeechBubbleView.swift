@@ -8,30 +8,123 @@ struct SpeechBubbleView: View {
     let mood: PetMood
 
     var body: some View {
-        Text(text)
-            .font(.system(size: 12, weight: .medium, design: .rounded))
-            .foregroundStyle(.primary)
-            .multilineTextAlignment(.leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .padding(.horizontal, 12)
-            .padding(.vertical, 9)
-            .frame(maxWidth: 200, alignment: .leading)
-            .background(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .fill(.thickMaterial)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 14, style: .continuous)
-                    .strokeBorder(borderColor, lineWidth: 1.5)
-            )
-            .shadow(color: .black.opacity(0.18), radius: 6, y: 3)
+        let style = BubbleStyle(mood: mood)
+
+        messageContent(style: style)
+            .padding(.horizontal, style.horizontalPadding)
+            .padding(.vertical, style.verticalPadding)
+            .frame(maxWidth: style.maxWidth, alignment: .leading)
+            .frame(maxHeight: style.maxHeight, alignment: .topLeading)
+            .background {
+                ZStack {
+                    RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous)
+                        .fill(.thickMaterial)
+                    RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous)
+                        .fill(style.fillColor)
+                }
+            }
+            .overlay {
+                RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous)
+                    .strokeBorder(style.borderColor, lineWidth: style.borderWidth)
+            }
+            .shadow(color: style.shadowColor, radius: style.shadowRadius, y: 3)
     }
 
-    private var borderColor: Color {
+    @ViewBuilder
+    private func messageContent(style: BubbleStyle) -> some View {
+        if style.scrolls {
+            ScrollView {
+                messageText(style: style)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .frame(maxHeight: style.maxTextHeight)
+        } else {
+            messageText(style: style)
+                .lineLimit(style.lineLimit)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func messageText(style: BubbleStyle) -> some View {
+        Text(text)
+            .font(.system(size: style.fontSize, weight: style.fontWeight, design: .rounded))
+            .foregroundStyle(style.textColor)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct BubbleStyle {
+    let maxWidth: CGFloat
+    let maxHeight: CGFloat
+    let maxTextHeight: CGFloat
+    let horizontalPadding: CGFloat
+    let verticalPadding: CGFloat
+    let cornerRadius: CGFloat
+    let borderWidth: CGFloat
+    let fontSize: CGFloat
+    let fontWeight: Font.Weight
+    let lineLimit: Int?
+    let scrolls: Bool
+    let fillColor: Color
+    let borderColor: Color
+    let textColor: Color
+    let shadowColor: Color
+    let shadowRadius: CGFloat
+
+    init(mood: PetMood) {
         switch mood {
-        case .alert:    return .red.opacity(0.65)
-        case .scanning: return .blue.opacity(0.45)
-        case .idle:     return .orange.opacity(0.45)
+        case .idle:
+            maxWidth = 220
+            maxHeight = 96
+            maxTextHeight = 72
+            horizontalPadding = 12
+            verticalPadding = 8
+            cornerRadius = 13
+            borderWidth = 1.25
+            fontSize = 12
+            fontWeight = .medium
+            lineLimit = 3
+            scrolls = false
+            fillColor = Color.green.opacity(0.12)
+            borderColor = Color.green.opacity(0.45)
+            textColor = .primary
+            shadowColor = .black.opacity(0.14)
+            shadowRadius = 5
+        case .scanning:
+            maxWidth = 292
+            maxHeight = 184
+            maxTextHeight = 152
+            horizontalPadding = 13
+            verticalPadding = 10
+            cornerRadius = 14
+            borderWidth = 1.5
+            fontSize = 12
+            fontWeight = .medium
+            lineLimit = nil
+            scrolls = true
+            fillColor = Color.blue.opacity(0.13)
+            borderColor = Color.blue.opacity(0.55)
+            textColor = .primary
+            shadowColor = .blue.opacity(0.18)
+            shadowRadius = 7
+        case .alert:
+            maxWidth = 336
+            maxHeight = 296
+            maxTextHeight = 260
+            horizontalPadding = 14
+            verticalPadding = 11
+            cornerRadius = 15
+            borderWidth = 2
+            fontSize = 12.5
+            fontWeight = .semibold
+            lineLimit = nil
+            scrolls = true
+            fillColor = Color.red.opacity(0.14)
+            borderColor = Color.red.opacity(0.7)
+            textColor = .primary
+            shadowColor = .red.opacity(0.25)
+            shadowRadius = 9
         }
     }
 }
