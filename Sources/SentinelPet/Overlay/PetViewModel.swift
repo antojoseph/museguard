@@ -76,7 +76,12 @@ final class PetViewModel: ObservableObject {
         clearTask?.cancel()
 
         if chatMessages.isEmpty, let bubbleText {
-            chatMessages.append(PetChatMessage(role: .assistant, text: bubbleText))
+            chatMessages.append(
+                PetChatMessage(
+                    role: .assistant,
+                    text: bubbleText.replacingOccurrences(of: "\nTap to ask me why.", with: "")
+                )
+            )
         }
 
         isChatOpen = true

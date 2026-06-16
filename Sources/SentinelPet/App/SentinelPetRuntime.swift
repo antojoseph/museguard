@@ -729,25 +729,50 @@ final class SentinelPetRuntime: ObservableObject {
     }
 
     private func message(for verdict: RiskVerdict) -> String {
-        let prefix: String
+        let headline: String
+        let action: String
+
         switch verdict.riskLevel {
         case .safe:
-            prefix = "Looks safe."
+            headline = "Looks safe."
+            action = "No action needed."
         case .low:
-            prefix = "Low risk."
+            headline = "Low risk."
+            action = "Double-check before sharing info."
         case .medium:
-            prefix = "Be careful."
+            headline = "Be careful."
+            action = "Pause and verify this first."
         case .high:
-            prefix = "High risk."
+            headline = "High risk."
+            action = "Stop. Do not click or pay."
         case .unknown:
-            prefix = "I am not sure."
+            headline = "Not sure yet."
+            action = "Treat it carefully and verify."
         }
 
-        return "\(prefix) \(verdict.summary) \(verdict.guidance)"
+        let detail = compactDetail(from: verdict)
+        return "\(headline)\n\(action)\n\(detail)\nTap to ask me why."
     }
 
     private func verificationMessage(for verdict: RiskVerdict) -> String {
-        "Verification: \(message(for: verdict))"
+        "Verification done.\n\(message(for: verdict))"
+    }
+
+    private func compactDetail(from verdict: RiskVerdict) -> String {
+        if let category = verdict.categories.first, !category.isEmpty {
+            return "Reason: \(category.replacingOccurrences(of: "_", with: " "))."
+        }
+
+        let sentence = verdict.summary
+            .components(separatedBy: CharacterSet(charactersIn: ".!?"))
+            .first?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+        guard !sentence.isEmpty else {
+            return "Open logs for details."
+        }
+
+        return "Reason: \(String(sentence.prefix(64)))."
     }
 
     private func mood(for riskLevel: RiskLevel) -> PetMood {
