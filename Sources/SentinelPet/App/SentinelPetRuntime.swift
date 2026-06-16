@@ -74,7 +74,7 @@ final class SentinelPetRuntime: ObservableObject {
 
         if screenCaptureTrusted {
             petViewModel.show(
-                "Screen Recording access is enabled. I can analyze a screenshot when you ask.",
+                "Screen Recording access is enabled. I can analyze screenshots and monitor after consent.",
                 mood: .idle,
                 clearAfter: 6
             )
@@ -211,8 +211,8 @@ final class SentinelPetRuntime: ObservableObject {
             return
         }
 
-        guard accessibilityTrusted else {
-            showAccessibilityRequiredMessage()
+        guard screenCaptureTrusted else {
+            showScreenCaptureRequiredMessage()
             return
         }
 
@@ -242,7 +242,6 @@ final class SentinelPetRuntime: ObservableObject {
             model: settings.fireworksModel,
             apiKey: apiKey,
             deniedAppNames: settings.deniedAppNames,
-            screenshotContextEnabled: settings.monitoringScreenshotContextEnabled && screenCaptureTrusted,
             onStatus: { [weak self] status in
                 self?.handleMonitorStatus(status)
             },
@@ -342,7 +341,6 @@ final class SentinelPetRuntime: ObservableObject {
         model: String,
         apiKey: String,
         monitoringConsentGranted: Bool,
-        monitoringScreenshotContextEnabled: Bool,
         alertSensitivity: AlertSensitivity,
         deniedAppNames: [String]
     ) throws {
@@ -350,8 +348,6 @@ final class SentinelPetRuntime: ObservableObject {
         settings = AppSettings(
             fireworksModel: trimmedModel.isEmpty ? AppSettings.defaultModel : trimmedModel,
             monitoringConsentGranted: monitoringConsentGranted,
-            monitoringScreenshotContextEnabled: monitoringConsentGranted
-                && monitoringScreenshotContextEnabled,
             alertSensitivity: alertSensitivity,
             deniedAppNames: deniedAppNames
                 .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -609,14 +605,7 @@ final class SentinelPetRuntime: ObservableObject {
     }
 
     private func monitoringStartedMessage() -> String {
-        if settings.monitoringScreenshotContextEnabled {
-            if screenCaptureTrusted {
-                return "Monitoring started. Meeting windows can use screenshot context."
-            }
-            return "Monitoring started. Meeting screenshots need Screen Recording access."
-        }
-
-        return "Monitoring started. I'll stay quiet unless I see something risky."
+        "Screenshot monitoring started. I'll stay quiet unless I see something risky."
     }
 
     private func handleMonitorVerdict(
@@ -648,9 +637,10 @@ final class SentinelPetRuntime: ObservableObject {
         monitorStatus = "Monitor issue"
 
         if !(error is ScreenReaderError) {
+            let isScreenshotError = error is ScreenshotCaptureError
             logError(
                 error,
-                source: .monitor,
+                source: isScreenshotError ? .monitorScreenshot : .monitor,
                 snapshot: snapshot,
                 includesScreenshot: false
             )
@@ -672,6 +662,7 @@ final class SentinelPetRuntime: ObservableObject {
     private func shouldStopMonitoring(after error: Error) -> Bool {
         switch error {
         case ScreenReaderError.accessibilityPermissionRequired,
+             ScreenshotCaptureError.permissionRequired,
              FireworksRiskAnalyzerError.missingAPIKey:
             return true
         default:

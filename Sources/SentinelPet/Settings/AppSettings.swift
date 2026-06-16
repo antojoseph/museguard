@@ -19,7 +19,6 @@ struct AppSettings {
 
     var fireworksModel: String
     var monitoringConsentGranted: Bool
-    var monitoringScreenshotContextEnabled: Bool
     var alertSensitivity: AlertSensitivity
     var deniedAppNames: [String]
 }
@@ -27,7 +26,6 @@ struct AppSettings {
 enum AppSettingsStore {
     private static let modelKey = "fireworksModel"
     private static let monitoringConsentGrantedKey = "monitoringConsentGranted"
-    private static let monitoringScreenshotContextEnabledKey = "monitoringScreenshotContextEnabled"
     private static let alertSensitivityKey = "alertSensitivity"
     private static let deniedAppNamesKey = "deniedAppNames"
 
@@ -50,9 +48,6 @@ enum AppSettingsStore {
         return AppSettings(
             fireworksModel: model,
             monitoringConsentGranted: UserDefaults.standard.bool(forKey: monitoringConsentGrantedKey),
-            monitoringScreenshotContextEnabled: UserDefaults.standard.bool(
-                forKey: monitoringScreenshotContextEnabledKey
-            ),
             alertSensitivity: sensitivity,
             deniedAppNames: deniedAppNames
         )
@@ -63,10 +58,6 @@ enum AppSettingsStore {
         UserDefaults.standard.set(
             settings.monitoringConsentGranted,
             forKey: monitoringConsentGrantedKey
-        )
-        UserDefaults.standard.set(
-            settings.monitoringScreenshotContextEnabled,
-            forKey: monitoringScreenshotContextEnabledKey
         )
         UserDefaults.standard.set(settings.alertSensitivity.rawValue, forKey: alertSensitivityKey)
         UserDefaults.standard.set(settings.deniedAppNames, forKey: deniedAppNamesKey)

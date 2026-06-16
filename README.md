@@ -1,12 +1,12 @@
 # 🛡️ Sentinel Pet
 
 A cute 8-bit Claude-style desktop pet for macOS that doubles as a **security
-buddy**. It sits in the corner of your screen and — once fully built — watches
-what you're doing, reads on-screen text via the macOS Accessibility API, asks an
-LLM (Kimi K2 on [Fireworks.ai](https://fireworks.ai)) to judge whether the
-situation is risky, and pops up with friendly guidance before you do something
-you'll regret (reply to a phishing email, log in to a fake site, click a sketchy
-link, fall for a scam, etc.).
+buddy**. It sits in the corner of your screen, can read focused-window text when
+you ask, monitors changed screenshots after explicit consent, asks an LLM (Kimi
+K2 on [Fireworks.ai](https://fireworks.ai)) to judge whether the situation is
+risky, and pops up with friendly guidance before you do something you'll regret
+(reply to a phishing email, log in to a fake site, click a sketchy link, fall for
+a scam, etc.).
 
 > ⚠️ Work in progress. See the roadmap below for what's implemented.
 
@@ -18,16 +18,15 @@ link, fall for a scam, etc.).
   bubbles. Everything after this is wiring.
 - ✅ **Milestone 2 — Accessibility reader + permission flow.** Menu-bar actions
   can request Accessibility access and run a one-shot local read of the focused
-  window's accessible text. Continuous monitoring and remote analysis are still
-  planned.
+  window's accessible text.
 - ✅ **Milestone 3 — Fireworks/Kimi settings + manual risk analysis.** Settings
   stores the Fireworks API key in development preferences for now, lets you
   choose the model, and can send the currently focused window's text to
-  Fireworks for a JSON risk verdict. Continuous monitoring and production-grade
-  secret storage are still planned.
+  Fireworks for a JSON risk verdict. Production-grade secret storage is still
+  planned.
 - ✅ **Milestone 4 — Continuous monitor loop.** Start monitoring from the menu
-  to periodically sample the focused window, skip duplicate text, and surface
-  only medium/high/unknown findings through the pet.
+  to periodically sample changed screenshots, skip duplicate screens, and
+  surface only medium/high/unknown findings through the pet.
 - ✅ **Milestone 5 — Privacy controls.** Settings includes continuous-monitoring
   consent, alert sensitivity, and a sensitive app/window deny list. Monitoring
   can be paused from the menu.
@@ -86,9 +85,9 @@ quit.
 | `PetView` / `PetSprite` | Procedural 8-bit Claude mascot (no image assets) with bob + blink animations. |
 | `SpeechBubbleView` / `PetChatBubbleView` / `PetViewModel` | Mood-aware speech bubble, pinned risky interventions, and in-bubble follow-up chat. |
 | `AccessibilityPermissionController` / `ScreenReader` | Requests Accessibility trust and reads focused-window text via the Accessibility API. |
-| `ScreenCapturePermissionController` / `ScreenshotCapture` | Checks Screen Recording trust, captures manual screenshots for image analysis, captures high-detail verification frames after medium/high screenshot findings, and can add opt-in meeting screenshot context during monitoring. |
-| `FireworksRiskAnalyzer` / `RiskVerdict` | Sends focused-window text to Kimi K2 on Fireworks; parses a structured JSON verdict. |
-| `MonitorLoop` / `MeetingContextDetector` | Debounced continuous sampling, duplicate suppression, meeting/call context detection, and periodic risk checks. |
+| `ScreenCapturePermissionController` / `ScreenshotCapture` | Checks Screen Recording trust, captures screenshot-monitoring samples, captures manual screenshots for image analysis, and captures high-detail verification frames after medium/high screenshot findings. |
+| `FireworksRiskAnalyzer` / `RiskVerdict` | Sends text and screenshot context to Kimi K2 on Fireworks; parses a structured JSON verdict. |
+| `MonitorLoop` | Debounced screenshot sampling, duplicate suppression, and periodic risk checks. |
 | `InterventionEngine` *(planned)* | Turns risk verdicts into pet alerts with guidance. |
 | `AnalysisLogsView` | Scrollable session log of verdicts and model errors without raw screen text or stored screenshots. |
 | `SettingsView` / `DevCredentialStore` | Development API key storage, model selection, consent, sensitivity, and sensitive app/window deny list. |
@@ -102,9 +101,8 @@ quit.
 5. ✅ Privacy controls: app/window deny list, pause, sensitivity, onboarding/consent.
 6. ✅ Deepfake & media support — manual screenshot analysis sends an explicit
    image part with optional focused-window context, then automatically captures
-   high-detail verification frames for medium/high screenshot findings. With
-   extra settings consent, monitoring can add a single screenshot for detected
-   meeting/video-call contexts.
+   high-detail verification frames for medium/high screenshot findings.
+   Continuous monitoring is screenshot-based by default after consent.
 7. ⬜ Polish: refined art, edge-snapping, intervention history.
 
 ## Privacy
@@ -114,12 +112,12 @@ third-party API, which is inherently sensitive. Today, it sends focused-window
 text when you choose **Analyze focused window**, sends one downscaled screenshot
 when you choose **Analyze screenshot**, automatically sends several high-detail
 verification frames only if that screenshot returns medium/high risk, or sends
-changed focused-window text when you explicitly start continuous monitoring after
-enabling consent in Settings. If you also enable meeting screenshot context,
-monitoring may send one downscaled screenshot when meeting/video-call activity is
-detected. Current safeguards: monitoring consent, separate screenshot-context
-consent, a sensitive app/window deny list, no persistence of raw screen text or
-screenshots, duplicate suppression, visible menu status, one-click pause,
-session-only judgement logs, and follow-up chat grounded in verdict metadata
-rather than raw screen captures. Planned safeguards before broader use:
-client-side redaction of obvious secrets and a production secret-storage path.
+changed screenshots when you explicitly start continuous monitoring after
+enabling consent in Settings. Accessibility can add optional app/window/text
+context to screenshot monitoring, but monitoring no longer requires it. Current
+safeguards: monitoring consent, Screen Recording permission, a sensitive
+app/window deny list, no persistence of raw screen text or screenshots, duplicate
+suppression, visible menu status, one-click pause, session-only judgement logs,
+and follow-up chat grounded in verdict metadata rather than raw screen captures.
+Planned safeguards before broader use: client-side redaction of obvious secrets
+and a production secret-storage path.

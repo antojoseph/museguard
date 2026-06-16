@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 enum MonitorLoopStatus: Equatable {
@@ -15,7 +16,7 @@ enum MonitorLoopStatus: Equatable {
         case .idle:
             return "Monitoring paused"
         case .sampling:
-            return "Reading focused window"
+            return "Capturing screen"
         case .skippedDuplicate:
             return "No screen change"
         case .skippedOwnApp:
@@ -25,15 +26,15 @@ enum MonitorLoopStatus: Equatable {
         case let .analyzing(appName):
             return "Analyzing \(appName)"
         case let .analyzingScreenshot(appName):
-            return "Adding screenshot context for \(appName)"
+            return "Analyzing screenshot for \(appName)"
         case .sleeping:
             return "Monitoring"
         }
     }
 }
 
-/// Debounced continuous sampler for focused-window text. It analyzes only when
-/// readable text changes, which keeps the pet from repeatedly sending the same
+/// Debounced continuous sampler for screenshots. It analyzes only when the
+/// captured screen changes, which keeps the pet from repeatedly sending the same
 /// screen to the model.
 @MainActor
 final class MonitorLoop {
@@ -61,7 +62,6 @@ final class MonitorLoop {
         model: String,
         apiKey: String,
         deniedAppNames: [String],
-        screenshotContextEnabled: Bool,
         intervalSeconds: Double = 45,
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
         onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Void,
@@ -78,7 +78,6 @@ final class MonitorLoop {
                     model: model,
                     apiKey: apiKey,
                     deniedAppNames: deniedAppNames,
-                    screenshotContextEnabled: screenshotContextEnabled,
                     onStatus: onStatus,
                     onVerdict: onVerdict,
                     onError: onError
@@ -100,7 +99,6 @@ final class MonitorLoop {
         model: String,
         apiKey: String,
         deniedAppNames: [String],
-        screenshotContextEnabled: Bool,
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
         onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Void,
         onError: @escaping @MainActor (Error, ScreenSnapshot?) -> Void
@@ -109,15 +107,16 @@ final class MonitorLoop {
 
         do {
             onStatus(.sampling)
-            let readSnapshot = try screenReader.readFocusedContext(maxCharacters: 6_000)
-            snapshot = readSnapshot
+            let screenSnapshot = try currentScreenContext()
+            snapshot = screenSnapshot
 
-            guard !PrivacyFilter.isDenied(snapshot: readSnapshot, deniedAppNames: deniedAppNames) else {
-                onStatus(.skippedDeniedApp(readSnapshot.appName))
+            guard !PrivacyFilter.isDenied(snapshot: screenSnapshot, deniedAppNames: deniedAppNames) else {
+                onStatus(.skippedDeniedApp(screenSnapshot.appName))
                 return
             }
 
-            let fingerprint = Self.fingerprint(for: readSnapshot)
+            let screenshot = try screenshotCapture.capture()
+            let fingerprint = Self.fingerprint(for: screenSnapshot, screenshot: screenshot)
 
             guard fingerprint != lastFingerprint else {
                 onStatus(.skippedDuplicate)
@@ -125,35 +124,16 @@ final class MonitorLoop {
             }
             lastFingerprint = fingerprint
 
-            if screenshotContextEnabled, MeetingContextDetector.isMeetingContext(readSnapshot) {
-                onStatus(.analyzingScreenshot(readSnapshot.appName))
-                do {
-                    let screenshot = try screenshotCapture.capture()
-                    let verdict = try await riskAnalyzer.analyze(
-                        snapshot: readSnapshot,
-                        screenshotDataURL: screenshot.dataURL,
-                        model: model,
-                        apiKey: apiKey
-                    )
-
-                    guard !Task.isCancelled else { return }
-                    onVerdict(verdict, readSnapshot, true)
-                    return
-                } catch {
-                    onError(error, readSnapshot)
-                    guard !Task.isCancelled else { return }
-                }
-            }
-
-            onStatus(.analyzing(readSnapshot.appName))
+            onStatus(.analyzingScreenshot(screenSnapshot.appName))
             let verdict = try await riskAnalyzer.analyze(
-                snapshot: readSnapshot,
+                snapshot: screenSnapshot,
+                screenshotDataURL: screenshot.dataURL,
                 model: model,
                 apiKey: apiKey
             )
 
             guard !Task.isCancelled else { return }
-            onVerdict(verdict, readSnapshot, false)
+            onVerdict(verdict, screenSnapshot, true)
         } catch ScreenReaderError.ownAppIsFocused {
             onStatus(.skippedOwnApp)
         } catch {
@@ -161,7 +141,28 @@ final class MonitorLoop {
         }
     }
 
-    private static func fingerprint(for snapshot: ScreenSnapshot) -> Int {
+    private func currentScreenContext() throws -> ScreenSnapshot {
+        guard let app = NSWorkspace.shared.frontmostApplication else {
+            throw ScreenReaderError.noFrontmostApplication
+        }
+
+        guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
+            throw ScreenReaderError.ownAppIsFocused
+        }
+
+        if AccessibilityPermissionController.isTrusted,
+           let readableSnapshot = try? screenReader.readFocusedContext(maxCharacters: 3_000) {
+            return readableSnapshot
+        }
+
+        return ScreenSnapshot(
+            appName: app.localizedName ?? app.bundleIdentifier ?? "focused app",
+            windowTitle: nil,
+            text: "Screenshot-based monitoring sample. Focused-window text was not available."
+        )
+    }
+
+    private static func fingerprint(for snapshot: ScreenSnapshot, screenshot: CapturedScreenshot) -> Int {
         let normalizedText = snapshot.text
             .lowercased()
             .components(separatedBy: .whitespacesAndNewlines)
@@ -172,6 +173,7 @@ final class MonitorLoop {
         hasher.combine(snapshot.appName)
         hasher.combine(snapshot.windowTitle)
         hasher.combine(normalizedText)
+        hasher.combine(screenshot.dataURL)
         return hasher.finalize()
     }
 

@@ -16,7 +16,7 @@ final class SettingsWindowController {
         let window = NSWindow(contentViewController: hostingController)
         window.title = "Sentinel Pet Settings"
         window.styleMask = [.titled, .closable, .miniaturizable]
-        window.setContentSize(NSSize(width: 560, height: 600))
+        window.setContentSize(NSSize(width: 560, height: 540))
         window.center()
         window.isReleasedWhenClosed = false
 

@@ -123,19 +123,18 @@ The dev bundle needs `NSScreenCaptureUsageDescription`. Keep that string in both
 `project.yml` and the generated plist inside `run-dev.sh`; otherwise Xcode builds
 and direct dev runs can behave differently.
 
-Screenshots are captured for the manual `Analyze screenshot` action. If that
-first screenshot verdict is medium/high risk, Sentinel Pet automatically tells
-the user it is running high-detail verification, captures multiple higher-quality
-frames, and sends them as a second Fireworks request.
+Screenshots are captured for the manual `Analyze screenshot` action and for
+continuous monitoring after monitoring consent is enabled. Manual screenshot
+analysis still owns high-detail verification: if its first screenshot verdict is
+medium/high risk, Sentinel Pet tells the user it is running high-detail
+verification, captures multiple higher-quality frames, and sends them as a second
+Fireworks request.
 
-Continuous monitoring is text-first. It can add a single downscaled screenshot
-only when all of these are true:
-
-- Monitoring consent is enabled.
-- Meeting screenshot context is enabled in Settings.
-- Screen Recording access is active.
-- The focused app/window/text looks like a meeting or video-call context.
-- The snapshot does not match the sensitive deny list.
+Continuous monitoring is screenshot-based by default. It requires Screen
+Recording access, sends one downscaled screenshot per changed sample, and does
+not run high-detail multi-frame verification in the background. Accessibility is
+optional for monitoring now; if it is active, monitoring includes focused-window
+text and window title as extra context.
 
 ## Build And Typecheck
 
@@ -165,8 +164,8 @@ Current development defaults:
   same context plus an `image_url` part containing a downscaled JPEG data URL.
   Medium/high screenshot verdicts trigger a second high-detail verification
   request with multiple chronological `image_url` frames.
-  Monitoring can optionally use one `image_url` part for detected meeting/call
-  contexts; it falls back to text-only if screenshot capture fails.
+  Monitoring sends one downscaled screenshot `image_url` part per changed screen
+  sample, plus optional Accessibility text context when available.
 - Response mode: JSON object parsed into `RiskVerdict`
 - Follow-up chat uses the same Fireworks endpoint, returns plain text, and is
   grounded in the latest verdict metadata: source, app/window name, risk level,
@@ -175,12 +174,13 @@ Current development defaults:
 - Logs: verdicts and model errors are kept in a session-only scrollable logs
   window. Raw screen text and screenshots are not stored in the log.
 
-Before continuous monitoring:
+Continuous monitoring safeguards:
 
-- Add explicit onboarding and consent.
-- Add a sensitive-app deny list.
-- Add pause controls and a visible scanning indicator.
-- Avoid persisting raw screen text.
+- Keep explicit consent in Settings before the loop can start.
+- Keep the sensitive-app deny list ahead of screenshot capture where app/window
+  context is available.
+- Keep pause controls and a visible scanning indicator in the menu.
+- Avoid persisting raw screen text or screenshot bytes.
 
 ## Continuous Monitoring
 
@@ -189,19 +189,17 @@ on launch.
 
 Current behavior:
 
-- `Start monitoring` requires Accessibility and a Fireworks API key.
-- `Start monitoring` also requires the monitoring consent checkbox in Settings.
-- The loop samples the focused window every 45 seconds.
-- It fingerprints normalized focused-window text and skips duplicate screens.
+- `Start monitoring` requires Screen Recording, a Fireworks API key, and the
+  monitoring consent checkbox in Settings.
+- The loop samples the screen every 45 seconds.
+- It fingerprints screenshot content plus available app/window/text context and
+  skips duplicate screens.
 - It skips app/window names that match the sensitive deny list before sending
-  text to Fireworks.
-- If meeting screenshot context is enabled and Screen Recording is active, the
-  loop can send one downscaled screenshot with detected meeting/video-call
-  contexts.
+  screenshots to Fireworks.
 - Safe and low-risk verdicts update status silently.
 - The sensitivity setting controls which risk levels show a pet intervention
   bubble.
-- Accessibility or missing-key failures stop the loop.
+- Screen Recording or missing-key failures stop the loop.
 - Transient read/model errors are shown once and then de-duplicated.
 
 ## Privacy Controls
@@ -209,14 +207,12 @@ Current behavior:
 Current privacy controls are deliberately simple:
 
 - Monitoring consent is required before continuous monitoring starts.
-- Meeting screenshot context requires separate settings consent and Screen
-  Recording access.
+- Screenshot-based monitoring requires Screen Recording access.
 - Manual and continuous analysis both skip snapshots matching the deny list.
 - Deny-list matching checks the focused app name and focused window title.
-- Manual screenshot analysis applies the deny list when focused-window context
-  is available through Accessibility. If Accessibility is unavailable, the app
-  can still analyze a manually requested screenshot, but it cannot identify the
-  foreground app for deny-list matching.
+- Manual screenshot analysis and monitoring apply the deny list when focused app
+  or window context is available. Without Accessibility, monitoring can still use
+  the frontmost app name, but not focused window titles.
 - Sensitivity changes which risk levels interrupt the user:
   - Low sensitivity: high risk only.
   - Standard sensitivity: medium, high, and unknown.

@@ -6,7 +6,6 @@ struct SettingsView: View {
     @State private var apiKey = ""
     @State private var model = AppSettings.defaultModel
     @State private var monitoringConsentGranted = false
-    @State private var monitoringScreenshotContextEnabled = false
     @State private var alertSensitivity: AlertSensitivity = .standard
     @State private var deniedAppsText = ""
     @State private var statusMessage: String?
@@ -16,7 +15,7 @@ struct SettingsView: View {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Sentinel Pet Settings")
                     .font(.title2.weight(.semibold))
-                Text("Configure Fireworks analysis and privacy controls. Continuous monitoring runs only after you explicitly enable consent.")
+                Text("Configure Fireworks analysis and privacy controls. Screenshot monitoring runs only after you explicitly enable consent.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -53,28 +52,15 @@ struct SettingsView: View {
             }
 
             Toggle(
-                "Allow continuous monitoring to read focused-window text and send changed text to Fireworks",
+                "Allow continuous monitoring to capture changed screenshots and send them to Fireworks",
                 isOn: $monitoringConsentGranted
             )
             .toggleStyle(.checkbox)
 
-            VStack(alignment: .leading, spacing: 5) {
-                Toggle(
-                    "Allow monitoring to add screenshot context for meeting or video-call windows",
-                    isOn: $monitoringScreenshotContextEnabled
-                )
-                .toggleStyle(.checkbox)
-                .disabled(!monitoringConsentGranted)
-
-                Text("Only used when meeting/call activity is detected from focused app, window, or text. Requires Screen Recording access.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-            }
-
             VStack(alignment: .leading, spacing: 6) {
                 Text("Sensitive App Deny List")
                     .font(.headline)
-                Text("One app or window-title keyword per line. Matching windows are skipped before text is sent.")
+                Text("One app or window-title keyword per line. Matching windows are skipped before screenshots are sent.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                 TextEditor(text: $deniedAppsText)
@@ -108,11 +94,10 @@ struct SettingsView: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 560, minHeight: 580)
+        .frame(minWidth: 560, minHeight: 540)
         .onAppear {
             model = runtime.settings.fireworksModel
             monitoringConsentGranted = runtime.settings.monitoringConsentGranted
-            monitoringScreenshotContextEnabled = runtime.settings.monitoringScreenshotContextEnabled
             alertSensitivity = runtime.settings.alertSensitivity
             deniedAppsText = runtime.settings.deniedAppNames.joined(separator: "\n")
         }
@@ -124,7 +109,6 @@ struct SettingsView: View {
                 model: model,
                 apiKey: apiKey,
                 monitoringConsentGranted: monitoringConsentGranted,
-                monitoringScreenshotContextEnabled: monitoringConsentGranted && monitoringScreenshotContextEnabled,
                 alertSensitivity: alertSensitivity,
                 deniedAppNames: parsedDeniedAppNames
             )

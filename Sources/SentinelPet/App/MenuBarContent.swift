@@ -10,8 +10,8 @@ struct MenuBarContent: View {
             .font(.headline)
 
         Label(
-            runtime.accessibilityTrusted ? "Accessibility enabled" : "Accessibility required",
-            systemImage: runtime.accessibilityTrusted ? "checkmark.shield" : "exclamationmark.triangle"
+            runtime.accessibilityTrusted ? "Accessibility enabled" : "Accessibility optional",
+            systemImage: runtime.accessibilityTrusted ? "checkmark.shield" : "accessibility"
         )
 
         Label(

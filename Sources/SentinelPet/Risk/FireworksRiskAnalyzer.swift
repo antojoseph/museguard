@@ -10,7 +10,7 @@ enum FireworksRiskAnalyzerError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .missingAPIKey:
-            return "Add a Fireworks API key in Settings before analyzing text."
+            return "Add a Fireworks API key in Settings before analysis."
         case .invalidResponse:
             return "Fireworks returned an invalid response."
         case let .requestFailed(statusCode, body):
@@ -233,7 +233,7 @@ final class FireworksRiskAnalyzer {
                 role: "system",
                 content: [
                     .text("""
-                    You are Sentinel Pet, a local desktop security assistant. Evaluate the user-requested screenshot and optional focused-window text for user-facing risk: phishing, credential theft, payment scams, remote-access scams, malware/social engineering, suspicious links, impersonation, urgency pressure, account takeover, fake login/payment screens, manipulated media, and deepfake-like cues. Return only JSON with keys risk_level, summary, guidance, categories. risk_level must be one of safe, low, medium, high. Keep summary and guidance concise.
+                    You are Sentinel Pet, a local desktop security assistant. Evaluate the provided screenshot and optional focused-window text for user-facing risk: phishing, credential theft, payment scams, remote-access scams, malware/social engineering, suspicious links, impersonation, urgency pressure, account takeover, fake login/payment screens, manipulated media, and deepfake-like cues. Return only JSON with keys risk_level, summary, guidance, categories. risk_level must be one of safe, low, medium, high. Keep summary and guidance concise.
                     """)
                 ]
             ),
@@ -241,7 +241,7 @@ final class FireworksRiskAnalyzer {
                 role: "user",
                 content: [
                     .text("""
-                    The user explicitly requested this screenshot analysis.
+                    Sentinel Pet captured this screenshot as part of a user-enabled analysis workflow.
 
                     App: \(snapshot.appName)
                     Window: \(snapshot.windowTitle ?? "unknown")
