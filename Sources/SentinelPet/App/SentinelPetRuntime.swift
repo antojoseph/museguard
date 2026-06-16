@@ -605,7 +605,7 @@ final class SentinelPetRuntime: ObservableObject {
     }
 
     private func monitoringStartedMessage() -> String {
-        "Screenshot monitoring started. I'll stay quiet unless I see something risky."
+        "Screenshot monitoring started. I'll check changed screens every 10 seconds."
     }
 
     private func handleMonitorVerdict(
@@ -613,15 +613,17 @@ final class SentinelPetRuntime: ObservableObject {
         snapshot: ScreenSnapshot,
         includesScreenshot: Bool
     ) {
+        let shouldInterrupt = settings.alertSensitivity.shouldInterrupt(for: verdict.riskLevel)
         monitorStatus = "Last check: \(verdict.riskLevel.rawValue)"
         logVerdict(
             verdict,
             source: includesScreenshot ? .monitorScreenshot : .monitor,
             snapshot: snapshot,
-            includesScreenshot: includesScreenshot
+            includesScreenshot: includesScreenshot,
+            updatesChatContext: shouldInterrupt
         )
 
-        guard settings.alertSensitivity.shouldInterrupt(for: verdict.riskLevel) else {
+        guard shouldInterrupt else {
             return
         }
 
@@ -686,17 +688,20 @@ final class SentinelPetRuntime: ObservableObject {
         _ verdict: RiskVerdict,
         source: AnalysisLogSource,
         snapshot: ScreenSnapshot,
-        includesScreenshot: Bool
+        includesScreenshot: Bool,
+        updatesChatContext: Bool = true
     ) {
-        latestChatContext = RiskReportChatContext(
-            sourceLabel: source.label,
-            appName: snapshot.appName,
-            windowTitle: snapshot.windowTitle,
-            riskLevel: verdict.riskLevel,
-            summary: verdict.summary,
-            guidance: verdict.guidance,
-            categories: verdict.categories
-        )
+        if updatesChatContext {
+            latestChatContext = RiskReportChatContext(
+                sourceLabel: source.label,
+                appName: snapshot.appName,
+                windowTitle: snapshot.windowTitle,
+                riskLevel: verdict.riskLevel,
+                summary: verdict.summary,
+                guidance: verdict.guidance,
+                categories: verdict.categories
+            )
+        }
 
         appendAnalysisLog(
             AnalysisLogEntry(

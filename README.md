@@ -87,7 +87,7 @@ quit.
 | `AccessibilityPermissionController` / `ScreenReader` | Requests Accessibility trust and reads focused-window text via the Accessibility API. |
 | `ScreenCapturePermissionController` / `ScreenshotCapture` | Checks Screen Recording trust, captures screenshot-monitoring samples, captures manual screenshots for image analysis, and captures high-detail verification frames after medium/high screenshot findings. |
 | `FireworksRiskAnalyzer` / `RiskVerdict` | Sends text and screenshot context to Kimi K2 on Fireworks; parses a structured JSON verdict. |
-| `MonitorLoop` | Debounced screenshot sampling, duplicate suppression, and periodic risk checks. |
+| `MonitorLoop` | 10-second screenshot sampling, duplicate suppression, and asynchronous risk checks that can overlap while prior Fireworks requests are still running. |
 | `InterventionEngine` *(planned)* | Turns risk verdicts into pet alerts with guidance. |
 | `AnalysisLogsView` | Scrollable session log of verdicts and model errors without raw screen text or stored screenshots. |
 | `SettingsView` / `DevCredentialStore` | Development API key storage, model selection, consent, sensitivity, and sensitive app/window deny list. |

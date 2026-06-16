@@ -165,7 +165,9 @@ Current development defaults:
   Medium/high screenshot verdicts trigger a second high-detail verification
   request with multiple chronological `image_url` frames.
   Monitoring sends one downscaled screenshot `image_url` part per changed screen
-  sample, plus optional Accessibility text context when available.
+  sample, plus optional Accessibility text context when available. Monitoring
+  inference is asynchronous: each changed screenshot launches its own Fireworks
+  request, and the capture loop does not wait for earlier requests to finish.
 - Response mode: JSON object parsed into `RiskVerdict`
 - Follow-up chat uses the same Fireworks endpoint, returns plain text, and is
   grounded in the latest verdict metadata: source, app/window name, risk level,
@@ -191,9 +193,11 @@ Current behavior:
 
 - `Start monitoring` requires Screen Recording, a Fireworks API key, and the
   monitoring consent checkbox in Settings.
-- The loop samples the screen every 45 seconds.
+- The loop samples the screen every 10 seconds.
 - It fingerprints screenshot content plus available app/window/text context and
   skips duplicate screens.
+- Fireworks requests run asynchronously and may overlap. Verdicts and errors are
+  handled when each request returns.
 - It skips app/window names that match the sensitive deny list before sending
   screenshots to Fireworks.
 - Safe and low-risk verdicts update status silently.

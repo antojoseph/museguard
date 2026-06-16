@@ -33,15 +33,16 @@ enum MonitorLoopStatus: Equatable {
     }
 }
 
-/// Debounced continuous sampler for screenshots. It analyzes only when the
-/// captured screen changes, which keeps the pet from repeatedly sending the same
-/// screen to the model.
+/// Debounced continuous sampler for screenshots. Capture runs on a fixed cadence
+/// while Fireworks checks run asynchronously, so inference latency does not delay
+/// the next screen sample.
 @MainActor
 final class MonitorLoop {
     private let screenReader: ScreenReader
     private let riskAnalyzer: FireworksRiskAnalyzer
     private let screenshotCapture: ScreenshotCapture
     private var task: Task<Void, Never>?
+    private var inferenceTasks: [UUID: Task<Void, Never>] = [:]
     private var lastFingerprint: Int?
 
     init(
@@ -62,7 +63,7 @@ final class MonitorLoop {
         model: String,
         apiKey: String,
         deniedAppNames: [String],
-        intervalSeconds: Double = 45,
+        intervalSeconds: Double = 10,
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
         onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Void,
         onError: @escaping @MainActor (Error, ScreenSnapshot?) -> Void
@@ -93,6 +94,8 @@ final class MonitorLoop {
     func stop() {
         task?.cancel()
         task = nil
+        inferenceTasks.values.forEach { $0.cancel() }
+        inferenceTasks.removeAll()
     }
 
     private func sampleOnce(
@@ -125,20 +128,54 @@ final class MonitorLoop {
             lastFingerprint = fingerprint
 
             onStatus(.analyzingScreenshot(screenSnapshot.appName))
-            let verdict = try await riskAnalyzer.analyze(
+            startInference(
                 snapshot: screenSnapshot,
-                screenshotDataURL: screenshot.dataURL,
+                screenshot: screenshot,
                 model: model,
-                apiKey: apiKey
+                apiKey: apiKey,
+                onVerdict: onVerdict,
+                onError: onError
             )
-
-            guard !Task.isCancelled else { return }
-            onVerdict(verdict, screenSnapshot, true)
         } catch ScreenReaderError.ownAppIsFocused {
             onStatus(.skippedOwnApp)
         } catch {
             onError(error, snapshot)
         }
+    }
+
+    private func startInference(
+        snapshot: ScreenSnapshot,
+        screenshot: CapturedScreenshot,
+        model: String,
+        apiKey: String,
+        onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Void,
+        onError: @escaping @MainActor (Error, ScreenSnapshot?) -> Void
+    ) {
+        let id = UUID()
+        let task = Task { [weak self] in
+            guard let self else { return }
+
+            defer {
+                self.inferenceTasks[id] = nil
+            }
+
+            do {
+                let verdict = try await self.riskAnalyzer.analyze(
+                    snapshot: snapshot,
+                    screenshotDataURL: screenshot.dataURL,
+                    model: model,
+                    apiKey: apiKey
+                )
+
+                guard !Task.isCancelled else { return }
+                onVerdict(verdict, snapshot, true)
+            } catch {
+                guard !Task.isCancelled else { return }
+                onError(error, snapshot)
+            }
+        }
+
+        inferenceTasks[id] = task
     }
 
     private func currentScreenContext() throws -> ScreenSnapshot {
