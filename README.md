@@ -31,6 +31,9 @@ link, fall for a scam, etc.).
 - ✅ **Milestone 5 — Privacy controls.** Settings includes continuous-monitoring
   consent, alert sensitivity, and a sensitive app/window deny list. Monitoring
   can be paused from the menu.
+- ✅ **Milestone 6 — Screenshot/media analysis + logs.** A manual screenshot
+  action captures the screen only when requested, sends it to Fireworks as an
+  image part, and logs session verdicts/errors in a scrollable logs window.
 
 ## Building & running
 
@@ -68,8 +71,9 @@ Requirements: macOS 13+ and Xcode 15+.
 
 When you run it, the pet appears in the bottom-right corner and greets you.
 Drag it anywhere; it remembers where you put it. Use the 🛡️ menu-bar item to
-request Accessibility access, configure Fireworks, read or analyze the focused
-window once, or quit.
+request Accessibility or Screen Recording access, configure Fireworks, read or
+analyze the focused window, analyze a screenshot, view model judgement logs, or
+quit.
 
 ## Architecture (target design)
 
@@ -79,9 +83,11 @@ window once, or quit.
 | `PetView` / `PetSprite` | Procedural 8-bit Claude mascot (no image assets) with bob + blink animations. |
 | `SpeechBubbleView` / `PetViewModel` | Mood-aware speech bubble for greetings and interventions. |
 | `AccessibilityPermissionController` / `ScreenReader` | Requests Accessibility trust and reads focused-window text via the Accessibility API. |
+| `ScreenCapturePermissionController` / `ScreenshotCapture` | Checks Screen Recording trust and captures a downscaled manual screenshot for image analysis. |
 | `FireworksRiskAnalyzer` / `RiskVerdict` | Sends focused-window text to Kimi K2 on Fireworks; parses a structured JSON verdict. |
 | `MonitorLoop` | Debounced continuous sampling, duplicate suppression, and periodic risk checks. |
 | `InterventionEngine` *(planned)* | Turns risk verdicts into pet alerts with guidance. |
+| `AnalysisLogsView` | Scrollable session log of verdicts and model errors without raw screen text or stored screenshots. |
 | `SettingsView` / `DevCredentialStore` | Development API key storage, model selection, consent, sensitivity, and sensitive app/window deny list. |
 
 ## Roadmap
@@ -91,17 +97,20 @@ window once, or quit.
 3. ✅ Fireworks/Kimi K2 client + development API key settings.
 4. ✅ Continuous monitor loop wired to interventions.
 5. ✅ Privacy controls: app/window deny list, pause, sensitivity, onboarding/consent.
-6. ⬜ Deepfake & media support — contextual warnings first; optional
-   screenshot/image URL parts later. The current app sends accessible text only.
+6. ✅ Deepfake & media support — manual screenshot analysis sends an explicit
+   image part with optional focused-window context. Continuous monitoring remains
+   text-only.
 7. ⬜ Polish: refined art, edge-snapping, intervention history.
 
 ## Privacy
 
-This app is designed to read on-screen text and send it to a third-party API,
-which is inherently sensitive. Today, it only sends focused-window text when you
-choose **Analyze focused window** from the menu, or when you explicitly start
-continuous monitoring after enabling consent in Settings. Current safeguards:
-monitoring consent, a sensitive app/window deny list, no persistence of raw
-screen text, duplicate suppression, visible menu status, and one-click pause.
-Planned safeguards before broader use: client-side redaction of obvious secrets
-and a production secret-storage path.
+This app is designed to read on-screen text and optionally send a screenshot to a
+third-party API, which is inherently sensitive. Today, it sends focused-window
+text when you choose **Analyze focused window**, sends one downscaled screenshot
+only when you choose **Analyze screenshot**, or sends changed focused-window text
+when you explicitly start continuous monitoring after enabling consent in
+Settings. Current safeguards: monitoring consent, a sensitive app/window deny
+list for text-backed contexts, no persistence of raw screen text or screenshots,
+duplicate suppression, visible menu status, one-click pause, and session-only
+judgement logs. Planned safeguards before broader use: client-side redaction of
+obvious secrets and a production secret-storage path.

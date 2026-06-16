@@ -34,6 +34,27 @@ final class FireworksRiskAnalyzer {
     }
 
     func analyze(snapshot: ScreenSnapshot, model: String, apiKey: String) async throws -> RiskVerdict {
+        try await perform(
+            messages: messages(for: snapshot),
+            model: model,
+            apiKey: apiKey
+        )
+    }
+
+    func analyze(
+        snapshot: ScreenSnapshot,
+        screenshotDataURL: String,
+        model: String,
+        apiKey: String
+    ) async throws -> RiskVerdict {
+        try await perform(
+            messages: screenshotMessages(for: snapshot, screenshotDataURL: screenshotDataURL),
+            model: model,
+            apiKey: apiKey
+        )
+    }
+
+    private func perform(messages: [ChatMessage], model: String, apiKey: String) async throws -> RiskVerdict {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else {
             throw FireworksRiskAnalyzerError.missingAPIKey
@@ -48,7 +69,7 @@ final class FireworksRiskAnalyzer {
         request.httpBody = try JSONEncoder().encode(
             ChatCompletionRequest(
                 model: model,
-                messages: messages(for: snapshot),
+                messages: messages,
                 responseFormat: ResponseFormat(type: "json_object"),
                 maxTokens: 32_768,
                 topP: 1,
@@ -98,6 +119,37 @@ final class FireworksRiskAnalyzer {
                     Focused-window text:
                     \(snapshot.text)
                     """)
+                ]
+            )
+        ]
+    }
+
+    private func screenshotMessages(
+        for snapshot: ScreenSnapshot,
+        screenshotDataURL: String
+    ) -> [ChatMessage] {
+        [
+            ChatMessage(
+                role: "system",
+                content: [
+                    .text("""
+                    You are Sentinel Pet, a local desktop security assistant. Evaluate the user-requested screenshot and optional focused-window text for user-facing risk: phishing, credential theft, payment scams, remote-access scams, malware/social engineering, suspicious links, impersonation, urgency pressure, account takeover, fake login/payment screens, manipulated media, and deepfake-like cues. Return only JSON with keys risk_level, summary, guidance, categories. risk_level must be one of safe, low, medium, high. Keep summary and guidance concise.
+                    """)
+                ]
+            ),
+            ChatMessage(
+                role: "user",
+                content: [
+                    .text("""
+                    The user explicitly requested this screenshot analysis.
+
+                    App: \(snapshot.appName)
+                    Window: \(snapshot.windowTitle ?? "unknown")
+
+                    Focused-window text, if available:
+                    \(snapshot.text)
+                    """),
+                    .imageURL(screenshotDataURL)
                 ]
             )
         ]

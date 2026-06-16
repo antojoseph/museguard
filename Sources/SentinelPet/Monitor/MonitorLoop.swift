@@ -54,8 +54,8 @@ final class MonitorLoop {
         deniedAppNames: [String],
         intervalSeconds: Double = 45,
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
-        onVerdict: @escaping @MainActor (RiskVerdict) -> Void,
-        onError: @escaping @MainActor (Error) -> Void
+        onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot) -> Void,
+        onError: @escaping @MainActor (Error, ScreenSnapshot?) -> Void
     ) {
         stop()
         lastFingerprint = nil
@@ -90,19 +90,22 @@ final class MonitorLoop {
         apiKey: String,
         deniedAppNames: [String],
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
-        onVerdict: @escaping @MainActor (RiskVerdict) -> Void,
-        onError: @escaping @MainActor (Error) -> Void
+        onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot) -> Void,
+        onError: @escaping @MainActor (Error, ScreenSnapshot?) -> Void
     ) async {
+        var snapshot: ScreenSnapshot?
+
         do {
             onStatus(.sampling)
-            let snapshot = try screenReader.readFocusedContext(maxCharacters: 6_000)
+            let readSnapshot = try screenReader.readFocusedContext(maxCharacters: 6_000)
+            snapshot = readSnapshot
 
-            guard !PrivacyFilter.isDenied(snapshot: snapshot, deniedAppNames: deniedAppNames) else {
-                onStatus(.skippedDeniedApp(snapshot.appName))
+            guard !PrivacyFilter.isDenied(snapshot: readSnapshot, deniedAppNames: deniedAppNames) else {
+                onStatus(.skippedDeniedApp(readSnapshot.appName))
                 return
             }
 
-            let fingerprint = Self.fingerprint(for: snapshot)
+            let fingerprint = Self.fingerprint(for: readSnapshot)
 
             guard fingerprint != lastFingerprint else {
                 onStatus(.skippedDuplicate)
@@ -110,19 +113,19 @@ final class MonitorLoop {
             }
             lastFingerprint = fingerprint
 
-            onStatus(.analyzing(snapshot.appName))
+            onStatus(.analyzing(readSnapshot.appName))
             let verdict = try await riskAnalyzer.analyze(
-                snapshot: snapshot,
+                snapshot: readSnapshot,
                 model: model,
                 apiKey: apiKey
             )
 
             guard !Task.isCancelled else { return }
-            onVerdict(verdict)
+            onVerdict(verdict, readSnapshot)
         } catch ScreenReaderError.ownAppIsFocused {
             onStatus(.skippedOwnApp)
         } catch {
-            onError(error)
+            onError(error, snapshot)
         }
     }
 

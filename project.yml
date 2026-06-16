@@ -35,3 +35,4 @@ targets:
         NSHumanReadableCopyright: ""
         # Shown if/when we use Apple Events to read other apps' contents.
         NSAppleEventsUsageDescription: "Sentinel Pet reads on-screen text to warn you about phishing, scams, and other risky situations."
+        NSScreenCaptureUsageDescription: "Sentinel Pet captures screenshots only when you explicitly choose screenshot analysis, then sends that image to Fireworks for risk detection."

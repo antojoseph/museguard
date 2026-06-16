@@ -108,6 +108,24 @@ Current behavior:
 - `Open Accessibility Settings` opens the settings pane explicitly.
 - `Analyze focused window` shows a pet message if Accessibility is not active.
 
+## Screen Recording Permission
+
+Manual screenshot analysis uses macOS Screen Recording permission. Keep it
+separate from Accessibility:
+
+- `Enable screen recording access` requests Screen Recording permission.
+- `Open Screen Recording Settings` opens the settings pane explicitly.
+- `Analyze screenshot` shows a pet message if Screen Recording is not active.
+- After granting permission, restart with `./run-dev.sh` so the running process
+  has the new TCC grant.
+
+The dev bundle needs `NSScreenCaptureUsageDescription`. Keep that string in both
+`project.yml` and the generated plist inside `run-dev.sh`; otherwise Xcode builds
+and direct dev runs can behave differently.
+
+Screenshots are only captured for the manual `Analyze screenshot` action.
+Continuous monitoring remains text-only.
+
 ## Build And Typecheck
 
 When XcodeGen is not installed, the sources can still be checked with `swiftc`.
@@ -132,9 +150,11 @@ Current development defaults:
 - API key storage: `DevCredentialStore` in `UserDefaults`
 - Endpoint: `https://api.fireworks.ai/inference/v1/chat/completions`
 - Request shape: OpenAI-compatible messages with typed content parts. The
-  current analyzer sends text parts only; the client shape can be extended with
-  image URL parts when screenshot or media analysis is added.
+  focused-window analyzer sends text parts. Manual screenshot analysis sends the
+  same context plus an `image_url` part containing a downscaled JPEG data URL.
 - Response mode: JSON object parsed into `RiskVerdict`
+- Logs: verdicts and model errors are kept in a session-only scrollable logs
+  window. Raw screen text and screenshots are not stored in the log.
 
 Before continuous monitoring:
 
@@ -169,11 +189,17 @@ Current privacy controls are deliberately simple:
 - Monitoring consent is required before continuous monitoring starts.
 - Manual and continuous analysis both skip snapshots matching the deny list.
 - Deny-list matching checks the focused app name and focused window title.
+- Manual screenshot analysis applies the deny list when focused-window context
+  is available through Accessibility. If Accessibility is unavailable, the app
+  can still analyze a manually requested screenshot, but it cannot identify the
+  foreground app for deny-list matching.
 - Sensitivity changes which risk levels interrupt the user:
   - Low sensitivity: high risk only.
   - Standard sensitivity: medium, high, and unknown.
   - High sensitivity: low, medium, high, and unknown.
 - Fireworks API keys are still stored in development preferences, not Keychain.
+- Session logs record app/window metadata, model, source, verdict, and errors.
+  They intentionally do not store raw focused-window text or screenshot bytes.
 
 ## Known Good Recovery Sequence
 

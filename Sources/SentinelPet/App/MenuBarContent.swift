@@ -1,8 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// Contents of the menu-bar dropdown. Most items are placeholders for now and
-/// get wired up in later milestones (monitoring, settings, privacy controls).
+/// Contents of the menu-bar dropdown.
 struct MenuBarContent: View {
     @ObservedObject var runtime: SentinelPetRuntime = .shared
 
@@ -13,6 +12,11 @@ struct MenuBarContent: View {
         Label(
             runtime.accessibilityTrusted ? "Accessibility enabled" : "Accessibility required",
             systemImage: runtime.accessibilityTrusted ? "checkmark.shield" : "exclamationmark.triangle"
+        )
+
+        Label(
+            runtime.screenCaptureTrusted ? "Screen Recording enabled" : "Screen Recording required",
+            systemImage: runtime.screenCaptureTrusted ? "checkmark.rectangle" : "camera.viewfinder"
         )
 
         Label(
@@ -33,6 +37,14 @@ struct MenuBarContent: View {
             runtime.openAccessibilitySettings()
         }
 
+        Button(runtime.screenCaptureTrusted ? "Check screen recording access" : "Enable screen recording access") {
+            runtime.requestScreenCapturePermission()
+        }
+
+        Button("Open Screen Recording Settings") {
+            runtime.openScreenRecordingSettings()
+        }
+
         Button("Read focused window") {
             runtime.scanFocusedContext()
         }
@@ -42,10 +54,18 @@ struct MenuBarContent: View {
             runtime.analyzeFocusedContext()
         }
 
+        Button("Analyze screenshot") {
+            runtime.analyzeScreenshot()
+        }
+
         Divider()
 
         Button(runtime.isMonitoring ? "Pause monitoring" : "Start monitoring") {
             runtime.toggleMonitoring()
+        }
+
+        Button("View logs…") {
+            runtime.showAnalysisLogs()
         }
 
         Button("Settings…") {

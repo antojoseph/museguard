@@ -35,6 +35,8 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 	<true/>
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Sentinel Pet reads on-screen text to warn you about phishing, scams, and other risky situations.</string>
+	<key>NSScreenCaptureUsageDescription</key>
+	<string>Sentinel Pet captures screenshots only when you explicitly choose screenshot analysis, then sends that image to Fireworks for risk detection.</string>
 </dict>
 </plist>
 PLIST

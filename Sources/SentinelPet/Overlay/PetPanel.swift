@@ -21,6 +21,7 @@ final class PetPanel: NSPanel {
         isFloatingPanel = true
         hidesOnDeactivate = false
         isMovableByWindowBackground = true
+        sharingType = .none
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
     }
 
