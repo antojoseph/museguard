@@ -3,6 +3,7 @@ import Foundation
 enum AnalysisLogSource {
     case focusedWindow
     case screenshot
+    case screenshotVerification
     case monitor
 
     var label: String {
@@ -11,6 +12,8 @@ enum AnalysisLogSource {
             return "Focused window"
         case .screenshot:
             return "Screenshot"
+        case .screenshotVerification:
+            return "High-detail verification"
         case .monitor:
             return "Monitor"
         }
@@ -22,6 +25,8 @@ enum AnalysisLogSource {
             return "text.viewfinder"
         case .screenshot:
             return "camera.viewfinder"
+        case .screenshotVerification:
+            return "checkmark.seal"
         case .monitor:
             return "eye"
         }

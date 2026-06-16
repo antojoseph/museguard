@@ -123,8 +123,11 @@ The dev bundle needs `NSScreenCaptureUsageDescription`. Keep that string in both
 `project.yml` and the generated plist inside `run-dev.sh`; otherwise Xcode builds
 and direct dev runs can behave differently.
 
-Screenshots are only captured for the manual `Analyze screenshot` action.
-Continuous monitoring remains text-only.
+Screenshots are captured for the manual `Analyze screenshot` action. If that
+first screenshot verdict is medium/high risk, Sentinel Pet automatically tells
+the user it is running high-detail verification, captures multiple higher-quality
+frames, and sends them as a second Fireworks request. Continuous monitoring
+remains text-only.
 
 ## Build And Typecheck
 
@@ -152,6 +155,8 @@ Current development defaults:
 - Request shape: OpenAI-compatible messages with typed content parts. The
   focused-window analyzer sends text parts. Manual screenshot analysis sends the
   same context plus an `image_url` part containing a downscaled JPEG data URL.
+  Medium/high screenshot verdicts trigger a second high-detail verification
+  request with multiple chronological `image_url` frames.
 - Response mode: JSON object parsed into `RiskVerdict`
 - Logs: verdicts and model errors are kept in a session-only scrollable logs
   window. Raw screen text and screenshots are not stored in the log.
@@ -200,6 +205,8 @@ Current privacy controls are deliberately simple:
 - Fireworks API keys are still stored in development preferences, not Keychain.
 - Session logs record app/window metadata, model, source, verdict, and errors.
   They intentionally do not store raw focused-window text or screenshot bytes.
+- High-detail verification frames are sent to Fireworks but are not persisted.
+  The pet displays a message while that verification is happening.
 
 ## Known Good Recovery Sequence
 

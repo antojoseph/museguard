@@ -57,6 +57,32 @@ final class ScreenshotCapture {
         )
     }
 
+    func captureFrames(
+        count: Int,
+        intervalNanoseconds: UInt64,
+        maxPixelDimension: Int,
+        compression: CGFloat
+    ) async throws -> [CapturedScreenshot] {
+        let frameCount = max(1, count)
+        var frames: [CapturedScreenshot] = []
+        frames.reserveCapacity(frameCount)
+
+        for index in 0..<frameCount {
+            frames.append(
+                try capture(
+                    maxPixelDimension: maxPixelDimension,
+                    compression: compression
+                )
+            )
+
+            if index < frameCount - 1 {
+                try await Task.sleep(nanoseconds: intervalNanoseconds)
+            }
+        }
+
+        return frames
+    }
+
     private func downscaled(_ image: CGImage, maxPixelDimension: Int) -> CGImage {
         let width = image.width
         let height = image.height

@@ -54,7 +54,31 @@ final class FireworksRiskAnalyzer {
         )
     }
 
-    private func perform(messages: [ChatMessage], model: String, apiKey: String) async throws -> RiskVerdict {
+    func verifyManipulatedMedia(
+        snapshot: ScreenSnapshot,
+        screenshotDataURLs: [String],
+        initialVerdict: RiskVerdict,
+        model: String,
+        apiKey: String
+    ) async throws -> RiskVerdict {
+        try await perform(
+            messages: verificationMessages(
+                for: snapshot,
+                screenshotDataURLs: screenshotDataURLs,
+                initialVerdict: initialVerdict
+            ),
+            model: model,
+            apiKey: apiKey,
+            timeoutInterval: 90
+        )
+    }
+
+    private func perform(
+        messages: [ChatMessage],
+        model: String,
+        apiKey: String,
+        timeoutInterval: TimeInterval = 45
+    ) async throws -> RiskVerdict {
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedKey.isEmpty else {
             throw FireworksRiskAnalyzerError.missingAPIKey
@@ -65,7 +89,7 @@ final class FireworksRiskAnalyzer {
         request.setValue("Bearer \(trimmedKey)", forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.timeoutInterval = 45
+        request.timeoutInterval = timeoutInterval
         request.httpBody = try JSONEncoder().encode(
             ChatCompletionRequest(
                 model: model,
@@ -151,6 +175,46 @@ final class FireworksRiskAnalyzer {
                     """),
                     .imageURL(screenshotDataURL)
                 ]
+            )
+        ]
+    }
+
+    private func verificationMessages(
+        for snapshot: ScreenSnapshot,
+        screenshotDataURLs: [String],
+        initialVerdict: RiskVerdict
+    ) -> [ChatMessage] {
+        let imageParts = screenshotDataURLs.map(ChatMessageContentPart.imageURL)
+
+        return [
+            ChatMessage(
+                role: "system",
+                content: [
+                    .text("""
+                    You are Sentinel Pet running high-detail multi-frame verification after an initial screenshot risk finding. Compare the provided frames in chronological order for manipulated media, deepfake-like cues, impersonation risk, video-call scams, fake login/payment screens, and context-driven social engineering. Be careful: do not claim definitive proof of a deepfake from screenshots alone. Return only JSON with keys risk_level, summary, guidance, categories. risk_level must be one of safe, low, medium, high. Keep summary and guidance concise, and explain whether the multi-frame evidence raises, lowers, or confirms the initial concern.
+                    """)
+                ]
+            ),
+            ChatMessage(
+                role: "user",
+                content: [
+                    .text("""
+                    The first screenshot pass returned a medium/high risk, so the app automatically captured these higher-detail verification frames after the user's screenshot-analysis action.
+
+                    App: \(snapshot.appName)
+                    Window: \(snapshot.windowTitle ?? "unknown")
+
+                    Initial risk level: \(initialVerdict.riskLevel.rawValue)
+                    Initial categories: \(initialVerdict.categories.joined(separator: ", "))
+                    Initial summary: \(initialVerdict.summary)
+                    Initial guidance: \(initialVerdict.guidance)
+
+                    Focused-window text, if available:
+                    \(snapshot.text)
+
+                    Compare the frames for temporal inconsistency, face/eye/mouth artifacts, lighting or reflection mismatches, suspicious call/payment/login context, and pressure tactics.
+                    """)
+                ] + imageParts
             )
         ]
     }

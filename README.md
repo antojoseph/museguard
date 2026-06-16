@@ -33,7 +33,9 @@ link, fall for a scam, etc.).
   can be paused from the menu.
 - ✅ **Milestone 6 — Screenshot/media analysis + logs.** A manual screenshot
   action captures the screen only when requested, sends it to Fireworks as an
-  image part, and logs session verdicts/errors in a scrollable logs window.
+  image part, automatically runs high-detail multi-frame verification for
+  medium/high screenshot findings, and logs session verdicts/errors in a
+  scrollable logs window.
 
 ## Building & running
 
@@ -83,7 +85,7 @@ quit.
 | `PetView` / `PetSprite` | Procedural 8-bit Claude mascot (no image assets) with bob + blink animations. |
 | `SpeechBubbleView` / `PetViewModel` | Mood-aware speech bubble for greetings and interventions. |
 | `AccessibilityPermissionController` / `ScreenReader` | Requests Accessibility trust and reads focused-window text via the Accessibility API. |
-| `ScreenCapturePermissionController` / `ScreenshotCapture` | Checks Screen Recording trust and captures a downscaled manual screenshot for image analysis. |
+| `ScreenCapturePermissionController` / `ScreenshotCapture` | Checks Screen Recording trust, captures a downscaled manual screenshot for image analysis, and captures high-detail verification frames after medium/high screenshot findings. |
 | `FireworksRiskAnalyzer` / `RiskVerdict` | Sends focused-window text to Kimi K2 on Fireworks; parses a structured JSON verdict. |
 | `MonitorLoop` | Debounced continuous sampling, duplicate suppression, and periodic risk checks. |
 | `InterventionEngine` *(planned)* | Turns risk verdicts into pet alerts with guidance. |
@@ -98,19 +100,21 @@ quit.
 4. ✅ Continuous monitor loop wired to interventions.
 5. ✅ Privacy controls: app/window deny list, pause, sensitivity, onboarding/consent.
 6. ✅ Deepfake & media support — manual screenshot analysis sends an explicit
-   image part with optional focused-window context. Continuous monitoring remains
-   text-only.
+   image part with optional focused-window context, then automatically captures
+   high-detail verification frames for medium/high screenshot findings.
+   Continuous monitoring remains text-only.
 7. ⬜ Polish: refined art, edge-snapping, intervention history.
 
 ## Privacy
 
-This app is designed to read on-screen text and optionally send a screenshot to a
+This app is designed to read on-screen text and optionally send screenshots to a
 third-party API, which is inherently sensitive. Today, it sends focused-window
 text when you choose **Analyze focused window**, sends one downscaled screenshot
-only when you choose **Analyze screenshot**, or sends changed focused-window text
-when you explicitly start continuous monitoring after enabling consent in
-Settings. Current safeguards: monitoring consent, a sensitive app/window deny
-list for text-backed contexts, no persistence of raw screen text or screenshots,
-duplicate suppression, visible menu status, one-click pause, and session-only
-judgement logs. Planned safeguards before broader use: client-side redaction of
-obvious secrets and a production secret-storage path.
+when you choose **Analyze screenshot**, automatically sends several high-detail
+verification frames only if that screenshot returns medium/high risk, or sends
+changed focused-window text when you explicitly start continuous monitoring after
+enabling consent in Settings. Current safeguards: monitoring consent, a
+sensitive app/window deny list for text-backed contexts, no persistence of raw
+screen text or screenshots, duplicate suppression, visible menu status, one-click
+pause, and session-only judgement logs. Planned safeguards before broader use:
+client-side redaction of obvious secrets and a production secret-storage path.

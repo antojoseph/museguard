@@ -28,6 +28,10 @@ final class SentinelPetRuntime: ObservableObject {
     private var analyzeTask: Task<Void, Never>?
     private var screenshotTask: Task<Void, Never>?
     private var lastMonitorErrorMessage: String?
+    private let verificationFrameCount = 4
+    private let verificationFrameIntervalNanoseconds: UInt64 = 650_000_000
+    private let verificationMaxPixelDimension = 2_400
+    private let verificationCompression: CGFloat = 0.84
 
     private init() {
         settings = AppSettingsStore.load()
@@ -412,6 +416,16 @@ final class SentinelPetRuntime: ObservableObject {
                 snapshot: snapshot,
                 includesScreenshot: true
             )
+
+            if shouldRunHighDetailVerification(for: verdict) {
+                await runHighDetailVerification(
+                    initialVerdict: verdict,
+                    snapshot: snapshot,
+                    apiKey: apiKey
+                )
+                return
+            }
+
             petViewModel.show(
                 message(for: verdict),
                 mood: mood(for: verdict.riskLevel),
@@ -432,6 +446,67 @@ final class SentinelPetRuntime: ObservableObject {
             )
             petViewModel.show(error.localizedDescription, mood: .alert, clearAfter: 10)
         }
+    }
+
+    private func runHighDetailVerification(
+        initialVerdict: RiskVerdict,
+        snapshot: ScreenSnapshot,
+        apiKey: String
+    ) async {
+        petViewModel.show(
+            "Possible media manipulation or impersonation risk. Running high-detail multi-frame verification...",
+            mood: .scanning
+        )
+
+        do {
+            let frames = try await screenshotCapture.captureFrames(
+                count: verificationFrameCount,
+                intervalNanoseconds: verificationFrameIntervalNanoseconds,
+                maxPixelDimension: verificationMaxPixelDimension,
+                compression: verificationCompression
+            )
+
+            guard !Task.isCancelled else { return }
+            petViewModel.show("Comparing high-detail verification frames...", mood: .scanning)
+
+            let verdict = try await riskAnalyzer.verifyManipulatedMedia(
+                snapshot: snapshot,
+                screenshotDataURLs: frames.map(\.dataURL),
+                initialVerdict: initialVerdict,
+                model: settings.fireworksModel,
+                apiKey: apiKey
+            )
+
+            guard !Task.isCancelled else { return }
+            logVerdict(
+                verdict,
+                source: .screenshotVerification,
+                snapshot: snapshot,
+                includesScreenshot: true
+            )
+            petViewModel.show(
+                verificationMessage(for: verdict),
+                mood: mood(for: verdict.riskLevel),
+                clearAfter: clearDelay(for: verdict.riskLevel)
+            )
+        } catch {
+            guard !Task.isCancelled else { return }
+            logError(
+                error,
+                source: .screenshotVerification,
+                snapshot: snapshot,
+                includesScreenshot: false
+            )
+            petViewModel.show(
+                "High-detail verification failed. \(message(for: initialVerdict))",
+                mood: mood(for: initialVerdict.riskLevel),
+                clearAfter: clearDelay(for: initialVerdict.riskLevel)
+            )
+        }
+    }
+
+    private func shouldRunHighDetailVerification(for verdict: RiskVerdict) -> Bool {
+        verdict.riskLevel == .medium || verdict.riskLevel == .high
     }
 
     private func bestEffortScreenshotContext() -> ScreenSnapshot {
@@ -605,6 +680,10 @@ final class SentinelPetRuntime: ObservableObject {
         }
 
         return "\(prefix) \(verdict.summary) \(verdict.guidance)"
+    }
+
+    private func verificationMessage(for verdict: RiskVerdict) -> String {
+        "Verification: \(message(for: verdict))"
     }
 
     private func mood(for riskLevel: RiskLevel) -> PetMood {
