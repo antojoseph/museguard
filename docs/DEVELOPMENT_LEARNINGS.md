@@ -151,12 +151,29 @@ on launch.
 Current behavior:
 
 - `Start monitoring` requires Accessibility and a Fireworks API key.
+- `Start monitoring` also requires the monitoring consent checkbox in Settings.
 - The loop samples the focused window every 45 seconds.
 - It fingerprints normalized focused-window text and skips duplicate screens.
+- It skips app/window names that match the sensitive deny list before sending
+  text to Fireworks.
 - Safe and low-risk verdicts update status silently.
-- Medium, high, and unknown verdicts show a pet intervention bubble.
+- The sensitivity setting controls which risk levels show a pet intervention
+  bubble.
 - Accessibility or missing-key failures stop the loop.
 - Transient read/model errors are shown once and then de-duplicated.
+
+## Privacy Controls
+
+Current privacy controls are deliberately simple:
+
+- Monitoring consent is required before continuous monitoring starts.
+- Manual and continuous analysis both skip snapshots matching the deny list.
+- Deny-list matching checks the focused app name and focused window title.
+- Sensitivity changes which risk levels interrupt the user:
+  - Low sensitivity: high risk only.
+  - Standard sensitivity: medium, high, and unknown.
+  - High sensitivity: low, medium, high, and unknown.
+- Fireworks API keys are still stored in development preferences, not Keychain.
 
 ## Known Good Recovery Sequence
 

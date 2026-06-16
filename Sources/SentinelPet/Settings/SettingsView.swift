@@ -5,14 +5,17 @@ struct SettingsView: View {
 
     @State private var apiKey = ""
     @State private var model = AppSettings.defaultModel
+    @State private var monitoringConsentGranted = false
+    @State private var alertSensitivity: AlertSensitivity = .standard
+    @State private var deniedAppsText = ""
     @State private var statusMessage: String?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
+        VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 6) {
                 Text("Sentinel Pet Settings")
                     .font(.title2.weight(.semibold))
-                Text("Configure Fireworks analysis. Screen text is sent only when you choose an analysis action.")
+                Text("Configure Fireworks analysis and privacy controls. Continuous monitoring runs only after you explicitly enable consent.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
@@ -35,6 +38,38 @@ struct SettingsView: View {
                     TextField("Fireworks model", text: $model)
                         .textFieldStyle(.roundedBorder)
                 }
+
+                GridRow {
+                    Text("Sensitivity")
+                        .foregroundStyle(.secondary)
+                    Picker("Sensitivity", selection: $alertSensitivity) {
+                        ForEach(AlertSensitivity.allCases) { sensitivity in
+                            Text(sensitivity.label).tag(sensitivity)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                }
+            }
+
+            Toggle(
+                "Allow continuous monitoring to read focused-window text and send changed text to Fireworks",
+                isOn: $monitoringConsentGranted
+            )
+            .toggleStyle(.checkbox)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Sensitive App Deny List")
+                    .font(.headline)
+                Text("One app or window-title keyword per line. Matching windows are skipped before text is sent.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                TextEditor(text: $deniedAppsText)
+                    .font(.system(size: 12, design: .monospaced))
+                    .frame(minHeight: 90)
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
+                    }
             }
 
             HStack {
@@ -59,15 +94,24 @@ struct SettingsView: View {
             }
         }
         .padding(24)
-        .frame(minWidth: 460, minHeight: 300)
+        .frame(minWidth: 560, minHeight: 520)
         .onAppear {
             model = runtime.settings.fireworksModel
+            monitoringConsentGranted = runtime.settings.monitoringConsentGranted
+            alertSensitivity = runtime.settings.alertSensitivity
+            deniedAppsText = runtime.settings.deniedAppNames.joined(separator: "\n")
         }
     }
 
     private func save() {
         do {
-            try runtime.saveFireworksSettings(model: model, apiKey: apiKey)
+            try runtime.saveSettings(
+                model: model,
+                apiKey: apiKey,
+                monitoringConsentGranted: monitoringConsentGranted,
+                alertSensitivity: alertSensitivity,
+                deniedAppNames: parsedDeniedAppNames
+            )
             apiKey = ""
             statusMessage = "Saved"
         } catch {
@@ -83,5 +127,12 @@ struct SettingsView: View {
         } catch {
             statusMessage = error.localizedDescription
         }
+    }
+
+    private var parsedDeniedAppNames: [String] {
+        deniedAppsText
+            .components(separatedBy: CharacterSet.newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
     }
 }

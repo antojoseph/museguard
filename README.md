@@ -28,6 +28,9 @@ link, fall for a scam, etc.).
 - ✅ **Milestone 4 — Continuous monitor loop.** Start monitoring from the menu
   to periodically sample the focused window, skip duplicate text, and surface
   only medium/high/unknown findings through the pet.
+- ✅ **Milestone 5 — Privacy controls.** Settings includes continuous-monitoring
+  consent, alert sensitivity, and a sensitive app/window deny list. Monitoring
+  can be paused from the menu.
 
 ## Building & running
 
@@ -79,7 +82,7 @@ window once, or quit.
 | `FireworksRiskAnalyzer` / `RiskVerdict` | Sends focused-window text to Kimi K2 on Fireworks; parses a structured JSON verdict. |
 | `MonitorLoop` | Debounced continuous sampling, duplicate suppression, and periodic risk checks. |
 | `InterventionEngine` *(planned)* | Turns risk verdicts into pet alerts with guidance. |
-| `SettingsView` / `DevCredentialStore` | Development API key storage and model selection. Keychain, sensitivity, app allow/deny list, and pause are still planned. |
+| `SettingsView` / `DevCredentialStore` | Development API key storage, model selection, consent, sensitivity, and sensitive app/window deny list. |
 
 ## Roadmap
 
@@ -87,7 +90,7 @@ window once, or quit.
 2. ✅ Accessibility screen reader + permission flow.
 3. ✅ Fireworks/Kimi K2 client + development API key settings.
 4. ✅ Continuous monitor loop wired to interventions.
-5. ⬜ Privacy controls: app allow/deny list, pause, sensitivity, onboarding/consent.
+5. ✅ Privacy controls: app/window deny list, pause, sensitivity, onboarding/consent.
 6. ⬜ Deepfake & media support — contextual warnings first; optional
    screenshot/image URL parts later. The current app sends accessible text only.
 7. ⬜ Polish: refined art, edge-snapping, intervention history.
@@ -96,8 +99,9 @@ window once, or quit.
 
 This app is designed to read on-screen text and send it to a third-party API,
 which is inherently sensitive. Today, it only sends focused-window text when you
-choose **Analyze focused window** from the menu. Planned safeguards before any
-continuous monitoring: explicit consent before anything runs, a default
-deny-list for sensitive apps (password managers, banking), no persistence of raw
-screen text, client-side redaction of obvious secrets, a visible scanning
-indicator, and one-click pause.
+choose **Analyze focused window** from the menu, or when you explicitly start
+continuous monitoring after enabling consent in Settings. Current safeguards:
+monitoring consent, a sensitive app/window deny list, no persistence of raw
+screen text, duplicate suppression, visible menu status, and one-click pause.
+Planned safeguards before broader use: client-side redaction of obvious secrets
+and a production secret-storage path.

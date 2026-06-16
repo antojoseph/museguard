@@ -5,6 +5,7 @@ enum MonitorLoopStatus: Equatable {
     case sampling
     case skippedDuplicate
     case skippedOwnApp
+    case skippedDeniedApp(String)
     case analyzing(String)
     case sleeping
 
@@ -18,6 +19,8 @@ enum MonitorLoopStatus: Equatable {
             return "No screen change"
         case .skippedOwnApp:
             return "Waiting for another app"
+        case let .skippedDeniedApp(appName):
+            return "Skipping \(appName)"
         case let .analyzing(appName):
             return "Analyzing \(appName)"
         case .sleeping:
@@ -48,6 +51,7 @@ final class MonitorLoop {
     func start(
         model: String,
         apiKey: String,
+        deniedAppNames: [String],
         intervalSeconds: Double = 45,
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
         onVerdict: @escaping @MainActor (RiskVerdict) -> Void,
@@ -63,6 +67,7 @@ final class MonitorLoop {
                 await self.sampleOnce(
                     model: model,
                     apiKey: apiKey,
+                    deniedAppNames: deniedAppNames,
                     onStatus: onStatus,
                     onVerdict: onVerdict,
                     onError: onError
@@ -83,6 +88,7 @@ final class MonitorLoop {
     private func sampleOnce(
         model: String,
         apiKey: String,
+        deniedAppNames: [String],
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
         onVerdict: @escaping @MainActor (RiskVerdict) -> Void,
         onError: @escaping @MainActor (Error) -> Void
@@ -90,6 +96,12 @@ final class MonitorLoop {
         do {
             onStatus(.sampling)
             let snapshot = try screenReader.readFocusedContext(maxCharacters: 6_000)
+
+            guard !PrivacyFilter.isDenied(snapshot: snapshot, deniedAppNames: deniedAppNames) else {
+                onStatus(.skippedDeniedApp(snapshot.appName))
+                return
+            }
+
             let fingerprint = Self.fingerprint(for: snapshot)
 
             guard fingerprint != lastFingerprint else {

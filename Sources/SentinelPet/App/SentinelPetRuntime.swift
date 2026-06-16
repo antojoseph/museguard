@@ -120,6 +120,16 @@ final class SentinelPetRuntime: ObservableObject {
         refreshAccessibilityStatus()
         refreshFireworksAPIKeyStatus()
 
+        guard settings.monitoringConsentGranted else {
+            petViewModel.show(
+                "Open Settings and enable monitoring consent before I watch continuously.",
+                mood: .scanning,
+                clearAfter: 8
+            )
+            showSettings()
+            return
+        }
+
         guard accessibilityTrusted else {
             showAccessibilityRequiredMessage()
             return
@@ -150,6 +160,7 @@ final class SentinelPetRuntime: ObservableObject {
         monitorLoop.start(
             model: settings.fireworksModel,
             apiKey: apiKey,
+            deniedAppNames: settings.deniedAppNames,
             onStatus: { [weak self] status in
                 self?.handleMonitorStatus(status)
             },
@@ -185,10 +196,21 @@ final class SentinelPetRuntime: ObservableObject {
         settingsWindowController.show(runtime: self)
     }
 
-    func saveFireworksSettings(model: String, apiKey: String) throws {
+    func saveSettings(
+        model: String,
+        apiKey: String,
+        monitoringConsentGranted: Bool,
+        alertSensitivity: AlertSensitivity,
+        deniedAppNames: [String]
+    ) throws {
         let trimmedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
         settings = AppSettings(
-            fireworksModel: trimmedModel.isEmpty ? AppSettings.defaultModel : trimmedModel
+            fireworksModel: trimmedModel.isEmpty ? AppSettings.defaultModel : trimmedModel,
+            monitoringConsentGranted: monitoringConsentGranted,
+            alertSensitivity: alertSensitivity,
+            deniedAppNames: deniedAppNames
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
         )
         AppSettingsStore.save(settings)
 
@@ -227,6 +249,11 @@ final class SentinelPetRuntime: ObservableObject {
     private func runFocusedAnalysis() async {
         do {
             let snapshot = try screenReader.readFocusedContext()
+            guard !isDeniedByPrivacySettings(snapshot) else {
+                showDeniedAppMessage(snapshot.appName)
+                return
+            }
+
             guard let apiKey = DevCredentialStore.readFireworksAPIKey() else {
                 refreshFireworksAPIKeyStatus()
                 throw FireworksRiskAnalyzerError.missingAPIKey
@@ -270,16 +297,15 @@ final class SentinelPetRuntime: ObservableObject {
     private func handleMonitorVerdict(_ verdict: RiskVerdict) {
         monitorStatus = "Last check: \(verdict.riskLevel.rawValue)"
 
-        switch verdict.riskLevel {
-        case .safe, .low:
+        guard settings.alertSensitivity.shouldInterrupt(for: verdict.riskLevel) else {
             return
-        case .medium, .high, .unknown:
-            petViewModel.show(
-                message(for: verdict),
-                mood: mood(for: verdict.riskLevel),
-                clearAfter: clearDelay(for: verdict.riskLevel)
-            )
         }
+
+        petViewModel.show(
+            message(for: verdict),
+            mood: mood(for: verdict.riskLevel),
+            clearAfter: clearDelay(for: verdict.riskLevel)
+        )
     }
 
     private func handleMonitorError(_ error: Error) {
@@ -307,6 +333,18 @@ final class SentinelPetRuntime: ObservableObject {
         default:
             return false
         }
+    }
+
+    private func isDeniedByPrivacySettings(_ snapshot: ScreenSnapshot) -> Bool {
+        PrivacyFilter.isDenied(snapshot: snapshot, deniedAppNames: settings.deniedAppNames)
+    }
+
+    private func showDeniedAppMessage(_ appName: String) {
+        petViewModel.show(
+            "I skipped \(appName) because it matches your sensitive-app deny list.",
+            mood: .idle,
+            clearAfter: 7
+        )
     }
 
     private func message(for verdict: RiskVerdict) -> String {
