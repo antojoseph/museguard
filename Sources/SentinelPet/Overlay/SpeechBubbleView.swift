@@ -11,9 +11,10 @@ struct SpeechBubbleView: View {
 
     var body: some View {
         let style = BubbleStyle(mood: mood)
+        let shouldScroll = shouldScroll(style: style)
 
         ZStack(alignment: .topTrailing) {
-            messageContent(style: style)
+            messageContent(style: style, shouldScroll: shouldScroll)
                 .padding(.trailing, isDismissible ? 20 : 0)
 
             if isDismissible {
@@ -31,7 +32,7 @@ struct SpeechBubbleView: View {
             .padding(.horizontal, style.horizontalPadding)
             .padding(.vertical, style.verticalPadding)
             .frame(maxWidth: style.maxWidth, alignment: .leading)
-            .frame(maxHeight: style.maxHeight, alignment: .topLeading)
+            .fixedSize(horizontal: false, vertical: true)
             .background {
                 ZStack {
                     RoundedRectangle(cornerRadius: style.cornerRadius, style: .continuous)
@@ -48,8 +49,8 @@ struct SpeechBubbleView: View {
     }
 
     @ViewBuilder
-    private func messageContent(style: BubbleStyle) -> some View {
-        if style.scrolls {
+    private func messageContent(style: BubbleStyle, shouldScroll: Bool) -> some View {
+        if shouldScroll {
             ScrollView {
                 messageText(style: style)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -60,6 +61,14 @@ struct SpeechBubbleView: View {
                 .lineLimit(style.lineLimit)
                 .fixedSize(horizontal: false, vertical: true)
         }
+    }
+
+    private func shouldScroll(style: BubbleStyle) -> Bool {
+        guard style.scrolls else { return false }
+
+        let explicitLineCount = text.components(separatedBy: .newlines).count
+        return text.count > style.scrollCharacterThreshold
+            || explicitLineCount > style.scrollLineThreshold
     }
 
     private func messageText(style: BubbleStyle) -> some View {
@@ -83,6 +92,8 @@ private struct BubbleStyle {
     let fontWeight: Font.Weight
     let lineLimit: Int?
     let scrolls: Bool
+    let scrollCharacterThreshold: Int
+    let scrollLineThreshold: Int
     let fillColor: Color
     let borderColor: Color
     let textColor: Color
@@ -103,6 +114,8 @@ private struct BubbleStyle {
             fontWeight = .medium
             lineLimit = 3
             scrolls = false
+            scrollCharacterThreshold = 120
+            scrollLineThreshold = 3
             fillColor = Color.green.opacity(0.12)
             borderColor = Color.green.opacity(0.45)
             textColor = .primary
@@ -120,6 +133,8 @@ private struct BubbleStyle {
             fontWeight = .medium
             lineLimit = nil
             scrolls = true
+            scrollCharacterThreshold = 220
+            scrollLineThreshold = 7
             fillColor = Color.blue.opacity(0.13)
             borderColor = Color.blue.opacity(0.55)
             textColor = .primary
@@ -137,6 +152,8 @@ private struct BubbleStyle {
             fontWeight = .semibold
             lineLimit = nil
             scrolls = true
+            scrollCharacterThreshold = 260
+            scrollLineThreshold = 8
             fillColor = Color.red.opacity(0.14)
             borderColor = Color.red.opacity(0.7)
             textColor = .primary

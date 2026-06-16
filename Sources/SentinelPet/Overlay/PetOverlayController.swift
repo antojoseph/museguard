@@ -85,20 +85,76 @@ private final class PetHostingView: NSHostingView<PetRootView> {
             return [petHitRect, bubbleHitRect(for: .alert)]
         }
 
-        guard viewModel.bubbleText != nil else {
+        guard let bubbleText = viewModel.bubbleText else {
             return [petHitRect]
         }
-        return [petHitRect, bubbleHitRect(for: viewModel.bubbleMood)]
+        return [petHitRect, bubbleHitRect(for: viewModel.bubbleMood, text: bubbleText)]
     }
 
     private func bubbleHitRect(for mood: PetMood) -> NSRect {
+        bubbleHitRect(for: mood, text: nil)
+    }
+
+    private func bubbleHitRect(for mood: PetMood, text: String?) -> NSRect {
+        let width = bubbleWidth(for: mood, text: text)
+        let height = bubbleHeight(for: mood, width: width, text: text)
+        return NSRect(x: 352 - width, y: 116, width: width, height: height)
+    }
+
+    private func bubbleWidth(for mood: PetMood, text: String?) -> CGFloat {
+        let maxWidth: CGFloat
+        let minWidth: CGFloat
+
         switch mood {
         case .idle:
-            return NSRect(x: 132, y: 116, width: 220, height: 96)
+            maxWidth = 220
+            minWidth = 150
         case .scanning:
-            return NSRect(x: 60, y: 116, width: 292, height: 184)
+            maxWidth = 292
+            minWidth = 180
         case .alert:
-            return NSRect(x: 16, y: 116, width: 336, height: 296)
+            maxWidth = 336
+            minWidth = 210
         }
+
+        guard let text else { return maxWidth }
+
+        let longestLine = text
+            .components(separatedBy: .newlines)
+            .map(\.count)
+            .max() ?? 0
+        let estimatedWidth = CGFloat(longestLine) * 7.2 + 46
+        return min(max(estimatedWidth, minWidth), maxWidth)
+    }
+
+    private func bubbleHeight(for mood: PetMood, width: CGFloat, text: String?) -> CGFloat {
+        let maxHeight: CGFloat
+        let minHeight: CGFloat
+        let verticalPadding: CGFloat
+
+        switch mood {
+        case .idle:
+            maxHeight = 96
+            minHeight = 42
+            verticalPadding = 16
+        case .scanning:
+            maxHeight = 184
+            minHeight = 48
+            verticalPadding = 20
+        case .alert:
+            maxHeight = 296
+            minHeight = 54
+            verticalPadding = 22
+        }
+
+        guard let text else { return maxHeight }
+
+        let charactersPerLine = max(18, Int((width - 44) / 7.2))
+        let estimatedLines = text
+            .components(separatedBy: .newlines)
+            .map { max(1, Int(ceil(Double($0.count) / Double(charactersPerLine)))) }
+            .reduce(0, +)
+        let estimatedHeight = CGFloat(estimatedLines) * 18 + verticalPadding
+        return min(max(estimatedHeight, minHeight), maxHeight)
     }
 }
