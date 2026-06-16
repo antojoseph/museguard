@@ -284,7 +284,7 @@ final class SentinelPetRuntime: ObservableObject {
     }
 
     func openPetChat() {
-        petViewModel.openChat()
+        petViewModel.openChat(seedText: expandedWhyText())
     }
 
     func dismissPetBubble() {
@@ -773,6 +773,36 @@ final class SentinelPetRuntime: ObservableObject {
         }
 
         return "Reason: \(String(sentence.prefix(64)))."
+    }
+
+    private func expandedWhyText() -> String? {
+        guard let context = latestChatContext,
+              shouldExpandWhy(for: context.riskLevel) else {
+            return nil
+        }
+
+        let categories = context.categories
+            .map { $0.replacingOccurrences(of: "_", with: " ") }
+            .filter { !$0.isEmpty }
+            .joined(separator: ", ")
+        let reasonLine = categories.isEmpty ? "" : "\nSignals: \(categories)"
+
+        return """
+        Why I flagged it:
+        \(context.summary)\(reasonLine)
+
+        What to do:
+        \(context.guidance)
+        """
+    }
+
+    private func shouldExpandWhy(for riskLevel: RiskLevel) -> Bool {
+        switch riskLevel {
+        case .medium, .high, .unknown:
+            return true
+        case .safe, .low:
+            return false
+        }
     }
 
     private func mood(for riskLevel: RiskLevel) -> PetMood {

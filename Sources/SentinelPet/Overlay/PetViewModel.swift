@@ -72,10 +72,12 @@ final class PetViewModel: ObservableObject {
         }
     }
 
-    func openChat() {
+    func openChat(seedText: String? = nil) {
         clearTask?.cancel()
 
-        if chatMessages.isEmpty, let bubbleText {
+        if chatMessages.isEmpty, let seedText {
+            chatMessages.append(PetChatMessage(role: .assistant, text: seedText))
+        } else if chatMessages.isEmpty, let bubbleText {
             chatMessages.append(
                 PetChatMessage(
                     role: .assistant,
