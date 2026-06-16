@@ -23,7 +23,7 @@ struct SettingsView: View {
                     Text("API Key")
                         .foregroundStyle(.secondary)
                     SecureField(
-                        runtime.hasFireworksAPIKey ? "Saved in Keychain" : "Fireworks API key",
+                        runtime.hasFireworksAPIKey ? "Saved in dev preferences" : "Fireworks API key",
                         text: $apiKey
                     )
                     .textFieldStyle(.roundedBorder)

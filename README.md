@@ -21,9 +21,10 @@ link, fall for a scam, etc.).
   window's accessible text. Continuous monitoring and remote analysis are still
   planned.
 - ✅ **Milestone 3 — Fireworks/Kimi settings + manual risk analysis.** Settings
-  stores the Fireworks API key in Keychain, lets you choose the model, and can
-  send the currently focused window's text to Fireworks for a JSON risk verdict.
-  Continuous monitoring is still planned.
+  stores the Fireworks API key in development preferences for now, lets you
+  choose the model, and can send the currently focused window's text to
+  Fireworks for a JSON risk verdict. Continuous monitoring and production-grade
+  secret storage are still planned.
 
 ## Building & running
 
@@ -60,13 +61,13 @@ window once, or quit.
 | `FireworksRiskAnalyzer` / `RiskVerdict` | Sends focused-window text to Kimi K2 on Fireworks; parses a structured JSON verdict. |
 | `MonitorLoop` *(planned)* | Debounced continuous sampling, de-duplication, rate limiting. |
 | `InterventionEngine` *(planned)* | Turns risk verdicts into pet alerts with guidance. |
-| `SettingsView` / `KeychainStore` | API key in Keychain and model selection. Sensitivity, app allow/deny list, and pause are still planned. |
+| `SettingsView` / `DevCredentialStore` | Development API key storage and model selection. Keychain, sensitivity, app allow/deny list, and pause are still planned. |
 
 ## Roadmap
 
 1. ✅ Scaffold + animated pet overlay.
 2. ✅ Accessibility screen reader + permission flow.
-3. ✅ Fireworks/Kimi K2 client + Keychain-stored API key + settings.
+3. ✅ Fireworks/Kimi K2 client + development API key settings.
 4. ⬜ Continuous monitor loop wired to interventions.
 5. ⬜ Privacy controls: app allow/deny list, pause, sensitivity, onboarding/consent.
 6. ⬜ Deepfake & media support — contextual warnings first; optional

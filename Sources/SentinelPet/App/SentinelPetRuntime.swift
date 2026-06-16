@@ -20,7 +20,7 @@ final class SentinelPetRuntime: ObservableObject {
     private init() {
         settings = AppSettingsStore.load()
         accessibilityTrusted = AccessibilityPermissionController.isTrusted
-        hasFireworksAPIKey = KeychainStore.hasFireworksAPIKey()
+        hasFireworksAPIKey = DevCredentialStore.hasFireworksAPIKey()
     }
 
     func refreshAccessibilityStatus() {
@@ -114,7 +114,7 @@ final class SentinelPetRuntime: ObservableObject {
 
         let trimmedKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmedKey.isEmpty {
-            try KeychainStore.saveFireworksAPIKey(trimmedKey)
+            DevCredentialStore.saveFireworksAPIKey(trimmedKey)
         }
 
         refreshFireworksAPIKeyStatus()
@@ -122,13 +122,13 @@ final class SentinelPetRuntime: ObservableObject {
     }
 
     func deleteFireworksAPIKey() throws {
-        try KeychainStore.deleteFireworksAPIKey()
+        DevCredentialStore.deleteFireworksAPIKey()
         refreshFireworksAPIKeyStatus()
         petViewModel.show("Fireworks API key deleted.", mood: .idle, clearAfter: 4)
     }
 
     func refreshFireworksAPIKeyStatus() {
-        hasFireworksAPIKey = KeychainStore.hasFireworksAPIKey()
+        hasFireworksAPIKey = DevCredentialStore.hasFireworksAPIKey()
     }
 
     private func showAccessibilityRequiredMessage() {
@@ -142,7 +142,7 @@ final class SentinelPetRuntime: ObservableObject {
     private func runFocusedAnalysis() async {
         do {
             let snapshot = try screenReader.readFocusedContext()
-            guard let apiKey = try KeychainStore.readFireworksAPIKey() else {
+            guard let apiKey = DevCredentialStore.readFireworksAPIKey() else {
                 refreshFireworksAPIKeyStatus()
                 throw FireworksRiskAnalyzerError.missingAPIKey
             }
