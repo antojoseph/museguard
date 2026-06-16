@@ -5,12 +5,16 @@ import SwiftUI
 @MainActor
 final class PetOverlayController {
     private var panel: PetPanel?
-    private let viewModel = PetViewModel()
+    private let viewModel: PetViewModel
     private var moveObserver: NSObjectProtocol?
 
     /// Total content size: enough vertical room for a speech bubble above the
     /// pet, which sits anchored at the bottom-trailing corner.
     private let contentSize = NSSize(width: 236, height: 256)
+
+    init(viewModel: PetViewModel) {
+        self.viewModel = viewModel
+    }
 
     func show() {
         let hosting = PetHostingView(

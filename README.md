@@ -16,6 +16,10 @@ link, fall for a scam, etc.).
   animated pixel-art pet that floats over your other windows, runs as a
   menu-bar agent (no Dock icon), remembers its position, and shows speech
   bubbles. Everything after this is wiring.
+- ✅ **Milestone 2 — Accessibility reader + permission flow.** Menu-bar actions
+  can request Accessibility access and run a one-shot local read of the focused
+  window's accessible text. Continuous monitoring and remote analysis are still
+  planned.
 
 ## Building & running
 
@@ -37,7 +41,8 @@ open SentinelPet.xcodeproj
 Requirements: macOS 13+ and Xcode 15+.
 
 When you run it, the pet appears in the bottom-right corner and greets you.
-Drag it anywhere; it remembers where you put it. Quit from the 🛡️ menu-bar item.
+Drag it anywhere; it remembers where you put it. Use the 🛡️ menu-bar item to
+request Accessibility access, read the focused window once, or quit.
 
 ## Architecture (target design)
 
@@ -46,7 +51,7 @@ Drag it anywhere; it remembers where you put it. Quit from the 🛡️ menu-bar 
 | `PetPanel` / `PetOverlayController` | Borderless floating panel hosting the pet; dragging + position persistence. |
 | `PetView` / `PetSprite` | Procedural 8-bit Claude mascot (no image assets) with bob + blink animations. |
 | `SpeechBubbleView` / `PetViewModel` | Mood-aware speech bubble for greetings and interventions. |
-| `ScreenReader` *(planned)* | Reads focused-window text via the Accessibility API. |
+| `AccessibilityPermissionController` / `ScreenReader` | Requests Accessibility trust and reads focused-window text via the Accessibility API. |
 | `RiskAnalyzer` *(planned)* | Sends text to Kimi K2 on Fireworks; parses a structured JSON verdict. |
 | `MonitorLoop` *(planned)* | Debounced continuous sampling, de-duplication, rate limiting. |
 | `InterventionEngine` *(planned)* | Turns risk verdicts into pet alerts with guidance. |
@@ -55,7 +60,7 @@ Drag it anywhere; it remembers where you put it. Quit from the 🛡️ menu-bar 
 ## Roadmap
 
 1. ✅ Scaffold + animated pet overlay.
-2. ⬜ Accessibility screen reader + permission flow.
+2. ✅ Accessibility screen reader + permission flow.
 3. ⬜ Fireworks/Kimi K2 client + Keychain-stored API key + settings.
 4. ⬜ Continuous monitor loop wired to interventions.
 5. ⬜ Privacy controls: app allow/deny list, pause, sensitivity, onboarding/consent.

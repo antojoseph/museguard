@@ -4,9 +4,27 @@ import AppKit
 /// Contents of the menu-bar dropdown. Most items are placeholders for now and
 /// get wired up in later milestones (monitoring, settings, privacy controls).
 struct MenuBarContent: View {
+    @ObservedObject var runtime: SentinelPetRuntime = .shared
+
     var body: some View {
         Text("Sentinel Pet")
             .font(.headline)
+
+        Label(
+            runtime.accessibilityTrusted ? "Accessibility enabled" : "Accessibility required",
+            systemImage: runtime.accessibilityTrusted ? "checkmark.shield" : "exclamationmark.triangle"
+        )
+
+        Button(runtime.accessibilityTrusted ? "Check accessibility access" : "Enable accessibility access") {
+            runtime.requestAccessibilityPermission()
+        }
+
+        Button("Read focused window") {
+            runtime.scanFocusedContext()
+        }
+        .disabled(!runtime.accessibilityTrusted)
+
+        Divider()
 
         Button("Pause monitoring") {}
             .disabled(true)
