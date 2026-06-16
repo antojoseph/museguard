@@ -28,6 +28,18 @@ link, fall for a scam, etc.).
 
 ## Building & running
 
+For local development, use the stable app bundle runner:
+
+```sh
+./run-dev.sh
+```
+
+It launches `build/Run/SentinelPet.app`. For Accessibility permissions during
+development, add that exact app path in System Settings. The dev runner signs
+with the first available Apple Development identity so Accessibility permissions
+survive rebuilds. If no development identity is available, it falls back to
+ad-hoc signing and you may need to re-grant Accessibility after rebuilds.
+
 The Xcode project is generated from `project.yml` using
 [XcodeGen](https://github.com/yonyz/XcodeGen) so the repo stays clean and
 diff-friendly.
