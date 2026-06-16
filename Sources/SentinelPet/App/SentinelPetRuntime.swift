@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 
 /// Shared app coordinator for menu actions, permissions, and pet feedback.
@@ -42,6 +43,13 @@ final class SentinelPetRuntime: ObservableObject {
                 clearAfter: 10
             )
         }
+    }
+
+    func openAccessibilitySettings() {
+        guard let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        ) else { return }
+        NSWorkspace.shared.open(url)
     }
 
     func scanFocusedContext() {

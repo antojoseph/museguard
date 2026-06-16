@@ -24,6 +24,10 @@ struct MenuBarContent: View {
             runtime.requestAccessibilityPermission()
         }
 
+        Button("Open Accessibility Settings") {
+            runtime.openAccessibilitySettings()
+        }
+
         Button("Read focused window") {
             runtime.scanFocusedContext()
         }
