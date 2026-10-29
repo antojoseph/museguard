@@ -216,6 +216,11 @@ head = smooth(80, 114, z)
 # Keep the pelvis on the torso and blend the upper legs gradually. A hard
 # left/right split makes adjacent crotch triangles fold inside-out in a stride.
 feet = 1 - smooth(12, 31, z)
+# The rear pelvis belongs to the body, not the bending thigh. Height-only
+# weights gave this deep rear volume a long hip lever arm and made it hang
+# below the butt like a flap when a climbing foot lifted. Keep the low paws
+# and front thighs articulated while anchoring the rounded rear shell.
+feet *= 1 - smooth(8, 18, z)*smooth(6, 20, y)
 leg_side = smooth(-8, 8, x)
 # Twelve weights: torso, head, shoulders, hips, wrists, knees and ankles. The shoulder
 # ends blend back into the torso; the separated lower arm keeps its volume.
@@ -268,7 +273,7 @@ with DEST.open('wb') as f:
 metadata = dict(source=str(SOURCE.relative_to(ROOT)), source_sha256=hashlib.sha256(SOURCE.read_bytes()).hexdigest(),
     creator='MadDog2125', source_url='https://makerworld.com/en/models/3441016-meta-muse-jolly',
     license='CC BY-NC-SA 4.0', license_url='https://creativecommons.org/licenses/by-nc-sa/4.0/',
-    modifications='Separated fused underarms for articulation; rebuilt both arms as continuous curved plush limbs with broad forearms, rounded ends and a subtle fused thumb; broad wrist blending removes the separate mitten cuff. Uniform volumetric surface reconstruction, Taubin relaxation and Loop subdivision; shallow convex face panel replacing the deep printable recess, with smooth button eyes and smile refitted to facial landmarks; elliptical torso fairing with two broad rounded plush cheeks with a soft central fold, blending continuously into the torso and upper thighs, plus a separate small round torso-weighted plush tail. Broader neck skinning. Smooth normals, facial material regions, twelve-bone deformation rig with articulated hips, knees and ankles, 0.82 scale, coordinate rotation and Unreal winding.',
+    modifications='Separated fused underarms for articulation; rebuilt both arms as continuous curved plush limbs with broad forearms, rounded ends and a subtle fused thumb; broad wrist blending removes the separate mitten cuff. Uniform volumetric surface reconstruction, Taubin relaxation and Loop subdivision; shallow convex face panel replacing the deep printable recess, with smooth button eyes and smile refitted to facial landmarks; elliptical torso fairing with two broad rounded plush cheeks with a soft central fold, blending continuously into the torso and upper thighs, plus a separate small round torso-weighted plush tail. Broader neck skinning. Smooth normals, facial material regions, twelve-bone deformation rig with rear pelvis anchored to the torso and articulated front thighs, hips, knees and paws, 0.82 scale, coordinate rotation and Unreal winding.',
     source_triangles=len(original.faces), vertices=len(v), triangles=len(m.faces), closed_parts=7, articulated_body_parts=3, voxel_pitch=.85, volume_smoothing_sigma=[3.0,1.8,1.8], smoothing_iterations=48, subdivision_levels=1, bones=['torso','head','left_shoulder','right_shoulder','left_hip','right_hip','left_wrist','right_wrist','left_knee','right_knee','left_ankle','right_ankle'],
     pivots=[[0,0,0],[0,0,78],[0,-31.16,65.6],[0,31.16,65.6],[0,-16.4,22],[0,16.4,22],[4.92,-39.36,36.9],[4.92,39.36,36.9],[0,-16.4,11],[0,16.4,11],[0,-16.4,3],[0,16.4,3]])
 metadata['tail']=dict(center=(tail_center@transform.T*.82).tolist(),radius=tail_radius*.82,

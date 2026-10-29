@@ -14,6 +14,8 @@ def read(fmt):
     result=struct.unpack_from(fmt,b,offset); offset+=struct.calcsize(fmt); return result
 assert read('<III')==(0x4D55534B,3,3)
 triangles=0
+rear_pelvis=0
+paws=0
 bounds=[[float('inf')]*3,[-float('inf')]*3]
 for section in range(3):
     count,indices,*color=read('<II3f')
@@ -25,6 +27,14 @@ for section in range(3):
         assert abs(sum(w for w in v[6:])-1)<1e-5
         assert all(-1e-6<=w<=1.000001 for w in v[6:])
         assert abs(sum(n*n for n in v[3:6])-1)<1e-4
+        if section==0:
+            legs=sum(v[6+i] for i in [4,5,8,9,10,11])
+            if v[0]<-18 and 15<v[2]<26:
+                assert legs<.001, 'Rear pelvis follows a bending thigh and can form a hanging flap'
+                rear_pelvis+=1
+            if v[2]<6:
+                assert legs>.99, 'Anchoring the rump must not freeze the paws'
+                paws+=1
         for i in range(3): bounds[0][i]=min(bounds[0][i],v[i]);bounds[1][i]=max(bounds[1][i],v[i])
     idx=read(f'<{indices}I')
     assert min(idx)>=0 and max(idx)<count
@@ -34,6 +44,7 @@ for section in range(3):
         edges.update([tuple(sorted((va,vb))),tuple(sorted((vb,vc))),tuple(sorted((vc,va)))])
     assert all(count==2 for count in edges.values()), f'Open or non-manifold section {section}'
     triangles+=indices//3
+assert rear_pelvis>100 and paws>100
 assert offset==len(b), 'Trailing or incorrectly counted mesh data'
 assert triangles==meta['triangles']
 assert meta['source_triangles']==struct.unpack_from('<I',source.read_bytes(),80)[0]

@@ -904,7 +904,7 @@ void AMuseGuardian::Tick(float DeltaTime) {
         } else if(Climbing&&!ReduceMotion) {
             const float Step=ClimbCycle+I*PI;
             const float Grip=Ease(0,.08f,Phase)*(1-Ease(.92f,1,Phase));
-            AnkleTarget=FMath::Lerp(FVector(0,Side*16.4f,3),FVector(7.f,Side*17.f,7.f+4.f*FMath::Max(0.f,-FMath::Sin(Step))),Grip);
+            AnkleTarget=FMath::Lerp(FVector(0,Side*16.4f,3),FVector(12.f,Side*17.f,14.f+4.f*FMath::Max(0.f,-FMath::Sin(Step))),Grip);
             FootRotation=FRotator(-12.f*Grip,0,0).Quaternion();
         } else if(SleepAmount>.001f) {
             const float StepLift=ReduceMotion?0:8.f*FMath::Sin(PI*FMath::Clamp((SleepAmount-(I==0?.10f:.20f))/.20f,0.f,1.f))*(1-SleepLie);
