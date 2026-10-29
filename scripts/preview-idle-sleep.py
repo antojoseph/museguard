@@ -49,7 +49,7 @@ try:
     writer=imageio_ffmpeg.write_frames(str(out/'muse-sleep.mp4'),(640,640),fps=30,codec='libx264',quality=9,output_params=['-movflags','+faststart'])
     writer.send(None)
     timeline=[('idle','guard',2.,1),('stretch','guard',3.,1),('drowsy','guard',2.,1),('sleep','guard',12.,1),('wake','guard',1.3,1),('notice','guard',.36,1),('jump','guard',.86,1),('land','guard',.32,1),('stop','guard',1.5,1),('idle','guard',1.,1),('sleep','guard',1.4,1),('wake','guard',1.1,1),('idle','guard',1.,1)]
-    motion_samples=[];milestones={}
+    motion_samples=[];milestones={};sleep_contacts={}
     last_seen=-1
     for index,(state,accessory,duration,direction) in enumerate(timeline):
         start=time.monotonic();last_heartbeat=start;seqs=[];times=[]
@@ -67,6 +67,11 @@ try:
             if (bridge/'motion.json').exists():
                 motion=json.loads((bridge/'motion.json').read_text())
                 motion_samples.append(dict(motion,frame=seq))
+                if motion['state']=='sleep' and motion['sleepAmount']>0:
+                    for target in (.15,.3,.5,.7,.9):
+                        difference=abs(motion['sleepAmount']-target)
+                        if target not in sleep_contacts or difference<sleep_contacts[target][0]:
+                            sleep_contacts[target]=(difference,im.copy())
                 targets={'notice':('crouch',.60),'jump':('apex',.50),'land':('landing',.50),'sleep':('face-down',.85),'stretch':('stretch',.5)}
                 if motion['state'] in targets:
                     name,phase=targets[motion['state']]
@@ -86,6 +91,7 @@ try:
         if duration>1: assert fps>=24, f'Renderer cadence too low in {state}: {fps:.1f} fps'
     writer.close();writer=None
     for name,(_,im) in milestones.items(): im.save(out/f'jump-{name}.png')
+    for amount,(_,im) in sleep_contacts.items(): im.save(out/f'sleep-contact-{amount:.2f}.png')
     (out/'sleep-motion.json').write_text(json.dumps(motion_samples,indent=2)+'\n')
     sleeping=[m for m in motion_samples if m['state']=='sleep' and m['sleepAmount']>.99]
     assert len(sleeping)>40
@@ -99,6 +105,13 @@ try:
     assert all(-2 < m['bellyMattressClearance'] < 1 for m in sleeping)
     assert all(60 < m['restingBodyTop'] < 90 for m in sleeping), 'Upright body depth became a tall hump'
     assert all(26 < m['restingFootLow'] < 29 for m in sleeping), 'Tucked feet lost mattress contact'
+    # Check actual transformed sole vertices during the whole bed transition,
+    # including entry and waking, rather than only the final sleeping pose.
+    contact=[m for m in motion_samples if m.get('bedScale',0)>.5 and m['sleepAmount']>.001]
+    assert len(contact)>60
+    for side in ('left','right'):
+        clearance=[m[f'{side}FootMattressClearance'] for m in contact if m[f'{side}FootMattressClearance']<1.e8]
+        assert clearance and min(clearance)>=.25, f'{side} foot entered the mattress: {min(clearance):.2f} cm'
     assert any(m.get('yawn',0)>.95 and m['sleepAmount']==0 for m in motion_samples)
     assert all(m.get('furTufts',0)==40000 for m in motion_samples)
     assert all(abs(m['bodyPitch']+90)<.01 and m['eyeClosure']>.99 for m in sleeping)

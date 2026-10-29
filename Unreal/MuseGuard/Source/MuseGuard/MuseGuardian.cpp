@@ -281,6 +281,29 @@ void AMuseGuardian::AnimateMesh(float Blink, float Talk) {
                 auto& P=Section.Positions[V];
                 if(P.X>26.5) P.X=FMath::Lerp(P.X,26.5+.5*FMath::Tanh((P.X-26.5)/.5),double(Weight));
             }
+            // Keep both soles above the actual moving mattress through the
+            // step-up, prone blend and wake. Contact follows bed space, rather
+            // than assuming the final -90 degree body orientation.
+            if(SleepAmount>.001f&&Bed) {
+                const FTransform BedPose=Bed->GetRelativeTransform();
+                const double Surface=BedPose.TransformPosition(FVector(0,0,27)).Z;
+                for(int V=0;V<Section.Rest.Num();++V) {
+                    const auto& R=Section.Rest[V];
+                    if(R.SleepGroup!=0||R.Position.Z>=30) continue;
+                    auto& P=Section.Positions[V];
+                    FVector World=SleepRoot.TransformPosition(P);
+                    const FVector OnBed=BedPose.InverseTransformPosition(World);
+                    const double Support=(1-FMath::SmoothStep(22.f,30.f,float(R.Position.Z)))
+                        *(1-FMath::SmoothStep(70.f,75.f,float(FMath::Abs(OnBed.X))))
+                        *(1-FMath::SmoothStep(35.f,40.f,float(FMath::Abs(OnBed.Y))));
+                    // A rounded floor preserves the plush sole shape and
+                    // leaves room for its short fibers without a hard snap.
+                    const double Gap=World.Z-(Surface+.35);
+                    const double Lift=.5*(FMath::Sqrt(Gap*Gap+.04)-Gap)*Support;
+                    World.Z+=Lift;
+                    P=SleepRoot.InverseTransformPosition(World);
+                }
+            }
             // Recompute the body/joint normals after bending. Rotating rest
             // normals alone leaves triangular highlights across blended caps.
             for(auto& N:Section.Normals) N=FVector::ZeroVector;
@@ -727,8 +750,9 @@ void AMuseGuardian::Tick(float DeltaTime) {
     SleepAmount=ReduceMotion?(Sleeping?1.f:0.f):FMath::FInterpConstantTo(SleepAmount,BedReady?1.f:0.f,DeltaTime,BedReady?.23f:1.4f);
     if(DesktopScene) SleepAmount=0;
     const float SleepLie=FMath::SmoothStep(.44f,.96f,SleepAmount);
-    const float BedStep=FMath::SmoothStep(.12f,.38f,SleepAmount);
     const float BedAppear=FMath::SmoothStep(0.f, Sleeping?.18f:.40f,SleepAmount);
+    // Rise with the conjured mattress: top 27 * scale, minus its 12cm drop.
+    const float StepHeight=FMath::Max(0.f,39.f*BedAppear-12.f);
     const FVector RumpGoal=(Walking&&!ReduceMotion)?FVector(.35f*FMath::Sin(2*WalkCycle),1.2f*FMath::Sin(WalkCycle),.65f*FMath::Sin(2*WalkCycle-.4f)):FVector::ZeroVector;
     if(ReduceMotion||SleepAmount>.01f) { RumpOffset=FVector::ZeroVector;RumpVelocity=FVector::ZeroVector; }
     else {
@@ -811,7 +835,7 @@ void AMuseGuardian::Tick(float DeltaTime) {
     }
     Pitch-=Yawn*3.f;Location.Z+=Yawn*.5f;
     if(SleepAmount>0) {
-        const FVector BedPose(-50.f*SleepLie,0,27.f*BedStep+27.f*SleepLie+7.f*FMath::Sin(PI*SleepLie)+SleepLie*Breathe*.35f);
+        const FVector BedPose(-50.f*SleepLie,0,StepHeight+27.f*SleepLie+7.f*FMath::Sin(PI*SleepLie)+SleepLie*Breathe*.35f);
         Location=FMath::Lerp(Location,BedPose,FMath::Min(1.f,SleepAmount*8));
         Pitch=FMath::Lerp(Pitch,-90.f,SleepLie);Yaw*=1-SleepLie;Roll*=1-SleepLie;
     }
@@ -984,6 +1008,22 @@ void AMuseGuardian::Tick(float DeltaTime) {
         J->SetNumberField(TEXT("magicCast"),Cast);J->SetNumberField(TEXT("magicDismiss"),Dismiss);
         J->SetNumberField(TEXT("bedScale"),BedAppear);J->SetNumberField(TEXT("wandAmount"),WandAmount);
         J->SetBoolField(TEXT("climbing"),Climbing);J->SetNumberField(TEXT("yawn"),Yawn);J->SetNumberField(TEXT("furTufts"),FurRoots.Num());
+        if(SleepAmount>.001f&&!Skin.IsEmpty()) {
+            const double MattressTop=Bed->GetRelativeTransform().TransformPosition(FVector(0,0,27)).Z;
+            double FootClearance[2]={1.e9,1.e9};
+            for(int V=0;V<Skin[0].Rest.Num();++V) {
+                const auto& R=Skin[0].Rest[V];
+                if(R.SleepGroup!=0||R.Position.Z>=22) continue;
+                const FVector World=RootPose.TransformPosition(Skin[0].Positions[V]);
+                if(FMath::Abs(World.X)<70*BedAppear&&FMath::Abs(World.Y)<35*BedAppear) {
+                    const int Side=R.Position.Y<0?0:1;
+                    FootClearance[Side]=FMath::Min(FootClearance[Side],World.Z-MattressTop);
+                }
+            }
+            J->SetNumberField(TEXT("mattressTop"),MattressTop);
+            J->SetNumberField(TEXT("leftFootMattressClearance"),FootClearance[0]);
+            J->SetNumberField(TEXT("rightFootMattressClearance"),FootClearance[1]);
+        }
         if(SleepLie>.99f&&!Skin.IsEmpty()) {
             double Lowest=1.e9,BodyTop=-1.e9,FootLow=1.e9;
             for(int V=0;V<Skin[0].Rest.Num();++V) {
