@@ -41,10 +41,12 @@ def tube(points,radius,n=10):
         center=len(v);v.append(pts[r])
         for j in range(n): f.append([center,r*n+j,r*n+(j+1)%n])
     return trimesh.Trimesh(v,f,process=True)
-# Fitted at world Z 112–117; head socket is at Z 78. The crown encloses
-# the original hood and the close band follows its actual upper-head oval.
-add('CapBand',loft([(-4,33.3,24.8,26.7),(-4,34,25.5,27.4),(-4,38.6,25.5,27.4),(-4,39.2,25,27)]),BAND)
-add('CapCrown',loft([(-4,38.5,25.3,27.2),(-3.5,40.2,27.8,29.5),(-2,45.5,27,29),(-.8,48.8,23,25.5),(0,50.8,16,18),(0,51.6,7,8),(0,51.7,.4,.5)]),NAVY)
+# Enclose the current rounded hood, including its short fur. The older
+# rear-shifted oval let the forehead protrude between the crown and visor.
+cap_band=[(-1,33.0,29.5,29.2),(-1,33.7,29.8,29.5),(-1,38.6,27.8,28.2),(-1,39.2,27.4,27.8)]
+cap_crown=[(-1,38.5,27.6,28.0),(-.5,40.2,29,30),(-.2,45.5,27.5,29),(-.2,48.8,23.5,25.5),(0,50.8,16,18),(0,51.6,7,8),(0,51.7,.4,.5)]
+add('CapBand',loft(cap_band),BAND)
+add('CapCrown',loft(cap_crown),NAVY)
 # A swept visor with thickness, rather than another flattened sphere.
 v=[];f=[];segments=64;steps=8
 for layer in range(2):
@@ -52,7 +54,7 @@ for layer in range(2):
         a=-1.16+2.32*i/segments;fade=math.cos(a/1.16*math.pi/2)
         for j in range(steps+1):
             t=j/steps
-            v.append([-4+25.5*math.cos(a)+t*13.5*fade,27.4*math.sin(a)+t*2*math.sin(a)*fade,35.7-2.5*t*fade+.55*math.sin(a)**2-layer*.95])
+            v.append([-1+28.2*math.cos(a)+t*11.5*fade,28.2*math.sin(a)+t*2*math.sin(a)*fade,35.7-2.5*t*fade+.55*math.sin(a)**2-layer*.95])
 stride=steps+1;surface=(segments+1)*stride
 for layer in range(2):
     off=layer*surface
@@ -62,11 +64,11 @@ for layer in range(2):
 boundary=[i*stride for i in range(segments+1)]+[segments*stride+j for j in range(1,steps+1)]+[i*stride+steps for i in range(segments-1,-1,-1)]+[j for j in range(steps-1,0,-1)]
 for a,b in zip(boundary,boundary[1:]+boundary[:1]): f.extend([[a,b,b+surface],[a,b+surface,a+surface]])
 add('CurvedVisor',trimesh.Trimesh(v,f,process=True),BAND)
-add('CapBraid',tube([[-4+25.9*math.cos(a),27.8*math.sin(a),38.1] for a in np.linspace(-1.25,1.25,75)],.43),GOLD,material='metal')
+add('CapBraid',tube([[-1+28.5*math.cos(a),28.8*math.sin(a),38.1] for a in np.linspace(-1.25,1.25,75)],.43),GOLD,material='metal')
 # Small anchor buttons where the braid terminates.
 for sign in [-1,1]:
     m=trimesh.creation.icosphere(subdivisions=2,radius=1)
-    m.apply_scale([.75,1.3,1.3]);m.apply_translation([4.8,sign*26.3,38.1])
+    m.apply_scale([.75,1.3,1.3]);m.apply_translation([8.0,sign*27.3,38.1])
     add(f'BraidButton{sign}',m,GOLD,material='metal')
 # Shield silhouette: broad shoulders, straight upper sides, unmistakable point.
 shield=np.array([[0,11.5],[-8.3,10],[-10,6.3],[-9.3,-.6],[-6.8,-6.4],[0,-12.5],[6.8,-6.4],[9.3,-.6],[10,6.3],[8.3,10]],float)
@@ -108,7 +110,13 @@ def fitted_chest(d,y,z):
     xx=np.sum(front[index,0]*weight)/weight.sum()
     return [xx+1.2+d,yy,zz]
 badge('Chest',1.05,fitted_chest,'body')
-badge('Cap',.40,lambda d,y,z:[25.5+d-.12*z,y,43.5+z],'head')
+def fitted_cap(d,y,z):
+    height=43.5+z
+    rings=np.asarray(cap_crown)
+    cx,rx,ry=[np.interp(height,rings[:,1],rings[:,i]) for i in [0,2,3]]
+    x=cx+rx*math.sqrt(max(0,1-(y/ry)**2))
+    return [x+.3+d,y,height]
+badge('Cap',.40,fitted_cap,'head')
 # Guard outfit is the fitted cap and chest insignia. The legacy ellipsoid
 # cape intersected the plush torso and appeared as a dark slit from the side.
 output=ROOT/'Unreal/MuseGuard/Content/Muse/GuardAccessories.json'

@@ -37,7 +37,7 @@ The committed runtime mesh loads without installing Python packages. Regenerate 
 
 ```sh
 uv run --with numpy --with trimesh --with scipy --with shapely --with mapbox-earcut --with triangle --with scikit-image --with fast-simplification python scripts/prepare-muse-mesh.py
-python3 scripts/prepare-guard-accessories.py
+uv run --with numpy --with trimesh --with scipy --with networkx python scripts/prepare-guard-accessories.py
 MUSE_REBUILD_ASSETS=1 ./run-dev.sh --build-only
 ```
 
