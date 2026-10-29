@@ -1,0 +1,19 @@
+# Generated native and Unreal outputs
+build/
+.build/
+.swiftpm/
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+Unreal/**/Binaries/
+Unreal/**/Intermediate/
+Unreal/**/Saved/
+Unreal/**/DerivedDataCache/
+Unreal/**/.vs/
+
+# Local configuration
+.DS_Store
+.env
+.env.*
+*.log
+*.xcuserstate

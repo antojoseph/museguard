@@ -1,0 +1,10 @@
+* text=auto
+*.swift text eol=lf
+*.py text eol=lf
+*.sh text eol=lf
+*.json text eol=lf
+*.ini text eol=lf
+*.stl binary
+*.uasset binary
+*.umap binary
+*.musemesh binary

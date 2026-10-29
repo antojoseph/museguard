@@ -1,0 +1,10 @@
+Meta Muse - Jolly
+Creator: MadDog2125
+Source: https://makerworld.com/en/models/3441016-meta-muse-jolly
+License: Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International
+https://creativecommons.org/licenses/by-nc-sa/4.0/
+These are the unmodified original STL files downloaded from the creator listing.
+
+Derived runtime asset: Jolly.musemesh
+Modifications: separated/capped/rounded underarm joints, uniform volumetric reconstruction, elliptical torso fairing with rounded plush cheeks and a sculpted center groove, Taubin relaxation and Loop subdivision, button eyes and smile fitted to original facial landmarks, broader neck skinning, coordinate rotation, scale, smooth normals, facial material regions and twelve-bone skin weights with runtime dual-quaternion deformation; animated by MuseGuardian.cpp.
+The derived mesh remains licensed CC BY-NC-SA 4.0. See Jolly.json for provenance and source hash.
