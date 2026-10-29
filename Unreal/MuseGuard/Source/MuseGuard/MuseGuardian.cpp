@@ -517,13 +517,13 @@ void AMuseGuardian::BuildBed() {
     Bed=Joint(TEXT("SleepBed"),RootComponent,FVector::ZeroVector);
     // A low upholstered nest replaces the stacked metal rails. The mattress
     // surface remains at Z=27 so the character's contact pose stays valid.
-    SoftBox(TEXT("UpholsteredBase"),Bed,FVector(0,0,8),FVector(158,86,12),5.8f,FLinearColor(.40,.30,.25));
-    SoftBox(TEXT("MattressSidewall"),Bed,FVector(0,0,18),FVector(154,82,18),8.5f,FLinearColor(.77,.69,.58));
-    auto* Mattress=SoftBox(TEXT("CreamMattress"),Bed,FVector(0,0,22),FVector(151,80,10),4.8f,FLinearColor(.91,.86,.75));
+    SoftBox(TEXT("UpholsteredBase"),Bed,FVector(0,0,8),FVector(158,86,12),5.8f,FLinearColor(.035,.065,.105));
+    SoftBox(TEXT("MattressSidewall"),Bed,FVector(0,0,18),FVector(154,82,18),8.5f,FLinearColor(.075,.14,.22));
+    auto* Mattress=SoftBox(TEXT("SlateBlueMattress"),Bed,FVector(0,0,22),FVector(151,80,10),4.8f,FLinearColor(.12,.23,.34));
     Mattress->SetCastShadow(false);
     // The barely raised welt reads as a fabric seam rather than another rail.
-    SoftBox(TEXT("MattressWelt"),Bed,FVector(0,0,18.8),FVector(155,83,1.2),.55f,FLinearColor(.66,.57,.46));
-    SoftBox(TEXT("UpholsteredHeadRest"),Bed,FVector(78,0,28),FVector(12,84,42),5.8f,FLinearColor(.59,.46,.37));
+    SoftBox(TEXT("MattressWelt"),Bed,FVector(0,0,18.8),FVector(155,83,1.2),.55f,FLinearColor(.18,.29,.40));
+    SoftBox(TEXT("UpholsteredHeadRest"),Bed,FVector(78,0,28),FVector(12,84,42),5.8f,FLinearColor(.075,.14,.22));
 
     // A rounded superellipsoid gives the pillow a continuously inflated crown
     // and curved silhouette, with none of the old slab's broad flat panels.
@@ -566,11 +566,11 @@ void AMuseGuardian::BuildBed() {
         Mesh->SetMaterial(0,Mat);Materials.Add(Mat);
         return Mesh;
     };
-    Pillow=Puff(TEXT("PlumpCreamPillow"),FVector(51,-10,32),FVector(54,84,16),FLinearColor(.96,.91,.81));
+    Pillow=Puff(TEXT("PlumpBluePillow"),FVector(51,-10,32),FVector(54,84,16),FLinearColor(.24,.36,.48));
     // Recessed feet disappear beneath the padded base instead of drawing a
     // mechanical outline around the character.
     for(int X:{-1,1}) for(int Y:{-1,1})
-        SoftBox(*FString::Printf(TEXT("BedFoot_%d_%d"),X,Y),Bed,FVector(X*61,Y*29,2),FVector(9,9,4),1.8f,FLinearColor(.32,.23,.18));
+        SoftBox(*FString::Printf(TEXT("BedFoot_%d_%d"),X,Y),Bed,FVector(X*61,Y*29,2),FVector(9,9,4),1.8f,FLinearColor(.025,.04,.065));
     Bed->SetVisibility(false,true);
 }
 
