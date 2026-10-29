@@ -26,7 +26,7 @@ enum ScreenshotCaptureError: LocalizedError {
 }
 
 final class ScreenshotCapture {
-    func capture(maxPixelDimension: Int = 1_400, compression: CGFloat = 0.72) throws -> CapturedScreenshot {
+    func capture(windowID: CGWindowID? = nil, maxPixelDimension: Int = 1_400, compression: CGFloat = 0.72) throws -> CapturedScreenshot {
         guard ScreenCapturePermissionController.isTrusted else {
             throw ScreenshotCaptureError.permissionRequired
         }
@@ -34,8 +34,8 @@ final class ScreenshotCapture {
         let imageOptions: CGWindowImageOption = [.boundsIgnoreFraming, .bestResolution]
         guard let screenshot = CGWindowListCreateImage(
             .null,
-            .optionOnScreenOnly,
-            kCGNullWindowID,
+            windowID == nil ? .optionOnScreenOnly : .optionIncludingWindow,
+            windowID ?? kCGNullWindowID,
             imageOptions
         ) else {
             throw ScreenshotCaptureError.captureFailed
@@ -56,6 +56,7 @@ final class ScreenshotCapture {
             byteCount: data.count
         )
     }
+
 
     func captureFrames(
         count: Int,

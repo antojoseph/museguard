@@ -9,13 +9,15 @@ const root = path.resolve(__dirname, '..');
 const turn = () => new Promise(resolve => setImmediate(resolve));
 
 function harness(settings = {}, options = {}) {
-  const sent = [], onNative = [], onDisconnect = [], opened = [], writes = [], badges = [], tabMessages = [], injections = [];
+  const sent = [], heartbeats = [], contextPolls = [], contextResults = [], contextRequests = [], onNative = [], onDisconnect = [], opened = [], writes = [], badges = [], tabMessages = [], injections = [];
   const local = { configVersion: 2, enabled: true, paused: false, pauseUntil: 0, ...settings }, session = {};
   const tab = { id: 7, windowId: 2, active: true, url: 'https://shop.example.test/account?session=secret' };
   const tabs = new Map([[7, tab], ...(options.tabs || []).map(value => [value.id, value])]), alarms = new Map(), events = {};
   const monitoringTabs = new Set(options.readyTabs || []), injectionFailures = new Set(options.injectionFailures || []);
-  const snapshot = { nonce: 'nonce-a', page: { url: 'https://shop.example.test/account', title: 'Shop', text: 'Visible original context' } };
+  const snapshot = { nonce: 'nonce-a', revision: 0, page: { url: 'https://shop.example.test/account', title: 'Shop', text: 'Visible original context' } };
   let focused = true, now = Date.now(), nextGetGate = null, sessionSetGate = null, injectionGate = null;
+  let autoHeartbeatReply = options.autoHeartbeatReply !== false;
+  let lastFocusedWindow = options.lastFocusedWindow || 2, snapshotReply = null, connections = 0;
   const listen = name => ({ addListener(fn) { events[name] = fn; } });
   const storage = (target, area) => ({
     async get(value) {
@@ -29,18 +31,34 @@ function harness(settings = {}, options = {}) {
   });
   const chrome = {
     runtime: { id: 'extension-id', getURL: file => 'chrome-extension://extension-id/' + file,
-      connectNative(name) { assert.equal(name, 'com.antojoseph.museguard'); return {
-        postMessage(value) { sent.push(value); }, onMessage: { addListener: fn => onNative.push(fn) }, onDisconnect: { addListener: fn => onDisconnect.push(fn) }
+      connectNative(name) { assert.equal(name, 'com.antojoseph.museguard'); connections++; return {
+        postMessage(value) {
+          if (value.type === 'chat-context-poll' || value.type === 'chat-context-result') {
+            const isPoll = value.type === 'chat-context-poll';
+            (isPoll ? contextPolls : contextResults).push(value);
+            const response = isPoll ? { version: 1, id: value.id, ok: true, ...(contextRequests.shift() || {}) } : { version: 1, id: value.id, ok: true };
+            queueMicrotask(() => { for (const listener of onNative) listener(response); });
+            return;
+          }
+          if (value.type !== 'protection-state') { sent.push(value); return; }
+          heartbeats.push(value);
+          if (autoHeartbeatReply) queueMicrotask(() => {
+            for (const listener of onNative) listener({ version: 1, id: value.id, ok: true, protection_enabled: value.protection_enabled });
+          });
+        }, onMessage: { addListener: fn => onNative.push(fn) }, onDisconnect: { addListener: fn => onDisconnect.push(fn) }
       }; }, onMessage: listen('message'), onStartup: listen('startup'), onInstalled: listen('installed') },
     storage: { local: storage(local, 'local'), session: storage(session, 'session'), onChanged: listen('storage') },
     tabs: { async get(id) { if (!tabs.has(id)) throw new Error('Missing tab'); return { ...tabs.get(id) }; },
-      async query(query = {}) { return [...tabs.values()].filter(value => !query.active || value.active).map(value => ({ ...value })); },
+      async query(query = {}) { return [...tabs.values()].filter(value => (!query.active || value.active) &&
+        (query.windowId === undefined || query.windowId === value.windowId) &&
+        (!query.lastFocusedWindow || value.windowId === lastFocusedWindow)).map(value => ({ ...value })); },
       async sendMessage(id, message) { tabMessages.push({ tabId: id, ...message });
         if (message.type === 'monitor-ready') return { ready: monitoringTabs.has(id) };
+        if (message.type === 'snapshot' && snapshotReply) return snapshotReply(id);
         return structuredClone(snapshot); },
       async create(value) { opened.push(value); }, onUpdated: listen('updated'), onRemoved: listen('removed'), onActivated: listen('activated') },
-    windows: { async get() { return { focused }; }, async create(value) { opened.push(value); } },
-    alarms: { async get(name) { return alarms.get(name); }, async create(name, value) { alarms.set(name, { name, scheduledTime: value.when }); },
+    windows: { async get() { return { focused }; }, async create(value) { opened.push(value); }, onFocusChanged: listen('window-focused') },
+    alarms: { async get(name) { return alarms.get(name); }, async create(name, value) { alarms.set(name, { name, scheduledTime: value.when, periodInMinutes: value.periodInMinutes }); },
       async clear(name) { return alarms.delete(name); }, onAlarm: listen('alarm') },
     action: { async setBadgeText(value) { badges.push(structuredClone(value)); } }
   };
@@ -55,7 +73,7 @@ function harness(settings = {}, options = {}) {
     setTimeout: (fn, time) => { const handle = setTimeout(fn, time); handle.unref(); return handle; }, clearTimeout });
   sandbox.importScripts = file => vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), sandbox);
   vm.runInContext(fs.readFileSync(path.join(root, 'background.js'), 'utf8'), sandbox);
-  const api = vm.runInContext('({handle, documents, pending, forget, config, cache, receipts, automaticQueue, ensureTabMonitoring, hydrateOpenTabs, restoreMonitoring, core:C, getActive:()=>activeAutomatic})', sandbox);
+  const api = vm.runInContext('({handle, documents, pending, forget, config, cache, receipts, automaticQueue, ensureTabMonitoring, hydrateOpenTabs, restoreMonitoring, syncProtectionState, pollChatContext, core:C, getActive:()=>activeAutomatic, hasContextTimer:()=>chatContextTimer!==null})', sandbox);
   const senderFor = id => { const value = tabs.get(id); return { id: 'extension-id', frameId: 0, documentId: 'document-'+id,
     url: value.url, tab: { ...value } }; };
   const sender = { ...senderFor(7), documentId: 'document-a' };
@@ -77,12 +95,18 @@ function harness(settings = {}, options = {}) {
       summary: 'Concrete concern', guidance: 'Stay here.', categories: [], mode: request.mode || 'text', duration_ms: 20, ...value };
     for (const listener of onNative) listener(response);
   }
-  return { api, sent, tab, tabs, sender, senderFor, popup, local, snapshot, writes, badges, opened, pageRequest, automatic, answer, tabMessages, session, alarms, events, injections, monitoringTabs,
+  return { api, sent, heartbeats, contextPolls, contextResults, tab, tabs, sender, senderFor, popup, local, snapshot, writes, badges, opened, pageRequest, automatic, answer, tabMessages, session, alarms, events, injections, monitoringTabs,
     focus: value => { focused = value; }, advance: value => { now += value; },
     addTab(id, active = false) { const value = { id, active, windowId: 2, url: 'https://tab'+id+'.test/page' }; tabs.set(id, value); return value; },
     blockNextRead() { let release; nextGetGate = new Promise(resolve => { release = resolve; }); return release; },
     blockNextSessionWrite() { let release; sessionSetGate = new Promise(resolve => { release = resolve; }); return release; },
     blockInjections() { let release; injectionGate = new Promise(resolve => { release = () => { injectionGate = null; resolve(); }; }); return release; },
+    heartbeatReplies(value) { autoHeartbeatReply = value; },
+    answerHeartbeat(request, value = {}) { for (const listener of onNative) listener({ version: 1, id: request.id, ok: true, protection_enabled: request.protection_enabled, ...value }); },
+    requestContext(value = {}) { contextRequests.push({ context_request_id: randomUUID(), context_expires_at: now + 6000, ...value }); },
+    setSnapshotReply(value) { snapshotReply = value; },
+    lastWindow(value) { lastFocusedWindow = value; },
+    connectionCount: () => connections,
     disconnect: () => onDisconnect.forEach(fn => fn()) };
 }
 async function sentCount(h, count) {
@@ -386,7 +410,8 @@ test('global pause controls work on internal tabs and expire through a persisten
   await h.api.config();
   const resumed = await h.api.handle({ type: 'popup-state' }, h.popup);
   assert.equal(resumed.active, true); assert.equal(resumed.paused, false); assert.equal(resumed.pauseUntil, 0);
-  assert.equal(h.local.paused, false); assert.equal(h.alarms.size, 0);
+  assert.equal(h.local.paused, false); assert.equal(h.alarms.has('muse-guard-resume'), false);
+  assert.equal(h.alarms.get('muse-guard-protection-heartbeat').periodInMinutes, 0.5);
   await h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup);
   h.advance(7200000); assert.equal((await h.api.config()).paused, true); assert.equal(h.alarms.size, 0);
   await h.api.handle({ type: 'resume' }, h.popup); assert.equal((await h.api.config()).active, true);
@@ -653,4 +678,223 @@ test('restoring or activating a discarded tab attaches after it becomes availabl
   await until(() => h.monitoringTabs.has(8));
   assert.equal(h.injections.length, 1);
   assert.equal(h.injections[0].target.tabId, 8);
+});
+
+test('protection heartbeats report only global connection state and renew periodically without foreground focus', async () => {
+  const h = harness();
+  await h.api.syncProtectionState();
+  assert.ok(h.heartbeats.length >= 1);
+  assert.equal(h.heartbeats.at(-1).protection_enabled, true);
+  assert.equal(h.alarms.get('muse-guard-protection-heartbeat').periodInMinutes, 0.5);
+  for (const message of h.heartbeats) {
+    assert.deepEqual(Object.keys(message).sort(), ['id', 'mode', 'protection_enabled', 'type', 'version']);
+    assert.equal(message.type, 'protection-state'); assert.equal(message.mode, 'text');
+  }
+  h.focus(false); h.tab.url = 'chrome://newtab/';
+  const before = h.heartbeats.length;
+  h.advance(30000); h.events.alarm({ name: 'muse-guard-protection-heartbeat' });
+  await until(() => h.heartbeats.length > before);
+  await h.api.syncProtectionState();
+  assert.equal(h.heartbeats.at(-1).protection_enabled, true, 'Protection is global, independent of an active website.');
+  assert.equal(h.sent.length, 0, 'A heartbeat never starts model inference.');
+  assert.equal(h.api.getActive(), null); assert.equal(h.api.cache.size, 0);
+});
+
+test('Pause, Resume, explicit Disable and external settings changes publish the final global state', async () => {
+  const h = harness(); await h.api.syncProtectionState();
+  await h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup); await h.api.syncProtectionState();
+  assert.equal(h.heartbeats.at(-1).protection_enabled, false);
+  assert.equal(h.alarms.has('muse-guard-protection-heartbeat'), false);
+  await h.api.handle({ type: 'resume' }, h.popup); await h.api.syncProtectionState();
+  assert.equal(h.heartbeats.at(-1).protection_enabled, true);
+  assert.equal(h.alarms.get('muse-guard-protection-heartbeat').periodInMinutes, 0.5);
+  await h.api.handle({ type: 'set-enabled', enabled: false }, h.popup); await h.api.syncProtectionState();
+  assert.equal(h.heartbeats.at(-1).protection_enabled, false);
+  assert.equal(h.alarms.has('muse-guard-protection-heartbeat'), false);
+  Object.assign(h.local, { enabled: true, paused: false, pauseUntil: 0 });
+  h.events.storage({}, 'local'); await h.api.syncProtectionState();
+  assert.equal(h.heartbeats.at(-1).protection_enabled, true);
+  assert.equal(h.sent.length, 0);
+});
+
+test('a pending heartbeat cannot reorder a later Pause and repeated requests share one native flight', async () => {
+  const h = harness({}, { autoHeartbeatReply: false });
+  await until(() => h.heartbeats.length === 1);
+  const first = h.heartbeats[0];
+  const waiting = [];
+  for (let i = 0; i < 20; i++) waiting.push(h.api.syncProtectionState());
+  await h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup);
+  await turn(); assert.equal(h.heartbeats.length, 1, 'No second native heartbeat before the first resolves.');
+  h.answerHeartbeat(first);
+  await until(() => h.heartbeats.length === 2);
+  assert.equal(h.heartbeats[1].protection_enabled, false, 'The newest paused state follows the old active response.');
+  h.answerHeartbeat(h.heartbeats[1]); await Promise.all(waiting);
+  await h.api.syncProtectionState();
+  assert.equal(h.heartbeats.length, 2);
+  assert.equal(h.alarms.has('muse-guard-protection-heartbeat'), false);
+});
+
+test('heartbeat disconnection retries quietly after a cooldown and through the periodic alarm', async () => {
+  const h = harness({}, { autoHeartbeatReply: false });
+  await until(() => h.heartbeats.length === 1);
+  h.disconnect(); await h.api.syncProtectionState();
+  const count = h.heartbeats.length;
+  await h.api.syncProtectionState(); await turn();
+  assert.equal(h.heartbeats.length, count, 'No immediate reconnect loop while the companion is unavailable.');
+  h.advance(5001);
+  const retry = h.api.syncProtectionState();
+  await until(() => h.heartbeats.length === count + 1);
+  h.answerHeartbeat(h.heartbeats.at(-1), { ok: false }); await retry;
+  h.heartbeatReplies(true); h.advance(30000);
+  h.events.alarm({ name: 'muse-guard-protection-heartbeat' });
+  await until(() => h.heartbeats.length === count + 2);
+  await h.api.syncProtectionState();
+  assert.equal(h.heartbeats.at(-1).protection_enabled, true);
+  assert.equal(h.sent.length, 0); assert.equal(h.api.cache.size, 0);
+});
+
+test('tab activation explicitly nudges an attached listener and skips a restricted tab', async () => {
+  const h = harness({}, { readyTabs: [7] });
+  await until(() => h.tabMessages.some(value => value.type === 'configuration-changed'));
+  h.events.activated({ tabId: 7 });
+  await until(() => h.tabMessages.some(value => value.type === 'monitor-activated' && value.tabId === 7));
+  assert.equal(h.injections.length, 0);
+  h.tabMessages.length = 0; h.tab.url = 'chrome://settings/';
+  h.events.activated({ tabId: 7 }); await turn(); await turn();
+  assert.equal(h.tabMessages.some(value => value.type === 'monitor-activated'), false);
+});
+
+test('returning to a Chrome window nudges its active tab without requiring a tab change', async () => {
+  const h = harness({}, { readyTabs: [7, 8, 9], tabs: [
+    { id: 8, windowId: 3, active: true, url: 'https://returned-window.test/' },
+    { id: 9, windowId: 3, active: false, url: 'https://background-tab.test/' }
+  ] });
+  await until(() => h.tabMessages.some(value => value.type === 'configuration-changed'));
+  h.tabMessages.length = 0;
+  h.events['window-focused'](3);
+  await until(() => h.tabMessages.some(value => value.type === 'monitor-activated'));
+  assert.deepEqual(h.tabMessages.filter(value => value.type === 'monitor-activated').map(value => value.tabId), [8]);
+  h.tabMessages.length = 0;
+  h.events['window-focused'](-1); await turn(); await turn();
+  assert.equal(h.tabMessages.length, 0, 'Losing Chrome focus must not pretend another tab was activated.');
+  assert.equal(h.injections.length, 0);
+});
+
+test('configuration and assessment activity refresh an overdue heartbeat without flooding a tab burst', async () => {
+  const h = harness(); await h.api.syncProtectionState();
+  const count = h.heartbeats.length;
+  for (let n = 0; n < 10; n++) await h.api.handle({ type: 'configuration', nonce: 'nonce-a' }, h.sender);
+  await h.api.syncProtectionState();
+  assert.equal(h.heartbeats.length, count, 'Recent metadata is shared across the burst.');
+  h.advance(25001);
+  await automaticResult(h, h.automatic(), { risk_level: 'safe' });
+  await h.api.syncProtectionState();
+  assert.equal(h.heartbeats.length, count + 1);
+  assert.equal(h.sent.filter(value => value.type === 'assess').length, 1, 'Only the actual assessment starts inference.');
+});
+
+test('chat polling is metadata-only and never reads a page without an explicit pending native request', async () => {
+  const h = harness(); await h.api.syncProtectionState();
+  await h.api.pollChatContext(); await h.api.pollChatContext();
+  assert.equal(h.contextPolls.length, 2);
+  for (const poll of h.contextPolls) assert.deepEqual(Object.keys(poll).sort(), ['id', 'mode', 'type', 'version']);
+  assert.equal(h.contextResults.length, 0);
+  assert.equal(h.tabMessages.filter(value => value.type === 'snapshot').length, 0);
+  assert.equal(h.sent.length, 0);
+});
+
+test('explicit chat requests get a fresh bounded redacted snapshot even while automatic protection is paused', async () => {
+  const h = harness({ paused: true }, { readyTabs: [7] }); await h.api.syncProtectionState();
+  h.focus(false); // Muse's native chat may own focus; native validates its Chrome target.
+  h.snapshot.page.title = 'T'.repeat(1000);
+  h.snapshot.page.text = 'Public https://user:secret@visible.test/path?token=PRIVATE#code ' + 'x'.repeat(9000);
+  h.snapshot.password = 'MUST_NOT_TRANSFER'; h.snapshot.page.value = 'MUST_NOT_TRANSFER';
+  h.requestContext(); await h.api.pollChatContext();
+  assert.equal(h.contextResults.length, 1);
+  const result = h.contextResults[0];
+  assert.equal(result.type, 'chat-context-result'); assert.equal(result.tab_id, 7); assert.equal(result.window_id, 2);
+  assert.equal(result.document_id, h.snapshot.nonce); assert.ok(result.context_request_id);
+  assert.equal(result.page.url, 'https://shop.example.test/account');
+  assert.equal(result.page.title.length, 250); assert.equal(result.page.text.length, 6000);
+  assert.ok(!JSON.stringify(result).includes('PRIVATE')); assert.ok(!JSON.stringify(result).includes('session=secret'));
+  assert.ok(!JSON.stringify(result).includes('MUST_NOT_TRANSFER')); assert.ok(!JSON.stringify(result).includes('user:secret'));
+  assert.deepEqual(Object.keys(result.page).sort(), ['text', 'title', 'url']);
+  assert.equal(h.tabMessages.filter(value => value.type === 'snapshot').length, 2);
+  assert.equal((await h.api.config()).active, false); assert.equal(h.sent.length, 0);
+});
+
+test('chat requests reject tab, window, raw URL, document, edit and public snapshot changes without leaking evidence', async () => {
+  for (const change of ['tab', 'window', 'rawURL', 'nonce', 'revision', 'text']) {
+    const h = harness({ paused: true }, { readyTabs: [7] }); await h.api.syncProtectionState();
+    let captures = 0;
+    h.setSnapshotReply(() => {
+      const value = structuredClone(h.snapshot); captures++;
+      if (captures === 1 && change === 'tab') { h.tab.active = false; h.addTab(8, true); }
+      if (captures === 1 && change === 'window') { h.addTab(8, true).windowId = 3; h.lastWindow(3); }
+      if (captures === 1 && change === 'rawURL') h.tab.url += '&changed=PRIVATE';
+      if (captures === 2 && change === 'nonce') value.nonce = 'new-document';
+      if (captures === 2 && change === 'revision') value.revision++;
+      if (captures === 2 && change === 'text') value.page.text = 'Different public page';
+      return value;
+    });
+    h.requestContext(); await h.api.pollChatContext();
+    const result = h.contextResults[0];
+    assert.ok(result.context_error, change);
+    assert.ok(!('page' in result) && !('tab_id' in result) && !('window_id' in result) && !('document_id' in result), change);
+    assert.ok(!JSON.stringify(result).includes('PRIVATE'), change);
+  }
+});
+
+test('unsupported tabs and unavailable listeners return a bounded context error instead of stale content', async () => {
+  for (const issue of ['unsupported', 'discarded', 'listener', 'malformed']) {
+    const h = harness({ paused: true }, issue === 'listener' ? { injectionFailures: [7] } : { readyTabs: [7] });
+    await h.api.syncProtectionState();
+    if (issue === 'unsupported') h.tab.url = 'chrome://settings/';
+    if (issue === 'discarded') h.tab.discarded = true;
+    if (issue === 'malformed') h.setSnapshotReply(() => ({ nonce: 'a', revision: 0, page: { url: 'https://wrong.test/', title: 'Wrong', text: 'STALE' } }));
+    h.requestContext(); await h.api.pollChatContext();
+    const result = h.contextResults[0];
+    assert.ok(result.context_error && result.context_error.length <= 256, issue);
+    assert.equal('page' in result, false, issue);
+    assert.ok(!JSON.stringify(result).includes('STALE'), issue);
+  }
+});
+
+test('expired or malformed context leases never cause a page read', async () => {
+  const h = harness({ paused: true }); await h.api.syncProtectionState();
+  for (const invalid of [{ context_expires_at: 0 }, { context_request_id: '' }, { context_request_id: 'x'.repeat(129) },
+    { context_request_id: 'not-a-native-request' }, { context_expires_at: Infinity }]) {
+    h.requestContext(invalid); await h.api.pollChatContext();
+  }
+  assert.equal(h.contextResults.length, 0);
+  assert.equal(h.tabMessages.filter(value => value.type === 'snapshot').length, 0);
+});
+
+test('one chat context flight is shared and disconnecting stops capture without opening a replacement port', async () => {
+  const h = harness({ paused: true }, { readyTabs: [7] }); await h.api.syncProtectionState();
+  let release;
+  h.setSnapshotReply(() => new Promise(resolve => { release = () => resolve(structuredClone(h.snapshot)); }));
+  h.requestContext();
+  const first = h.api.pollChatContext(), duplicate = h.api.pollChatContext();
+  await until(() => release);
+  assert.equal(h.contextPolls.length, 1);
+  const connections = h.connectionCount();
+  h.disconnect(); assert.equal(h.api.hasContextTimer(), false);
+  release(); await Promise.all([first, duplicate]); await h.api.pollChatContext();
+  assert.equal(h.contextResults.length, 0);
+  assert.equal(h.connectionCount(), connections);
+  assert.equal(h.tabMessages.filter(value => value.type === 'snapshot').length, 1);
+  await h.api.syncProtectionState(true);
+  assert.equal(h.connectionCount(), connections + 1); assert.equal(h.api.hasContextTimer(), true);
+});
+
+test('a context request expiring during snapshot collection is dropped before reading or sending another page', async () => {
+  const h = harness({ paused: true }, { readyTabs: [7] }); await h.api.syncProtectionState();
+  let release;
+  h.setSnapshotReply(() => new Promise(resolve => { release = () => resolve(structuredClone(h.snapshot)); }));
+  h.requestContext(); const pending = h.api.pollChatContext();
+  await until(() => release);
+  h.advance(6001); release(); await pending;
+  assert.equal(h.contextResults.length, 0);
+  assert.equal(h.tabMessages.filter(value => value.type === 'snapshot').length, 1);
 });

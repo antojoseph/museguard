@@ -120,6 +120,10 @@ final class PetOverlayController {
                 self.cancelBedtime();UnrealCharacterRenderer.shared.previewState=preview
             }
         }.store(in:&subscriptions)
+        UnrealCharacterRenderer.shared.$browserProtectionActive.removeDuplicates().sink { [weak self] active in
+            guard active else { return }
+            DispatchQueue.main.async { [weak self] in self?.wakeForBrowserProtection() }
+        }.store(in:&subscriptions)
         UnrealCharacterRenderer.shared.$latestFrame.compactMap { $0?.isDesktopScene }.removeDuplicates().sink { [weak self] onStage in
             guard let self, !self.viewModel.isAvatarHidden else { return }
             if onStage {
@@ -450,6 +454,22 @@ final class PetOverlayController {
         }
     }
 
+    private func wakeForBrowserProtection() {
+        let renderer = UnrealCharacterRenderer.shared
+        guard renderer.browserProtectionActive, !viewModel.isAvatarHidden,
+              viewModel.acknowledgment == nil, !away, !viewModel.isChatOpen else { return }
+        cancelBedtime()
+        guard !moving, dragStartAnchor == nil, renderer.previewState == "live" else { return }
+        let delay = renderer.wakeForInteraction()
+        if delay == 0 { renderer.state = viewModel.mood == .scanning ? "scanning" : "idle"; return }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds:UInt64(delay*1_000_000_000))
+            guard let self, !self.viewModel.isAvatarHidden,
+                  !self.away, !self.moving, !self.viewModel.isChatOpen, self.viewModel.acknowledgment == nil,
+                  renderer.state == "wake" else { return }
+            renderer.state = self.viewModel.mood == .scanning ? "scanning" : "idle"
+        }
+    }
     private func beginBedtime() {
         let renderer=UnrealCharacterRenderer.shared
         guard !viewModel.isAvatarHidden,!away,!moving,dragStartAnchor == nil,

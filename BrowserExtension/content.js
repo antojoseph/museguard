@@ -56,25 +56,38 @@
   }
   function visible(element) { return !!element && !element.closest(PRIVATE) && displayed(element); }
   function sensitive(form) { return !!form?.querySelector('input[type="password"],input[autocomplete~="one-time-code"],input[autocomplete~="current-password"],input[autocomplete~="new-password"]'); }
+  function snapshotDestination(value, limit) {
+    const destination = C.url(value);
+    if (!destination) return 'unsupported';
+    if (destination.length <= limit) return destination;
+    // Keep a complete origin: a cut-off hostname could suggest the wrong site.
+    if (new URL(destination).origin.length > limit - 2) return '[destination too long]';
+    return destination.slice(0, limit - 2) + ' …';
+  }
   function snapshot() {
+    // Independent budgets preserve visible form evidence on link-heavy pages.
+    const bodyLimit = 3500, linkLimit = 1400, formLimit = 1000;
     const parts = []; let length = 0;
     if (document.body) {
       const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      for (let node = walker.nextNode(), visited = 0; node && length < 4700 && visited++ < 4000; node = walker.nextNode()) {
+      for (let node = walker.nextNode(), visited = 0; node && length < bodyLimit && visited++ < 4000; node = walker.nextNode()) {
         if (!visible(node.parentElement)) continue;
-        const text = C.cleanText(node.textContent, 4700 - length);
+        const text = C.cleanText(node.textContent, bodyLimit - length);
         if (text) { parts.push(text); length += text.length + 1; }
       }
     }
-    const links = [...document.querySelectorAll('a[href]')].filter(visible).slice(0, 12).map(a => {
-      const destination = C.url(a.href); return destination ? actionLabel(a) + ' → ' + destination : '';
-    }).filter(Boolean);
+    const anchors = [...document.querySelectorAll('a[href]')].filter(a => visible(a) && C.url(a.href)).slice(0, 12);
+    const perLink = Math.floor((linkLimit - Math.max(0, anchors.length - 1)) / Math.max(1, anchors.length));
+    const labelLimit = Math.min(80, Math.floor(perLink * 0.3));
+    const links = anchors.map(a => C.cleanText(actionLabel(a), labelLimit) + ' → ' + snapshotDestination(a.href, perLink - labelLimit - 3));
     const forms = [...document.forms].filter(visibleForm).slice(0, 3).map(form => {
       const fields = [...form.querySelectorAll('input,textarea,select')].slice(0, 20).map(field => field.type || field.tagName.toLowerCase()).filter(type => type !== 'hidden');
-      return 'Form destination: ' + (C.url(form.action || location.href) || 'unsupported') + '; method: ' + form.method + '; field types: ' + [...new Set(fields)].join(', ') + '; sensitive fields: ' + sensitive(form);
+      return 'Form destination: ' + snapshotDestination(form.action || location.href, 150) + '; method: ' + C.cleanText(form.method, 8) +
+        '; field types: ' + C.cleanText([...new Set(fields)].join(', '), 80) + '; sensitive fields: ' + sensitive(form);
     });
     return { url: C.url(location.href), title: C.cleanText(document.title, 250),
-      text: C.cleanText(parts.join('\n') + '\nVisible link destinations:\n' + links.join('\n') + '\nVisible forms:\n' + forms.join('\n')) };
+      text: C.cleanText(parts.join('\n') + '\nVisible link destinations:\n' + C.cleanText(links.join('\n'), linkLimit) +
+        '\nVisible forms:\n' + C.cleanText(forms.join('\n'), formLimit)) };
   }
   function actionLabel(element) {
     const explicit = element.getAttribute('aria-label') || element.getAttribute('title');
@@ -325,6 +338,16 @@
   runtimeMessage = (message, sender, reply) => {
     if (!usable() || sender.id !== extensionID) { reply({ ok: false }); return; }
     if (message.type === 'monitor-ready') { reply({ ready: true }); return; }
+    if (message.type === 'monitor-activated') {
+      // Chrome's tab event is an independent recovery path when a document's
+      // visibility/focus event was missed or its initial config read failed.
+      // Re-read global Pause before scheduling; keep current in-flight checks
+      // and exact caches when protection is still active.
+      refresh().then(() => {
+        if (!usable()) { reply({ ok: false }); return; }
+        activate(); reply({ ok: true, active });
+      }); return true;
+    }
     if (message.type === 'snapshot') { reply({ nonce, revision: edits, captureSupport: 2, page: snapshot() }); return; }
     if (message.type === 'prepare-capture') { reply({ ok: message.nonce === nonce, nonce }); return; }
     if (message.type === 'restore-capture' || message.type === 'manual-result') { reply({ ok: true }); return; }

@@ -51,6 +51,7 @@ final class PetViewModel: ObservableObject {
     @Published var isChatOpen = false
     @Published var isChatThinking = false
     @Published var chatMessages: [PetChatMessage] = []
+    @Published var chatContextLabel: String?
     @Published var browserAction: BrowserAvatarAction?
     @Published private(set) var acknowledgment: GuardianAcknowledgment?
     @Published private(set) var warningDetails: GuardianWarningDetails?
@@ -88,6 +89,7 @@ final class PetViewModel: ObservableObject {
         isChatOpen = false
         isChatThinking = false
         chatMessages.removeAll()
+        chatContextLabel = nil
 
         guard let seconds else { return }
         clearTask = Task { [weak self] in
@@ -113,6 +115,7 @@ final class PetViewModel: ObservableObject {
         isChatOpen = false
         isChatThinking = false
         chatMessages.removeAll()
+        chatContextLabel = nil
         return true
     }
 
@@ -155,6 +158,7 @@ final class PetViewModel: ObservableObject {
         isChatOpen = false
         isChatThinking = false
         chatMessages.removeAll()
+        chatContextLabel = nil
     }
 
     func appendUserChat(_ text: String) {

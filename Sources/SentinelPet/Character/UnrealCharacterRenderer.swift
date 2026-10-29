@@ -56,6 +56,17 @@ final class UnrealCharacterRenderer: ObservableObject {
     private var phaseDuration = 1.0
     private var travelDirection = 0.0
     private var batchingCommand = false
+    private lazy var inferenceActivity = GuardianWorkActivity { [weak self] _ in self?.writeCommand() }
+    @Published private(set) var browserProtectionActive = false
+
+    func setInferenceWorking(_ working: Bool) { inferenceActivity.setWorking(working) }
+    func ownsProcess(_ pid: pid_t) -> Bool { process?.processIdentifier == pid }
+    func setBrowserProtectionActive(_ active: Bool) {
+        guard browserProtectionActive != active else { return }
+        idleStartedAt = Date(); sleepRequested = false
+        browserProtectionActive = active
+        writeCommand()
+    }
 
     @discardableResult
     func animate(_ nextState: String, duration: Double? = nil, direction: Double? = nil) -> Date {
@@ -137,19 +148,23 @@ final class UnrealCharacterRenderer: ObservableObject {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
         let gaze = screen.map { Double((mouse.x - $0.frame.midX) / ($0.frame.width / 2)) } ?? 0
-        var pose = previewState != "live" ? previewState : (state == "idle" ? GuardianIdlePolicy.pose(after:Date().timeIntervalSince(idleStartedAt)) : state)
+        var pose = previewState != "live" ? previewState : (state == "idle" ? GuardianIdlePolicy.pose(after:Date().timeIntervalSince(idleStartedAt),protectionActive:browserProtectionActive) : state)
         if pose == "sleep", state == "idle", previewState == "live", prepareSleep != nil {
             pose="drowsy"
             if !sleepRequested {
                 sleepRequested=true
                 DispatchQueue.main.async { [weak self] in
-                    guard let self, self.state == "idle", self.previewState == "live", self.sleepRequested else { return }
+                    guard let self, self.state == "idle", self.previewState == "live", self.sleepRequested, !self.browserProtectionActive else { return }
                     self.prepareSleep?()
                 }
             }
         }
         lastSubmittedPose = pose
         var payload: [String: Any] = ["state": pose, "accessory": accessory, "gaze": gaze, "reduceMotion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "debugMotion": ProcessInfo.processInfo.arguments.contains("--visual-test"), "phaseStart": phaseStartedAt.timeIntervalSince1970, "phaseDuration": phaseDuration, "travelDirection": travelDirection, "heartbeat": Date().timeIntervalSince1970]
+        // Only an activity bit enters the renderer; source evidence stays in
+        // the native analyzer. Explicit previews retain complete pose control.
+        payload["working"] = previewState == "live" && inferenceActivity.isActive
+        payload["protectionActive"] = previewState == "live" && browserProtectionActive
         payload["desktopScene"] = desktopScene?.command ?? ["enabled": false]
         if let data = try? JSONSerialization.data(withJSONObject: payload) {
             try? data.write(to: bridge.appendingPathComponent("command.json"), options: .atomic)

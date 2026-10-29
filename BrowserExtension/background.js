@@ -3,6 +3,9 @@ importScripts('shared.js');
 const C = MuseGuardCore;
 const HOST = 'com.antojoseph.museguard';
 const RESUME_ALARM = 'muse-guard-resume';
+const PROTECTION_HEARTBEAT_ALARM = 'muse-guard-protection-heartbeat';
+const PROTECTION_HEARTBEAT_INTERVAL = 25000;
+const CHAT_CONTEXT_POLL_INTERVAL = 1000;
 const CACHE_TTL = C.EXTREME_TTL_MS || 30000;
 const MAX_QUEUED = 32;
 let port = null, alarmKey = null;
@@ -14,6 +17,9 @@ const automaticQueue = new Map(), latestSlots = new Map();
 const actionEpochs = new Map(), activeActions = new Map();
 const monitoringInFlight = new Map();
 let openTabsHydration = null;
+let heartbeatAlarmKey = null, heartbeatTask = null, heartbeatQueued = false, heartbeatForced = false;
+let lastHeartbeatEnabled = null, lastHeartbeatAt = 0, lastHeartbeatSucceeded = false;
+let chatContextTimer = null, chatContextFlight = null;
 function beginAction(tabId) {
   actionEpochs.set(tabId, (actionEpochs.get(tabId) || 0) + 1);
   activeActions.set(tabId, (activeActions.get(tabId) || 0) + 1);
@@ -21,24 +27,110 @@ function beginAction(tabId) {
 function endAction(tabId) { activeActions.set(tabId, Math.max(0, (activeActions.get(tabId) || 1) - 1)); }
 function quietFailure(message) { return { ...C.failure(message), confirmed_extreme: false, retry_after_ms: 15000 }; }
 
-function nativeRequest(payload, timeout = 35000) {
+function nativeRequest(payload, timeout = 35000, expectedPort = null) {
   return new Promise(resolve => {
     const request = { ...payload, version: 1, id: crypto.randomUUID() };
     const finish = value => { clearTimeout(pending.get(request.id)?.timer); pending.delete(request.id); resolve(value); };
     try {
+      if (expectedPort && port !== expectedPort) { finish(C.failure('The Muse app disconnected.')); return; }
       if (!port) {
-        port = chrome.runtime.connectNative(HOST);
-        port.onMessage.addListener(value => { if (value && typeof value.id === 'string') pending.get(value.id)?.finish(value); });
-        port.onDisconnect.addListener(() => {
+        const connected = chrome.runtime.connectNative(HOST);
+        port = connected;
+        connected.onMessage.addListener(value => { if (value && typeof value.id === 'string') pending.get(value.id)?.finish(value); });
+        connected.onDisconnect.addListener(() => {
+          if (port !== connected) return;
           const message = chrome.runtime.lastError?.message || 'The Muse app disconnected.';
           port = null; cache.clear(); receipts.clear();
+          clearTimeout(chatContextTimer); chatContextTimer = null;
           for (const item of [...pending.values()]) item.finish(C.failure(message));
         });
+        scheduleChatContextPoll(connected);
       }
       const timer = setTimeout(() => finish(C.failure('The local check timed out. This action has not been cleared.', request.id)), timeout);
       pending.set(request.id, { finish, timer }); port.postMessage(request);
     } catch (error) { finish(C.failure(error.message, request.id)); }
   });
+}
+function scheduleChatContextPoll(connected) {
+  clearTimeout(chatContextTimer);
+  if (port !== connected) return;
+  chatContextTimer = setTimeout(() => {
+    chatContextTimer = null;
+    void pollChatContext(connected).catch(() => {}).finally(() => {
+      if (port === connected) scheduleChatContextPoll(connected);
+    });
+  }, CHAT_CONTEXT_POLL_INTERVAL);
+}
+function contextOperation(operation, expiresAt, connected) {
+  const remaining = expiresAt - Date.now();
+  if (remaining <= 0) return Promise.reject(new Error('The Chrome context request expired. Try again.'));
+  let timer;
+  return Promise.race([Promise.resolve().then(() => {
+    if (Date.now() >= expiresAt) throw new Error('The Chrome context request expired. Try again.');
+    if (port !== connected) throw new Error('The Muse app disconnected.');
+    return operation();
+  }), new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error('The Chrome context request expired. Try again.')), remaining);
+  })]).finally(() => clearTimeout(timer));
+}
+async function currentChatTab(expiresAt, connected) {
+  const tabs = await contextOperation(() => chrome.tabs.query({ active: true, lastFocusedWindow: true }), expiresAt, connected);
+  const tab = tabs[0];
+  if (!Number.isInteger(tab?.id) || tab.id <= 0 || !Number.isInteger(tab.windowId) || tab.windowId <= 0 ||
+      !tab.active || tab.discarded || !C.url(tab.url)) throw new Error('Open a normal website in Chrome and try again.');
+  return tab;
+}
+function sameChatTab(first, next) {
+  return first.id === next.id && first.windowId === next.windowId && first.url === next.url && next.active === true;
+}
+function chatSnapshot(value, tab) {
+  if (!value || typeof value.nonce !== 'string' || !/^[a-z0-9-]{1,256}$/i.test(value.nonce) ||
+      !Number.isInteger(value.revision) || value.revision < 0 || value.page?.url !== C.url(tab.url) ||
+      value.page.url.length > 4096 || typeof value.page.title !== 'string' || typeof value.page.text !== 'string')
+    throw new Error('Muse could not read this tab. Refresh it and try again.');
+  return { nonce: value.nonce, revision: value.revision,
+    page: { url: C.url(tab.url), title: C.cleanText(value.page.title, 250), text: C.cleanText(value.page.text) } };
+}
+async function freshChatContext(expiresAt, connected) {
+  const tab = await currentChatTab(expiresAt, connected);
+  if (!await contextOperation(() => ensureTabMonitoring(tab.id), expiresAt, connected))
+    throw new Error('Muse could not read this tab. Refresh it and try again.');
+  if (!sameChatTab(tab, await currentChatTab(expiresAt, connected)))
+    throw new Error('The active tab changed while Muse was reading it. Try again.');
+  const first = chatSnapshot(await contextOperation(() => chrome.tabs.sendMessage(tab.id, { type: 'snapshot' }, { frameId: 0 }), expiresAt, connected), tab);
+  if (!sameChatTab(tab, await currentChatTab(expiresAt, connected)))
+    throw new Error('The active tab changed while Muse was reading it. Try again.');
+  const latest = chatSnapshot(await contextOperation(() => chrome.tabs.sendMessage(tab.id, { type: 'snapshot' }, { frameId: 0 }), expiresAt, connected), tab);
+  if (first.nonce !== latest.nonce || first.revision !== latest.revision || C.assessmentKey(first.page) !== C.assessmentKey(latest.page))
+    throw new Error('The page changed while Muse was reading it. Try again.');
+  const live = await contextOperation(() => chrome.tabs.get(tab.id), expiresAt, connected);
+  if (!sameChatTab(tab, live) || !sameChatTab(tab, await currentChatTab(expiresAt, connected)))
+    throw new Error('The active tab changed while Muse was reading it. Try again.');
+  return { page: latest.page, tab_id: tab.id, window_id: tab.windowId, document_id: latest.nonce };
+}
+function pollChatContext(connected = port) {
+  if (!connected || port !== connected) return Promise.resolve();
+  if (chatContextFlight) return chatContextFlight;
+  const task = (async () => {
+    const request = await nativeRequest({ type: 'chat-context-poll', mode: 'text' }, 1500, connected);
+    if (port !== connected || request?.ok !== true || typeof request.context_request_id !== 'string' ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(request.context_request_id) ||
+        !Number.isFinite(request.context_expires_at) || request.context_expires_at <= Date.now()) return;
+    const expiresAt = Math.min(request.context_expires_at, Date.now() + 5500);
+    const payload = { type: 'chat-context-result', mode: 'text', context_request_id: request.context_request_id };
+    try { Object.assign(payload, await freshChatContext(expiresAt, connected)); }
+    catch (error) {
+      const expected = ['The Chrome context request expired. Try again.', 'Open a normal website in Chrome and try again.',
+        'Muse could not read this tab. Refresh it and try again.', 'The active tab changed while Muse was reading it. Try again.',
+        'The page changed while Muse was reading it. Try again.'];
+      payload.context_error = expected.includes(error?.message) ? error.message : 'Muse could not read this tab. Refresh it and try again.';
+    }
+    if (port === connected && Date.now() < request.context_expires_at)
+      await nativeRequest(payload, Math.min(1500, request.context_expires_at - Date.now()), connected);
+  })();
+  chatContextFlight = task;
+  task.finally(() => { if (chatContextFlight === task) chatContextFlight = null; }).catch(() => {});
+  return task;
 }
 async function reconcileAlarm(value) {
   if (!chrome.alarms) return;
@@ -52,6 +144,18 @@ async function reconcileAlarm(value) {
       if (!alarm || Math.abs(alarm.scheduledTime - desired) > 1000) await chrome.alarms.create(RESUME_ALARM, { when: desired });
     } else if (alarm) await chrome.alarms.clear(RESUME_ALARM);
   } catch { alarmKey = null; }
+}
+async function reconcileProtectionAlarm(value) {
+  if (!chrome.alarms) return;
+  const enabled = value.enabled && !value.paused;
+  if (heartbeatAlarmKey === enabled) return;
+  heartbeatAlarmKey = enabled;
+  try {
+    const alarm = await chrome.alarms.get(PROTECTION_HEARTBEAT_ALARM);
+    if (enabled) {
+      if (!alarm || alarm.periodInMinutes !== 0.5) await chrome.alarms.create(PROTECTION_HEARTBEAT_ALARM, { periodInMinutes: 0.5 });
+    } else if (alarm) await chrome.alarms.clear(PROTECTION_HEARTBEAT_ALARM);
+  } catch { heartbeatAlarmKey = null; }
 }
 function settingsOperation(operation) {
   const result = settingsTail.then(operation, operation);
@@ -67,6 +171,7 @@ async function readConfig() {
   if (saved.configVersion !== 2 || saved.enabled !== value.enabled || saved.paused !== value.paused || saved.pauseUntil !== value.pauseUntil)
     await chrome.storage.local.set({ configVersion: 2, ...value });
   await reconcileAlarm(value);
+  await reconcileProtectionAlarm(value);
   return { ...value, active: value.enabled && !value.paused };
 }
 // Migration/expiry and user mutations share one ordered storage lane. A slow
@@ -76,8 +181,35 @@ async function writeConfig(value) {
   return settingsOperation(async () => {
     await chrome.storage.local.set({ configVersion: 2, ...value });
     alarmKey = null;
+    heartbeatAlarmKey = null;
     return readConfig();
   });
+}
+function syncProtectionState(force = false) {
+  heartbeatQueued = true; heartbeatForced ||= force;
+  if (heartbeatTask) return heartbeatTask;
+  const task = (async () => {
+    while (heartbeatQueued) {
+      heartbeatQueued = false;
+      const forced = heartbeatForced; heartbeatForced = false;
+      const generation = protectionGeneration, value = await config();
+      if (generation !== protectionGeneration) { heartbeatQueued = true; continue; }
+      const enabled = value.active, retryInterval = lastHeartbeatSucceeded ? PROTECTION_HEARTBEAT_INTERVAL : 5000;
+      if (!forced && enabled === lastHeartbeatEnabled && Date.now() - lastHeartbeatAt < retryInterval) continue;
+      lastHeartbeatEnabled = enabled; lastHeartbeatAt = Date.now();
+      // This is connection state, never an inference or a page assessment.
+      // It contains no URL, page text, screenshot, or browsing history.
+      const result = await nativeRequest({ type: 'protection-state', mode: 'text', protection_enabled: enabled }, 3000);
+      lastHeartbeatSucceeded = result?.ok === true;
+      if (generation !== protectionGeneration) { heartbeatQueued = true; heartbeatForced = true; }
+    }
+  })();
+  heartbeatTask = task;
+  task.finally(() => {
+    if (heartbeatTask === task) heartbeatTask = null;
+    if (heartbeatQueued) void syncProtectionState().catch(() => {});
+  }).catch(() => {});
+  return task;
 }
 async function allowed(rawURL) { return !!C.url(rawURL) && (await config()).active; }
 function context(sender, nonce) {
@@ -225,6 +357,7 @@ async function pumpAutomatic() {
 }
 async function assessPage(message, sender) {
   const ctx = context(sender, message.nonce); remember(ctx);
+  void syncProtectionState().catch(() => {});
   if (!await allowed(ctx.rawURL)) return quietFailure('Automatic protection is paused.');
   if (message.purpose !== undefined && !['proactive', 'intent'].includes(message.purpose)) throw new Error('Unsupported check purpose.');
   const request = validatedPayload(message, ctx), signature = proofSignature(message, request, message.purpose !== undefined),
@@ -328,6 +461,10 @@ async function ensureTabMonitoring(tabId) {
   try { return await task; }
   finally { if (monitoringInFlight.get(tabId) === task) monitoringInFlight.delete(tabId); }
 }
+async function activateTabMonitoring(tabId) {
+  if (await ensureTabMonitoring(tabId))
+    await chrome.tabs.sendMessage(tabId, { type: 'monitor-activated' }, { frameId: 0 });
+}
 function hydrateOpenTabs() {
   if (openTabsHydration) return openTabsHydration;
   const task = (async () => {
@@ -339,8 +476,9 @@ function hydrateOpenTabs() {
   return task;
 }
 async function restoreMonitoring() {
-  alarmKey = null;
+  alarmKey = null; heartbeatAlarmKey = null;
   await config();
+  void syncProtectionState(true).catch(() => {});
   await hydrateOpenTabs();
   await broadcastConfiguration();
 }
@@ -355,20 +493,27 @@ function clearAutomaticState(message = 'Protection settings changed.') {
   receipts.clear();
 }
 async function protectionChanged() {
-  clearAutomaticState(); alarmKey = null; await config(); await broadcastConfiguration();
+  clearAutomaticState(); alarmKey = null; heartbeatAlarmKey = null; await config();
+  void syncProtectionState(true).catch(() => {});
+  await broadcastConfiguration();
 }
 async function changePause(duration) {
   if (![0,1800000].includes(duration)) throw new Error('Unsupported pause duration.');
   clearAutomaticState('Automatic protection is paused.');
-  await writeConfig({ enabled: true, paused: true, pauseUntil: duration ? Date.now()+duration : 0 }); await broadcastConfiguration(); return { ok: true };
+  await writeConfig({ enabled: true, paused: true, pauseUntil: duration ? Date.now()+duration : 0 });
+  void syncProtectionState(true).catch(() => {});
+  await broadcastConfiguration(); return { ok: true };
 }
 async function resumeProtection() {
-  clearAutomaticState(); await writeConfig({ enabled: true, paused: false, pauseUntil: 0 }); await broadcastConfiguration(); return { ok: true };
+  clearAutomaticState(); await writeConfig({ enabled: true, paused: false, pauseUntil: 0 });
+  void syncProtectionState(true).catch(() => {});
+  await broadcastConfiguration(); return { ok: true };
 }
 async function handle(message, sender) {
   if (!message || typeof message.type !== 'string') return C.failure('Unsupported request.');
   if (message.type === 'configuration') {
     const ctx = context(sender, message.nonce); remember(ctx); const value = await config();
+    void syncProtectionState().catch(() => {});
     return { ...value, supported: true, origin: C.origin(ctx.rawURL), approved: value.active };
   }
   if (message.type === 'assess') return assessPage(message, sender);
@@ -396,7 +541,9 @@ async function handle(message, sender) {
   if (message.type === 'resume') return resumeProtection();
   if (message.type === 'set-enabled') {
     if (message.enabled === true) return resumeProtection();
-    clearAutomaticState(); await writeConfig({ enabled: false, paused: false, pauseUntil: 0 }); await broadcastConfiguration(); return { ok: true };
+    clearAutomaticState(); await writeConfig({ enabled: false, paused: false, pauseUntil: 0 });
+    void syncProtectionState(true).catch(() => {});
+    await broadcastConfiguration(); return { ok: true };
   }
   return C.failure('Unsupported request.');
 }
@@ -414,8 +561,21 @@ chrome.tabs.onUpdated.addListener((tabId, change) => {
   if (change.status === 'complete') void ensureTabMonitoring(tabId);
 });
 chrome.tabs.onRemoved.addListener(forget);
-chrome.tabs.onActivated?.addListener(info => { void pumpAutomatic(); void ensureTabMonitoring(info?.tabId); });
-chrome.alarms?.onAlarm.addListener(alarm => { if (alarm.name === RESUME_ALARM) { alarmKey = null; void protectionChanged(); } });
+chrome.tabs.onActivated?.addListener(info => {
+  void pumpAutomatic();
+  void syncProtectionState().catch(() => {});
+  void activateTabMonitoring(info?.tabId).catch(() => {});
+});
+chrome.windows.onFocusChanged?.addListener(windowId => {
+  if (!Number.isInteger(windowId) || windowId < 0) return;
+  void syncProtectionState().catch(() => {});
+  void chrome.tabs.query({ active: true, windowId }).then(tabs =>
+    Promise.allSettled(tabs.map(tab => activateTabMonitoring(tab.id)))).catch(() => {});
+});
+chrome.alarms?.onAlarm.addListener(alarm => {
+  if (alarm.name === RESUME_ALARM) { alarmKey = null; void protectionChanged(); }
+  if (alarm.name === PROTECTION_HEARTBEAT_ALARM) void syncProtectionState(true).catch(() => {});
+});
 chrome.runtime.onStartup?.addListener(() => { void restoreMonitoring().catch(() => {}); });
 chrome.runtime.onInstalled?.addListener(() => { void restoreMonitoring().catch(() => {}); });
 // Reconcile stored timestamps on every worker start; alarms are not assumed to

@@ -70,7 +70,8 @@ struct GuardianDesktopScene {
 /// Companion idle time, not keyboard/screen surveillance. Analysis and direct
 /// interactions reset the clock; sleep never disables monitoring.
 enum GuardianIdlePolicy {
-    static func pose(after seconds: TimeInterval) -> String {
+    static func pose(after seconds: TimeInterval, protectionActive: Bool = false) -> String {
+        if protectionActive { return "idle" }
         if seconds >= 55 { return "sleep" }
         if seconds >= 28 { return "drowsy" }
         return "idle"

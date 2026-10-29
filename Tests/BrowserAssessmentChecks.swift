@@ -48,8 +48,10 @@ private actor Events {
         let analyzer = LocalRiskAnalyzer(session: URLSession(configuration: config))
         var presentations = 0
         var presented: [BrowserRequest] = []
+        var protectionChanges: [Bool] = []
         var testNow = Date()
         let coordinator = BrowserAssessmentCoordinator(analyzer: analyzer, modelReady: { true }, now: { testNow },
+            onProtectionChanged: { protectionChanges.append($0) },
             onPresent: { request,_,_ in presentations += 1; presented.append(request); return true })
         let page = BrowserRequest.Page(url: "https://account-check.example.test/login?token=private#secret", title: "Account check", text: "Enter a password and one-time code to stop deletion.")
         let action = BrowserRequest.Action(kind: "submit", url: "https://account-check.example.test/post", label: "Verify", method: "POST", sensitive: true)
@@ -62,6 +64,21 @@ private actor Events {
         let status = await coordinator.handle(BrowserRequest(id: "status", type: "status"))
         assert(status.ok && status.modelReady == true && ModelFixture.calls == 0)
         assert(status.lastAssessment == nil && status.completedAssessments == 0)
+        for enabled in [true,true,false] {
+            let heartbeat = await coordinator.handle(BrowserRequest(id:"protection",type:"protection-state",protectionEnabled:enabled))
+            assert(heartbeat.ok && heartbeat.riskLevel == "unknown" && heartbeat.decision == "review")
+            assert(heartbeat.lastAssessment == nil && heartbeat.completedAssessments == nil)
+        }
+        assert(protectionChanges == [true,true,false],"Each valid heartbeat renews the awake lease, including repeated enabled states.")
+        assert(ModelFixture.calls == 0 && coordinator.completedCount == 0 && presentations == 0,
+            "Protection metadata must not start inference, presentation or assessment completion.")
+        for invalidState in [BrowserRequest(id:"missing-protection",type:"protection-state"),
+                             BrowserRequest(id:"evidence-protection",type:"protection-state",page:page,protectionEnabled:true),
+                             BrowserRequest(id:"wrong-protection",type:"status",protectionEnabled:true)] {
+            let rejected = await coordinator.handle(invalidState)
+            assert(!rejected.ok)
+        }
+        assert(protectionChanges == [true,true,false] && ModelFixture.calls == 0)
         var expectedCompletions = 0
         for (risk, expected) in [("high","block"),("medium","review"),("unknown","review"),("safe","allow"),("low","allow")] {
             ModelFixture.risk = risk
@@ -103,6 +120,18 @@ private actor Events {
             presentations = 0
         }
         assert(ModelFixture.directCalls == 5, "Browser text checks use the bounded direct-answer request.")
+        let beforeHeartbeat = await coordinator.handle(BrowserRequest(id:"before-heartbeat",type:"status"))
+        let callsBeforeHeartbeat = ModelFixture.calls
+        testNow = testNow.addingTimeInterval(1)
+        _ = await coordinator.handle(BrowserRequest(id:"renew-protection",type:"protection-state",protectionEnabled:true))
+        _ = await coordinator.handle(BrowserRequest(id:"pause-protection",type:"protection-state",protectionEnabled:false))
+        let afterHeartbeat = await coordinator.handle(BrowserRequest(id:"after-heartbeat",type:"status"))
+        assert(protectionChanges == [true,true,false,true,false])
+        assert(afterHeartbeat.lastAssessment?.id == beforeHeartbeat.lastAssessment?.id &&
+               afterHeartbeat.lastAssessment?.completedAt == beforeHeartbeat.lastAssessment?.completedAt &&
+               afterHeartbeat.completedAssessments == beforeHeartbeat.completedAssessments,
+            "Awake-lease refreshes must not replace the latest completed assessment metadata.")
+        assert(ModelFixture.calls == callsBeforeHeartbeat && presentations == 0)
         // Proactive high findings can be shown again on a later matching click,
         // even after the first native warning was dismissed. Each display has
         // its own decision ID and never grants a high-risk override.

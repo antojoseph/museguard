@@ -17,10 +17,12 @@ final class SentinelPetRuntime: ObservableObject {
     @Published private(set) var lastMockResult: String?
     @Published private(set) var browserStatus = "Browser guard stopped"
     private let browserBridge = BrowserBridgeServer()
+    private let browserChatContext = BrowserChatContextBroker()
     private lazy var browserAssessments: BrowserAssessmentCoordinator = BrowserAssessmentCoordinator(
         modelReady: { LocalModelService.shared.isReady },
         isDenied: { [weak self] snapshot in self?.isDenied(snapshot) ?? true },
         statusDetail: { [weak self] in self?.browserStatus ?? "Muse Guard is closing." },
+        onProtectionChanged: { [weak self] enabled in self?.browserProtection.update(enabled:enabled) },
         onPresent: { [weak self] request, verdict, snapshot in
             guard let self else { return false }
             guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.google.Chrome" else {
@@ -83,7 +85,27 @@ final class SentinelPetRuntime: ObservableObject {
     private var acknowledgmentTarget: CGPoint?
     private var browserActionExpiryTask: Task<Void, Never>?
     private var browserChoiceTask: Task<Void, Never>?
+    private var inferenceActivityTask: Task<Void, Never>?
+    private var lastExternalApplication: NSRunningApplication?
+    private var chatRequestID: UUID?
+    private var screenChatHistory = ScreenChatHistory()
+    private lazy var browserProtection = GuardianProtectionActivity { UnrealCharacterRenderer.shared.setBrowserProtectionActive($0) }
     private init() {
+        rememberChatApplication()
+        NSWorkspace.shared.notificationCenter.publisher(for:NSWorkspace.didActivateApplicationNotification)
+            .compactMap { $0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication }
+            .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && $0.activationPolicy == .regular }
+            .sink { [weak self] app in
+                if !UnrealCharacterRenderer.shared.ownsProcess(app.processIdentifier) { self?.lastExternalApplication = app }
+            }
+            .store(in:&browserSubscriptions)
+        inferenceActivityTask = Task {
+            let updates = await LocalInferenceScheduler.shared.activityUpdates()
+            for await working in updates {
+                guard !Task.isCancelled else { break }
+                UnrealCharacterRenderer.shared.setInferenceWorking(working)
+            }
+        }
         petViewModel.$browserAction.map { $0?.assessmentID }.removeDuplicates().sink { [weak self] next in
             guard let self else { return }
             if let previous = self.visibleBrowserAssessmentID, previous != next {
@@ -140,6 +162,8 @@ final class SentinelPetRuntime: ObservableObject {
         do {
             try browserBridge.start { [weak self] request in
                 guard let self else { return .failure(id: request.id, mode: request.mode, message: "Muse Guard is closing.") }
+                if let contextReply = self.browserChatContext.handle(request) { return contextReply }
+                if request.type == "assess", request.purpose != nil { self.browserProtection.refreshFromAutomaticCheck() }
                 let response = await self.browserAssessments.handle(request)
                 let closesPresentation = request.type == "cancel" ||
                     (request.type == "finish-checking" && ["pending", "stay"].contains(response.actionState ?? ""))
@@ -274,14 +298,21 @@ final class SentinelPetRuntime: ObservableObject {
         if restart && monitoringConsentGranted { startMonitoring() }
     }
     func openPetChat() {
-        let explanation = latestChatContext.map { "Why I flagged it:\n\($0.summary)\n\nWhat to do:\n\($0.guidance)" }
+        rememberChatApplication()
+        let explainsWarning = petViewModel.acknowledgment != nil || petViewModel.browserAction != nil ||
+            (petViewModel.mood == .alert && petViewModel.message != nil)
+        let explanation = explainsWarning ? latestChatContext.map { "Why I flagged it:\n\($0.summary)\n\nWhat to do:\n\($0.guidance)" } : nil
         petViewModel.openChat(seedText: explanation)
+        if petViewModel.chatContextLabel == nil, let app = chatApplication() {
+            petViewModel.chatContextLabel = "Current app · \(app.localizedName ?? "selected app")"
+        }
     }
     func dismissPetBubble() {
         guard petViewModel.acknowledgment == nil else { return }
         demoTask?.cancel(); chatTask?.cancel(); latestChatContext = nil
         browserChoiceTask?.cancel()
         browserPresentation = nil
+        screenChatHistory.reset()
         petViewModel.dismissBubble()
     }
     func acknowledgeWarning(id: String) {
@@ -292,27 +323,102 @@ final class SentinelPetRuntime: ObservableObject {
         demoTask?.cancel(); chatTask?.cancel(); browserChoiceTask?.cancel()
         acknowledgmentContext = nil; acknowledgmentTarget = nil
         latestChatContext = nil; browserPresentation = nil
+        screenChatHistory.reset()
         petViewModel.acknowledge(id: id)
         browserStatus = "Warning acknowledged."
     }
     func askPetChat(_ question: String) {
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty else { return }
+        rememberChatApplication()
+        let app = chatApplication()
+        if petViewModel.chatMessages.isEmpty { screenChatHistory.reset() }
         petViewModel.openChat(); petViewModel.appendUserChat(question); petViewModel.setChatThinking(true)
+        petViewModel.chatContextLabel = isChrome(app) ? "Reading current Chrome page…" : "Reading \(app?.localizedName ?? "current app")…"
         chatTask?.cancel()
-        let context = latestChatContext
+        let requestID = UUID(); chatRequestID = requestID
+        let context = petViewModel.acknowledgment != nil ? latestChatContext : nil
         chatTask = Task { [weak self] in
             guard let self else { return }
+            defer {
+                if self.chatRequestID == requestID { self.petViewModel.setChatThinking(false) }
+            }
             do {
-                let answer = try await self.riskAnalyzer.answerQuestion(question, context: context, model: self.settings.modelName)
-                guard !Task.isCancelled else { return }
+                var screen: ScreenChatContext?
+                var sourceKey = "unavailable:\(app?.processIdentifier ?? -1)"
+                do {
+                    let fresh = try await self.captureChatContext(app:app)
+                    screen = fresh.context; sourceKey = fresh.key
+                    self.petViewModel.chatContextLabel = fresh.label
+                } catch is CancellationError { throw CancellationError() }
+                catch {
+                    self.petViewModel.chatContextLabel = self.isChrome(app) ?
+                        "Chrome page unavailable · check the Muse Guard extension" : "\(app?.localizedName ?? "Current app") unavailable · check screen access"
+                }
+                try Task.checkCancellation()
+                guard self.chatRequestID == requestID else { return }
+                let scopedHistory = self.screenChatHistory.history(for:sourceKey)
+                let answer = try await self.riskAnalyzer.answerQuestion(question, context:context,
+                    screenContext:screen,history:scopedHistory,model:self.settings.modelName)
+                guard !Task.isCancelled, self.chatRequestID == requestID else { return }
                 self.petViewModel.appendAssistantChat(answer)
+                self.screenChatHistory.append(question:question,answer:answer,sourceKey:sourceKey)
             } catch {
-                guard !Task.isCancelled else { return }
+                guard !Task.isCancelled, self.chatRequestID == requestID else { return }
                 self.petViewModel.appendAssistantChat(error.localizedDescription)
             }
-            self.petViewModel.setChatThinking(false)
         }
+    }
+
+    private func rememberChatApplication() {
+        if let app = NSWorkspace.shared.frontmostApplication, isContextApplication(app) {
+            lastExternalApplication = app
+        }
+    }
+    private func chatApplication() -> NSRunningApplication? {
+        if let app = NSWorkspace.shared.frontmostApplication, isContextApplication(app) { return app }
+        return lastExternalApplication.flatMap { $0.isTerminated ? nil : $0 }
+    }
+    private func isContextApplication(_ app: NSRunningApplication) -> Bool {
+        app.processIdentifier != ProcessInfo.processInfo.processIdentifier && app.activationPolicy == .regular &&
+            !UnrealCharacterRenderer.shared.ownsProcess(app.processIdentifier)
+    }
+    private func isChrome(_ app: NSRunningApplication?) -> Bool { app?.bundleIdentifier?.hasPrefix("com.google.Chrome") == true }
+    private func chatWindow(for app: NSRunningApplication) -> (id:Int,title:String?)? {
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly,.excludeDesktopElements],kCGNullWindowID) as? [[String:Any]] ?? []
+        guard let window = windows.first(where: { $0[kCGWindowOwnerPID as String] as? pid_t == app.processIdentifier && $0[kCGWindowLayer as String] as? Int == 0 }),
+              let id = window[kCGWindowNumber as String] as? Int else { return nil }
+        return (id,window[kCGWindowName as String] as? String)
+    }
+    private func captureChatContext(app: NSRunningApplication?) async throws -> (context:ScreenChatContext,key:String,label:String) {
+        guard let app, !app.isTerminated else { throw ScreenReaderError.noFrontmostApplication }
+        let name = app.localizedName ?? "Current app"
+        guard !isDenied(ScreenSnapshot(appName:name,windowTitle:nil,text:"")) else { throw ChatScreenError.denied }
+        if isChrome(app) {
+            let fresh = try await browserChatContext.requestContext()
+            try Task.checkCancellation()
+            guard chatApplication()?.processIdentifier == app.processIdentifier else { throw ChatScreenError.changed }
+            let snapshot = ScreenSnapshot(appName:name,windowTitle:fresh.page.title,text:fresh.page.text)
+            guard !isDenied(snapshot) else { throw ChatScreenError.denied }
+            return (ScreenChatContext(snapshot:snapshot,sourceLabel:"Chrome extension · current visible page",url:fresh.page.url),
+                "chrome:\(fresh.tabID):\(fresh.documentID):\(fresh.page.url)","Using Chrome · \(fresh.page.title)")
+        }
+        let beforeWindow = chatWindow(for:app)
+        guard !isDenied(ScreenSnapshot(appName:name,windowTitle:beforeWindow?.title,text:"")) else { throw ChatScreenError.denied }
+        var snapshot: ScreenSnapshot?
+        if AccessibilityPermissionController.isTrusted { snapshot = try? screenReader.readContext(for:app) }
+        if let snapshot, isDenied(snapshot) { throw ChatScreenError.denied }
+        var image: String?
+        if (snapshot?.text.count ?? 0) < 80, ScreenCapturePermissionController.isTrusted, let beforeWindow {
+            image = try? screenshotCapture.capture(windowID:CGWindowID(beforeWindow.id)).dataURL
+        }
+        let afterWindow = chatWindow(for:app)
+        guard chatApplication()?.processIdentifier == app.processIdentifier,
+              beforeWindow?.id == afterWindow?.id, beforeWindow?.title == afterWindow?.title else { throw ChatScreenError.changed }
+        guard snapshot != nil || image != nil else { throw ScreenReaderError.noReadableContent(name) }
+        let evidence = snapshot ?? ScreenSnapshot(appName:name,windowTitle:beforeWindow?.title,text:"The attached image is the current application window.")
+        return (ScreenChatContext(snapshot:evidence,sourceLabel:image == nil ? "Current application window text" : "Current application window screenshot",screenshotDataURL:image),
+            "app:\(app.processIdentifier):\(beforeWindow?.id ?? -1)","Using \(name) · \(evidence.windowTitle ?? "current window")")
     }
     func previewGuardianIntervention() {
         guard petViewModel.acknowledgment == nil else { return }
@@ -397,4 +503,7 @@ final class SentinelPetRuntime: ObservableObject {
         appendLog(AnalysisLogEntry(timestamp: Date(), source: source, appName: snapshot?.appName ?? source.label, windowTitle: snapshot?.windowTitle, model: settings.modelName, includesScreenshot: false, verdict: nil, errorMessage: error.localizedDescription))
     }
     private func appendLog(_ entry: AnalysisLogEntry) { analysisLogs.insert(entry, at: 0); if analysisLogs.count > 200 { analysisLogs.removeLast() } }
+    deinit { inferenceActivityTask?.cancel() }
 }
+
+private enum ChatScreenError: Error { case changed, denied }

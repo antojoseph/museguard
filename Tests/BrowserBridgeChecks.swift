@@ -70,6 +70,23 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
         let defaultMethod = try defaultForm.validated().action?.method
         assert(defaultMethod == "GET")
         _ = try BrowserRequest(id: "status", type: "status").validated()
+        for enabled in [true,false] {
+            let heartbeat = try BrowserRequest(id: "protection", type: "protection-state", protectionEnabled: enabled).validated()
+            let data = try JSONEncoder().encode(heartbeat)
+            let wire = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+            assert(Set(wire.keys) == Set(["version","id","type","mode","protection_enabled"]))
+            assert(wire["protection_enabled"] as? Bool == enabled)
+            let decoded = try JSONDecoder().decode(BrowserRequest.self, from: data)
+            assert(decoded.protectionEnabled == enabled)
+        }
+        for badBool in ["true",1,NSNull()] as [Any] {
+            let wire: [String: Any] = ["version":1,"id":"bad-state","type":"protection-state","mode":"text","protection_enabled":badBool]
+            do {
+                let decoded = try JSONDecoder().decode(BrowserRequest.self, from: JSONSerialization.data(withJSONObject:wire))
+                _ = try decoded.validated()
+                fatalError("A non-Boolean protection state was accepted")
+            } catch {}
+        }
         _ = try BrowserRequest(id: "present", type: "present", assessmentID: "one").validated()
         _ = try BrowserRequest(id: "repeat-high", type: "present-block", assessmentID: "one").validated()
         for purpose in ["proactive", "intent"] {
@@ -136,6 +153,22 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
         }
         let tooManyBytes = "a" + String(repeating: "\u{0301}", count: 17_000)
         for invalid in [imageRequest(oversizedPNG(width: 4_097, height: 1)),
+                        BrowserRequest(id: "x", type: "protection-state"),
+                        BrowserRequest(id: "x", type: "protection-state", mode: "vision", protectionEnabled: true),
+                        BrowserRequest(id: "x", type: "protection-state", page: page, protectionEnabled: true),
+                        BrowserRequest(id: "x", type: "protection-state", action: .init(kind:"page",url:nil,label:nil,method:nil,sensitive:nil), protectionEnabled: true),
+                        BrowserRequest(id: "x", type: "protection-state", screenshot: "private-image", protectionEnabled: true),
+                        BrowserRequest(id: "x", type: "protection-state", assessmentID: "one", protectionEnabled: true),
+                        BrowserRequest(id: "x", type: "protection-state", reason: "checking", protectionEnabled: true),
+                        BrowserRequest(id: "x", type: "protection-state", purpose: "proactive", protectionEnabled: true),
+                        BrowserRequest(id: "x", type: "status", protectionEnabled: false),
+                        BrowserRequest(id: "x", type: "assess", page: page, protectionEnabled: true),
+                        BrowserRequest(id: "x", type: "present", assessmentID: "one", protectionEnabled: true),
+                        BrowserRequest(id: "x", type: "present-block", assessmentID: "one", protectionEnabled: false),
+                        BrowserRequest(id: "x", type: "decision", assessmentID: "one", protectionEnabled: false),
+                        BrowserRequest(id: "x", type: "cancel", assessmentID: "one", protectionEnabled: true),
+                        BrowserRequest(id: "x", type: "notice", page: page, reason: "checking", protectionEnabled: true),
+                        BrowserRequest(id: "x", type: "finish-checking", assessmentID: "one", protectionEnabled: true),
                         imageRequest(oversizedPNG(width: 4_096, height: 2_049)),
                         imageRequest(Data([137,80,78,71,13,10,26,10])),
                         BrowserRequest(id: "x", type: "assess", page: .init(url: "https://example.test", title: "", text: tooManyBytes)),

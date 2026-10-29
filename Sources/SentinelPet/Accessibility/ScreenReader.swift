@@ -51,12 +51,16 @@ final class ScreenReader {
     ]
 
     func readFocusedContext(maxCharacters: Int = 8_000) throws -> ScreenSnapshot {
-        guard AccessibilityPermissionController.isTrusted else {
-            throw ScreenReaderError.accessibilityPermissionRequired
-        }
-
         guard let app = NSWorkspace.shared.frontmostApplication else {
             throw ScreenReaderError.noFrontmostApplication
+        }
+        return try readContext(for:app,maxCharacters:maxCharacters)
+    }
+
+    /// The last external app remains the source while Muse's chat owns focus.
+    func readContext(for app: NSRunningApplication, maxCharacters: Int = 8_000) throws -> ScreenSnapshot {
+        guard AccessibilityPermissionController.isTrusted else {
+            throw ScreenReaderError.accessibilityPermissionRequired
         }
 
         guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier else {
@@ -67,7 +71,7 @@ final class ScreenReader {
         let appElement = AXUIElementCreateApplication(app.processIdentifier)
         let focusedElement = copyElementAttribute(kAXFocusedUIElementAttribute, from: appElement)
         let focusedWindow = copyElementAttribute(kAXFocusedWindowAttribute, from: appElement)
-        let roots = [focusedElement, focusedWindow, appElement].compactMap { $0 }
+        let roots = [focusedElement, focusedWindow].compactMap { $0 }
 
         var visited = Set<CFHashCode>()
         var collector = TextCollector(maxCharacters: maxCharacters)
@@ -97,6 +101,8 @@ final class ScreenReader {
 
         let elementID = CFHash(element)
         guard visited.insert(elementID).inserted else { return }
+        let subrole = copyStringAttribute(kAXSubroleAttribute,from:element)
+        guard subrole != "AXSecureTextField" else { return }
 
         for attribute in textAttributes where !collector.isFull {
             collector.append(copyStringAttribute(attribute, from: element))

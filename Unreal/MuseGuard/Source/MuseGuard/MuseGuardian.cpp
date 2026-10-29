@@ -614,7 +614,7 @@ void AMuseGuardian::BeginPlay() {
     Super::BeginPlay();
     FParse::Value(FCommandLine::Get(),TEXT("MuseBridge="),BridgeDirectory);
     LastHeartbeat=FPlatformTime::Seconds();
-    BuildCharacter();BuildFur();BuildAccessories();BuildContactShadow();BuildBed();BuildMagic();
+    BuildCharacter();BuildFur();BuildAccessories();BuildSpyGlasses();BuildContactShadow();BuildBed();BuildMagic();
     YawnMouth=Part(TEXT("YawnMouth"),Head,FVector(33.2,0,13.4),FVector(1.8,5,8),FLinearColor(.025,.008,.014));
     YawnMouth->SetCastShadow(false);YawnMouth->SetVisibility(false);
     // Small continuous arcs replace the button eyes when fully closed.
@@ -665,6 +665,10 @@ void AMuseGuardian::ReadCommand() {
             }
             J->TryGetBoolField(TEXT("reduceMotion"),ReduceMotion);
             J->TryGetBoolField(TEXT("debugMotion"),DebugMotion);
+            // Activity is independent of the pose. Older command writers that
+            // omit the optional flag always leave the approved idle unchanged.
+            bool NextWorking=false;J->TryGetBoolField(TEXT("working"),NextWorking);Working=NextWorking;
+            bool NextProtection=false;J->TryGetBoolField(TEXT("protectionActive"),NextProtection);ProtectionActive=NextProtection;
             double Inspection=0;J->TryGetNumberField(TEXT("inspectionYaw"),Inspection);
             InspectionYaw=DebugMotion?float(Inspection):0;
             double PhaseValue=0;
@@ -765,6 +769,43 @@ void AMuseGuardian::Tick(float DeltaTime) {
     const bool Resting=State==TEXT("idle")||State==TEXT("stretch")||Dozy;
     SleepAmount=ReduceMotion?(Sleeping?1.f:0.f):FMath::FInterpConstantTo(SleepAmount,BedReady?1.f:0.f,DeltaTime,BedReady?.23f:1.4f);
     if(DesktopScene) SleepAmount=0;
+    // A single, reversible don/doff gesture owns the prop. Finish putting it on
+    // even if a short inference ends mid-lift; a later job reverses removal
+    // from the same progress rather than teleporting between hand and face.
+    const bool CanWork=(State==TEXT("idle")||Dozy||Scan)&&!DesktopScene&&SleepAmount<=.001f&&Yawn<=.001f&&WandAmount<=.001f&&Pose<=.01f;
+    const bool SpyOnDuty=Working||ProtectionActive;
+    if(Working&&!WasWorking&&SpyWear>=.99f&&CanWork) SpyCheckAge=0;
+    else SpyCheckAge+=DeltaTime;
+    WasWorking=Working;
+    if(!CanWork) SpyCheckAge=99;
+    if(!CanWork) { SpyWear=0;SpyWornHold=0;SpyDoffGrabAge=0;SpyCompletingPutOn=false; }
+    else if(ReduceMotion) { SpyWear=SpyOnDuty?1.f:0.f;SpyWornHold=0;SpyDoffGrabAge=0;SpyCompletingPutOn=false; }
+    else {
+        if(SpyOnDuty) SpyDoffGrabAge=0;
+        if(SpyOnDuty&&SpyWear<1.f) SpyCompletingPutOn=true;
+        if(SpyCompletingPutOn) {
+            SpyWear=FMath::Min(1.f,SpyWear+DeltaTime/1.15f);
+            if(SpyWear>=1.f) { SpyCompletingPutOn=false;SpyWornHold=.20f;SpyDoffGrabAge=0; }
+        } else if(!SpyOnDuty) {
+            if(SpyWornHold>0) SpyWornHold=FMath::Max(0.f,SpyWornHold-DeltaTime);
+            else {
+                const float NextWear=FMath::Max(0.f,SpyWear-DeltaTime/.95f);
+                // The prop stays pinned until the physically smoothed paw has
+                // actually reached the temple. Progress alone cannot promise
+                // contact while the arm is still catching up from its rest.
+                if(SpyWear>=.80f&&NextWear<.80f&&SpyDoffGrabAge<.65f&&
+                   (SpyDoffGrabAge<.12f||SpyGripDistance>1.f)) {
+                    SpyWear=.80f;SpyDoffGrabAge+=DeltaTime;
+                } else SpyWear=NextWear;
+            }
+        }
+    }
+    WorkingBlend=SpyWear;
+    const float WorkAmount=SpyWear;
+    const float WorkHeadPitch=0,WorkHeadYaw=0,WorkHeadRoll=0,WorkPawLift=0;
+    const float SpyCheckTouch=ProtectionActive&&SpyWear>=.99f&&!ReduceMotion?
+        FMath::SmoothStep(0.f,.35f,SpyCheckAge)*(1-FMath::SmoothStep(.85f,1.25f,SpyCheckAge)):0.f;
+    const float SpyHandWeight=ReduceMotion?0.f:FMath::Max(SpyCheckTouch,FMath::SmoothStep(.02f,.20f,SpyWear)*(1-FMath::SmoothStep(.78f,1.f,SpyWear)));
     const float SleepLie=FMath::SmoothStep(.44f,.96f,SleepAmount);
     const float BedAppear=FMath::SmoothStep(0.f, Sleeping?.18f:.40f,SleepAmount);
     // Rise with the conjured mattress: top 27 * scale, minus its 12cm drop.
@@ -781,7 +822,7 @@ void AMuseGuardian::Tick(float DeltaTime) {
     }
     const float Breathe=ReduceMotion?0.f:FMath::Sin(Time*1.25f);
     const float IdleCycle=FMath::Fmod(StateAge,22.f);
-    const float Stretch=(Resting&&!ReduceMotion&&!Dozy)?(State==TEXT("stretch")?.5f+.5f*FMath::Sin(Time*1.2f):FMath::Sin(PI*FMath::Clamp((IdleCycle-10.f)/4.f,0.f,1.f))):0.f;
+    const float Stretch=(Resting&&!ReduceMotion&&!Dozy)?(State==TEXT("stretch")?.5f+.5f*FMath::Sin(Time*1.2f):FMath::Sin(PI*FMath::Clamp((IdleCycle-10.f)/4.f,0.f,1.f)))*(1-WorkAmount):0.f;
     Bed->SetVisibility(SleepAmount>.001f,true);
     Bed->SetRelativeScale3D(FVector(FMath::Max(.001f,BedAppear)));
     Bed->SetRelativeLocation(FVector(0,0,-12.f*(1-BedAppear)));
@@ -900,9 +941,9 @@ void AMuseGuardian::Tick(float DeltaTime) {
             ShadowMaterial->SetScalarParameterValue(TEXT("Opacity"),.24f*SleepLie);
         }
     }
-    const float ScanLook=Scan&&!ReduceMotion?FMath::Sin(Time*.85f)*9.f:0;
-    const float Curious=Resting&&!ReduceMotion?FMath::Sin(PI*FMath::Clamp((IdleCycle-3.f)/5.f,0.f,1.f))*22.f:0;
-    FQuat HeadTarget=ReduceMotion?FQuat::Identity:FRotator((Dozy?-8.f-4.f*FMath::Sin(Time*.8f):0)+(Talk?FMath::Sin(Time*3.4f)*2.f:0)+Compression*3.f+Yawn*5.f,SmoothGaze*7.f+ScanLook+Curious-Yaw*.18f,FMath::Sin(Time*1.2f)*1.2f+(Scan?4.f:0)).Quaternion();
+    const float ScanLook=Scan&&!ReduceMotion?FMath::Sin(Time*.85f)*9.f*(1-WorkAmount):0;
+    const float Curious=Resting&&!ReduceMotion?FMath::Sin(PI*FMath::Clamp((IdleCycle-3.f)/5.f,0.f,1.f))*22.f*(1-WorkAmount):0;
+    FQuat HeadTarget=ReduceMotion?FRotator(WorkHeadPitch,0,0).Quaternion():FRotator((Dozy?(-8.f-4.f*FMath::Sin(Time*.8f))*(1-WorkAmount):0)+(Talk?FMath::Sin(Time*3.4f)*2.f:0)+Compression*3.f+Yawn*5.f+WorkHeadPitch,SmoothGaze*7.f+ScanLook+Curious-Yaw*.18f+WorkHeadYaw,FMath::Sin(Time*1.2f)*1.2f+(Scan?4.f:0)+WorkHeadRoll).Quaternion();
     const FQuat SleepHead=RootPose.GetRotation().Inverse()*RestingHeadRotation();
     HeadTarget=FQuat::Slerp(HeadTarget,SleepHead,SleepLie);
     BoneRotations[1]=FQuat::Slerp(BoneRotations[1],HeadTarget,1-FMath::Exp(-DeltaTime*6.f));
@@ -910,6 +951,17 @@ void AMuseGuardian::Tick(float DeltaTime) {
     BoneOffsets[1]=(RootPose.InverseTransformPosition(HeadSocket)-Pivots[1])*SleepLie;
     Head->SetRelativeLocation(Pivots[1]+BoneOffsets[1]);
     Head->SetRelativeRotation(BoneRotations[1]);
+    const FVector SpyFaceOrigin(34,0,19.2),SpyTempleGrip(-10,-20.5,.7),SpyPalmGrip(10.5,-2,-5);
+    const FTransform SpyHeadPose=Head->GetRelativeTransform();
+    const FQuat SpyWornRotation=SpyHeadPose.GetRotation();
+    const FVector SpyWornPosition=SpyHeadPose.TransformPosition(SpyFaceOrigin);
+    const FVector SpyWornContact=SpyWornPosition+SpyWornRotation.RotateVector(SpyTempleGrip);
+    const float SpyLift=FMath::SmoothStep(.10f,.68f,SpyWear);
+    const float SpyU=1-SpyLift;
+    const FVector SpyCarry(16,-41,34),SpyArc(37,-42,57),SpyApproach=SpyWornContact+FVector(5,-7,-5);
+    const FVector SpyContact=SpyCarry*(SpyU*SpyU*SpyU)+SpyArc*(3*SpyU*SpyU*SpyLift)+SpyApproach*(3*SpyU*SpyLift*SpyLift)+SpyWornContact*(SpyLift*SpyLift*SpyLift);
+    const FQuat SpyHeldRotation=FQuat::Slerp(FRotator(8,-6,-8).Quaternion(),SpyWornRotation,SpyLift);
+    FQuat SpyPalmRotation=FQuat::Identity;
     for(int I=0;I<2;++I) {
         const float Side=I==0?-1.f:1.f;
         const float Gesture=Talk&&!ReduceMotion?(I==0?-.15f:.1f*FMath::Sin(Time*2.5f)):0;
@@ -937,9 +989,27 @@ void AMuseGuardian::Tick(float DeltaTime) {
             const FQuat CastArm=FQuat::FindBetweenNormals((Pivots[6]-Pivots[2]).GetSafeNormal(),(Grip-Pivots[2]).GetSafeNormal());
             ArmTarget=FQuat::Slerp(ArmTarget,CastArm,Spell*(1-SleepLie));
         }
+        if(I==0&&SpyHandWeight>.001f) {
+            // Solve shoulder→wrist→paw-tip. Keeping the real arm length and
+            // deriving the wrist from its rotation avoids detached mittens.
+            const FVector Shift(5,4,5),Shoulder=Pivots[2]+Shift;
+            const FVector RestArm=Pivots[6]-Pivots[2];
+            const float ArmLength=RestArm.Size(),PawLength=SpyPalmGrip.Size();
+            const FVector Direction=(SpyContact-Shoulder).GetSafeNormal();
+            const float Distance=FMath::Clamp(float((SpyContact-Shoulder).Size()),ArmLength-PawLength+.01f,ArmLength+PawLength-.01f);
+            const float Along=(ArmLength*ArmLength-PawLength*PawLength+Distance*Distance)/(2*Distance);
+            const float Out=FMath::Sqrt(FMath::Max(0.f,ArmLength*ArmLength-Along*Along));
+            const FVector Pole=(FVector(0,-1,0)-Direction*FVector::DotProduct(FVector(0,-1,0),Direction)).GetSafeNormal();
+            const FVector Wrist=Shoulder+Direction*Along+Pole*Out;
+            const FQuat SpyArm=FQuat::FindBetweenNormals(RestArm.GetSafeNormal(),(Wrist-Shoulder).GetSafeNormal());
+            SpyPalmRotation=FQuat::FindBetweenNormals(SpyPalmGrip.GetSafeNormal(),(SpyContact-Wrist).GetSafeNormal());
+            ArmTarget=FQuat::Slerp(ArmTarget,SpyArm,SpyHandWeight);
+            BoneOffsets[2]=FMath::Lerp(BoneOffsets[2],Shift,SpyHandWeight);
+        }
         BoneRotations[2+I]=FQuat::Slerp(BoneRotations[2+I],ArmTarget,1-FMath::Exp(-DeltaTime*11.f));
         const FQuat PalmFacing=FRotator(155.f,0,Side*5.f).Quaternion();
         BoneRotations[6+I]=FQuat::Slerp(BoneRotations[2+I],PalmFacing,Pose);
+        if(I==0&&SpyHandWeight>.001f) BoneRotations[6]=FQuat::Slerp(BoneRotations[6],SpyPalmRotation,SpyHandWeight);
         BoneOffsets[6+I]=Pivots[2+I]+BoneOffsets[2+I]+BoneRotations[2+I].RotateVector(Pivots[6+I]-Pivots[2+I])-Pivots[6+I];
         // Fold the soft mittens below the cheek, clear of the closed eyes.
         BoneOffsets[6+I]=FMath::Lerp(BoneOffsets[6+I],FVector(12,Side*38,83)-Pivots[6+I],SleepLie);
@@ -970,7 +1040,14 @@ void AMuseGuardian::Tick(float DeltaTime) {
         }
         PoseLeg(I,AnkleTarget,FootRotation);
     }
-    JointCorrection=FMath::Max(FMath::Max(Pose,FMath::Max(Stretch,Yawn)),Moving||Walking||Climbing||SleepAmount>.01f?1.f:0.f);
+    const float SpyAttach=ReduceMotion?1.f:FMath::SmoothStep(.60f,.78f,SpyWear);
+    const FVector SpyActualGrip=Pivots[6]+BoneOffsets[6]+BoneRotations[6].RotateVector(SpyPalmGrip);
+    SpyGripDistance=FVector::Distance(SpyActualGrip,SpyWornContact);
+    const FVector SpyHeldPosition=SpyActualGrip-SpyHeldRotation.RotateVector(SpyTempleGrip);
+    SpyGlasses->SetRelativeLocation(FMath::Lerp(SpyHeldPosition,SpyWornPosition,SpyAttach));
+    SpyGlasses->SetRelativeRotation(FQuat::Slerp(SpyHeldRotation,SpyWornRotation,SpyAttach));
+    SpyGlasses->SetVisibility(CanWork&&SpyWear>.035f,true);
+    JointCorrection=FMath::Max(FMath::Max(Pose,FMath::Max(Stretch,FMath::Max(Yawn,SpyHandWeight))),Moving||Walking||Climbing||SleepAmount>.01f?1.f:0.f);
     const float BlinkPhase=FMath::Fmod(Time,4.7f);
     const float AwakeBlink=BlinkPhase<.18f?FMath::Sin(BlinkPhase/.18f*PI):0;
     const float Blink=FMath::Lerp(FMath::Max(Yawn*.9f,FMath::Max(AwakeBlink,Dozy?.5f+.25f*FMath::Sin(Time*.7f):0.f)),1.f,SleepLie);
@@ -1018,6 +1095,15 @@ void AMuseGuardian::Tick(float DeltaTime) {
     }
     if(DebugMotion&&!BridgeDirectory.IsEmpty()) {
         auto J=MakeShared<FJsonObject>();
+        J->SetBoolField(TEXT("workingRequested"),Working);J->SetBoolField(TEXT("workingEligible"),CanWork);
+        J->SetNumberField(TEXT("workingBlend"),WorkingBlend);J->SetNumberField(TEXT("workingAmount"),WorkAmount);
+        J->SetNumberField(TEXT("workingHeadPitch"),WorkHeadPitch);J->SetNumberField(TEXT("workingHeadYaw"),WorkHeadYaw);J->SetNumberField(TEXT("workingPawLift"),WorkPawLift);
+        J->SetNumberField(TEXT("spyWear"),SpyWear);J->SetNumberField(TEXT("spyHandWeight"),SpyHandWeight);J->SetNumberField(TEXT("spyAttach"),SpyAttach);
+        J->SetBoolField(TEXT("spyVisible"),SpyGlasses->IsVisible());
+        J->SetBoolField(TEXT("protectionActive"),ProtectionActive);J->SetNumberField(TEXT("spyCheckTouch"),SpyCheckTouch);
+        J->SetNumberField(TEXT("spyDoffGrabAge"),SpyDoffGrabAge);J->SetNumberField(TEXT("spyTempleDistance"),SpyGripDistance);
+        const FVector SpyGripOnProp=SpyGlasses->GetRelativeTransform().TransformPosition(SpyTempleGrip);
+        J->SetNumberField(TEXT("spyGripError"),SpyHandWeight>.95f?FVector::Distance(SpyActualGrip,SpyGripOnProp):0.f);
         J->SetNumberField(TEXT("rumpSway"),RumpOffset.Y);J->SetNumberField(TEXT("rumpBounce"),RumpOffset.Z);
         J->SetNumberField(TEXT("magicCast"),Cast);J->SetNumberField(TEXT("magicDismiss"),Dismiss);
         J->SetNumberField(TEXT("bedScale"),BedAppear);J->SetNumberField(TEXT("wandAmount"),WandAmount);

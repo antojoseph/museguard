@@ -1,6 +1,8 @@
 # Approved avatar snapshot
 
-`MuseGuard/` contains the tracked Unreal project from the private [antojoseph/museguard repository](https://github.com/antojoseph/museguard) at commit `084350a40b9ac80ecee17dbfc58f78d568a4213c`. It matches the approved model and animations used by this companion.
+`MuseGuard/` contains the tracked Unreal project from the private [antojoseph/museguard repository](https://github.com/antojoseph/museguard) at commit `f42819d82280a133c243b542a58d85eb2d96c2ec`. It matches the approved model and animations used by this companion.
+
+This snapshot includes fitted 3D spy glasses that stay on while browser protection is active, with a paw-driven put-on/removal gesture and a small temple adjustment when inference starts. The source is mirrored in the sibling avatar project; the approved body geometry, materials and other poses are unchanged.
 
 The companion build prefers a sibling `../museguard/Unreal/MuseGuard` checkout when present. Without that checkout, it uses this bundled snapshot. `MUSE_AVATAR_SOURCE` can select another project explicitly. Generated Unreal build products are excluded.
 

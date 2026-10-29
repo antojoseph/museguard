@@ -14,6 +14,30 @@ actor LocalInferenceScheduler {
     private var waiting: [Job] = []
     private var active: Job?
     private var activeTask: Task<Void, Never>?
+    private var isWorking = false
+    private var activityObservers: [UUID: AsyncStream<Bool>.Continuation] = [:]
+
+    /// Observe actual slot work, including the current state for late viewers.
+    /// A queued request does not start activity, and a consecutive handoff does
+    /// not briefly clear it between two model operations.
+    func activityUpdates() -> AsyncStream<Bool> {
+        let id = UUID()
+        var captured: AsyncStream<Bool>.Continuation?
+        let stream = AsyncStream<Bool>(bufferingPolicy: .bufferingNewest(1)) { captured = $0 }
+        guard let continuation = captured else { return stream }
+        activityObservers[id] = continuation
+        continuation.onTermination = { [weak self] _ in
+            Task { await self?.removeActivityObserver(id) }
+        }
+        continuation.yield(isWorking)
+        return stream
+    }
+    private func removeActivityObserver(_ id: UUID) { activityObservers.removeValue(forKey: id) }
+    private func setWorking(_ working: Bool) {
+        guard working != isWorking else { return }
+        isWorking = working
+        for continuation in activityObservers.values { continuation.yield(working) }
+    }
 
     func run(priority: Priority, operation: @escaping () async throws -> String) async throws -> String {
         let id = UUID()
@@ -47,6 +71,7 @@ actor LocalInferenceScheduler {
             let result: Result<String, Error>
             do {
                 try Task.checkCancellation()
+                setWorking(true)
                 let value = try await job.operation()
                 try Task.checkCancellation()
                 result = .success(value)
@@ -59,6 +84,7 @@ actor LocalInferenceScheduler {
         active = nil; activeTask = nil
         job.continuation.resume(with: result)
         startNext()
+        if active == nil { setWorking(false) }
     }
     enum SchedulerError: LocalizedError {
         case busy

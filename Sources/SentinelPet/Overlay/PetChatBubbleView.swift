@@ -25,9 +25,13 @@ struct PetChatBubbleView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("Muse Guard")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                VStack(alignment:.leading,spacing:2) {
+                    Text("Muse Guard").font(.caption.weight(.semibold))
+                    if let label = viewModel.chatContextLabel {
+                        Text(label).font(.system(size:10)).lineLimit(1).help(label)
+                    }
+                }
+                .foregroundStyle(.secondary)
 
                 Spacer()
 

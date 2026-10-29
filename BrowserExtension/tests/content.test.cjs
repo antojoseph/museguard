@@ -44,7 +44,7 @@ async function harness(html, options = {}) {
     removeListener(fn) { receivers.delete(fn); receiver = [...receivers].at(-1); }
   }, sendMessage(message) {
     messages.push(message);
-    if (message.type === 'configuration') return deferredConfigs ? new Promise(resolve => configs.push({ resolve })) : Promise.resolve(config);
+    if (message.type === 'configuration') return deferredConfigs ? new Promise((resolve, reject) => configs.push({ resolve, reject })) : Promise.resolve(config);
     if (message.type === 'assess') return new Promise(resolve => checks.push({ message, resolve }));
     if (message.type === 'present-block') return presentResponse ? presentResponse(message) : Promise.resolve({ ok: true, id: 'ui-' + messages.length, action_state: 'pending' });
     return Promise.resolve({ ok: true });
@@ -84,6 +84,7 @@ async function harness(html, options = {}) {
     listenerCount(type) { return (listeners[type] || []).length; },
     receiverCount() { return receivers.size; },
     async foreground(value = true) { hidden = !value; w.document.dispatchEvent(new w.Event('visibilitychange')); await settle(); },
+    setHidden(value) { hidden = value; },
     message: message => new Promise(resolve => receiver(message, { id: 'extension-id' }, resolve)),
     noWarning() { assert.equal(w.document.querySelector('muse-guard-panel,[role="alertdialog"],dialog'), null); assert.ok(!w.document.body.textContent.includes('Native risk explanation only')); },
     close() { observers.forEach(x => x.disconnect()); w.dispatchEvent(new w.Event('pagehide')); w.close(); }
@@ -397,6 +398,70 @@ test('hidden tabs are scanned quietly and a fresh page-high warns on activation 
     await h.advance(100); assert.equal(h.checks.length, 1);
   } finally { h.close(); }
 });
+test('explicit tab activation recovers a live listener after its initial configuration request failed', async () => {
+  const h = await harness('<p>A page opened during a worker restart</p>', { deferredConfigs: true });
+  try {
+    h.configs[0].reject(new Error('The worker was unavailable')); await h.settle();
+    await h.advance(1000); assert.equal(h.checks.length, 0);
+    assert.equal((await h.message({ type: 'monitor-ready' })).ready, true);
+    h.setDeferredConfigs(false);
+    assert.deepEqual(structuredClone(await h.message({ type: 'monitor-activated' })), { ok: true, active: true });
+    await h.advance(100);
+    assert.equal(h.checks.length, 1);
+    assert.ok(h.checks[0].message.page.text.includes('worker restart'));
+  } finally { h.close(); }
+});
+test('explicit tab activation reconciles a missed global Pause and Resume without reviving older findings', async () => {
+  const h = await harness('<a id="go" href="https://destination.test/">Continue</a>');
+  try {
+    const link = h.w.document.getElementById('go'); await preflight(h, link);
+    assert.equal(h.trigger(link).defaultPrevented, true);
+    h.setConfig({ active: false, paused: true });
+    assert.deepEqual(structuredClone(await h.message({ type: 'monitor-activated' })), { ok: true, active: false });
+    const before = h.checks.length;
+    assert.equal(h.trigger(link).defaultPrevented, false);
+    await h.advance(1000); assert.equal(h.checks.length, before);
+    h.setConfig({ active: true, paused: false });
+    assert.deepEqual(structuredClone(await h.message({ type: 'monitor-activated' })), { ok: true, active: true });
+    assert.equal(h.trigger(link).defaultPrevented, false, 'Resume cannot restore an older high finding.');
+    await h.advance(100); assert.equal(h.checks.length, before + 1);
+  } finally { h.close(); }
+});
+test('switching between two monitored tabs preserves both checks and background refresh without DOM activation events', async () => {
+  const first = await harness('<p>Public content in the first tab</p>');
+  const second = await harness('<p>Public content in the second tab</p>', { hidden: true });
+  try {
+    await first.advance(100); await second.advance(100);
+    assert.equal(first.checks.length, 1); assert.equal(second.checks.length, 1);
+    assert.notEqual(first.checks[0].message.nonce, second.checks[0].message.nonce);
+    first.setHidden(true); second.setHidden(false);
+    assert.equal((await second.message({ type: 'monitor-activated' })).active, true);
+    await second.advance(100);
+    assert.equal(second.checks.length, 1, 'Activation must reuse the current in-flight check.');
+    first.checks[0].resolve(result('safe')); second.checks[0].resolve(result('safe'));
+    await first.settle(); await second.settle();
+    assert.equal(first.messages.some(message => message.type === 'cancel'), false);
+    await first.advance(30000); await second.advance(30000);
+    assert.equal(first.checks.length, 2, 'The previous tab continues refreshing while hidden.');
+    assert.equal(second.checks.length, 2);
+    assert.ok(first.checks[1].message.page.text.includes('first tab'));
+    assert.ok(second.checks[1].message.page.text.includes('second tab'));
+    first.noWarning(); second.noWarning();
+  } finally { first.close(); second.close(); }
+});
+test('explicit tab activation keeps a fresh exact action finding without renewing its expiry', async () => {
+  const h = await harness('<a id="go" href="https://destination.test/">Continue</a>');
+  try {
+    const link = h.w.document.getElementById('go'); await preflight(h, link);
+    const before = h.checks.length;
+    h.elapse(20000);
+    assert.equal((await h.message({ type: 'monitor-activated' })).active, true);
+    assert.equal(h.trigger(link).defaultPrevented, true, 'A configuration refresh alone does not invalidate current findings.');
+    h.elapse(10001);
+    assert.equal(h.trigger(link).defaultPrevented, false, 'Activation cannot extend a completed finding beyond its original TTL.');
+    assert.equal(h.checks.length, before);
+  } finally { h.close(); }
+});
 test('a rejected native warning is retried on focus using the same fresh high finding', async () => {
   const h = await harness('<p>Suspicious public page</p>');
   try {
@@ -425,5 +490,109 @@ test('snapshots and screenshot preparation remain bounded and introduce no risk 
     assert.equal((await h.message({ type: 'prepare-capture', nonce: snap.nonce })).ok, true);
     assert.equal((await h.message({ type: 'prepare-capture', nonce: 'wrong' })).ok, false);
     assert.equal(h.trigger(h.w.document.querySelector('a')).defaultPrevented, false); h.noWarning();
+  } finally { h.close(); }
+});
+test('long article snapshots reserve space for visible form safety metadata after many link destinations', async () => {
+  const links = Array.from({ length: 12 }, (_, i) => '<a href="https://destination.test/' + i + '/' + 'long-path-'.repeat(24) + '">Read source ' + i + '</a>').join('');
+  const h = await harness('<article><p>' + 'Public article copy '.repeat(300) + '</p>' + links +
+    '<form action="https://signin.test/verify?token=FORM_URL_SECRET" method="post"><input type="password" value="PASSWORD_SECRET"><button>Verify account</button></form></article>');
+  try {
+    const { page } = await h.message({ type: 'snapshot' });
+    assert.ok(page.text.length <= 6000);
+    assert.ok(page.text.includes('Public article copy'));
+    assert.ok(page.text.includes('https://destination.test/0/'));
+    assert.ok(page.text.includes('Read source 11'), 'Each selected visible link retains a label despite long earlier destinations.');
+    assert.ok(page.text.includes('Form destination: https://signin.test/verify'), 'Long visible article/link text must not erase the visible form destination.');
+    assert.ok(page.text.includes('field types: password'));
+    assert.ok(page.text.includes('sensitive fields: true'));
+    assert.ok(!page.text.includes('PASSWORD_SECRET') && !page.text.includes('FORM_URL_SECRET'));
+  } finally { h.close(); }
+});
+test('snapshot budgets preserve three visible forms and bounded complete origins on crowded pages', async () => {
+  const links = Array.from({ length: 12 }, (_, i) => '<a href="https://source' + i + '.test/' + 'path/'.repeat(200) + '?token=LINK_SECRET">Source ' + i + '</a>').join('');
+  const longHost = 'a'.repeat(200) + '.test';
+  const forms = '<form method="post" action="https://first.test/' + 'login/'.repeat(200) + '?token=FIRST_SECRET"><input type="email" value="EMAIL_SECRET"><input type="password" value="PASSWORD_SECRET"></form>' +
+    '<form method="post" action="https://second.test/' + 'verify/'.repeat(200) + '?token=SECOND_SECRET"><input type="number" autocomplete="one-time-code" value="OTP_SECRET"></form>' +
+    '<form method="get" action="https://' + longHost + '/search?token=THIRD_SECRET"><textarea>TEXTAREA_SECRET</textarea></form>';
+  const h = await harness('<article>' + '<p>Public article copy.</p>'.repeat(300) + links + forms + '</article>');
+  try {
+    const { page } = await h.message({ type: 'snapshot' });
+    assert.ok(page.text.length <= 6000);
+    assert.equal((page.text.match(/Form destination:/g) || []).length, 3);
+    for (let i = 0; i < 12; i++) assert.ok(page.text.includes('https://source' + i + '.test/'), 'Visible source ' + i);
+    assert.ok(page.text.includes('Form destination: https://first.test/'));
+    assert.ok(page.text.includes('Form destination: https://second.test/'));
+    assert.ok(page.text.includes('Form destination: [destination too long]'));
+    assert.ok(!page.text.includes('https://' + 'a'.repeat(100)), 'A shortened address must never invent a partial hostname.');
+    assert.equal((page.text.match(/sensitive fields: true/g) || []).length, 2);
+    assert.equal((page.text.match(/sensitive fields: false/g) || []).length, 1);
+    assert.ok(page.text.includes('field types: email, password') && page.text.includes('field types: number') && page.text.includes('field types: textarea'));
+    for (const secret of ['LINK_SECRET', 'FIRST_SECRET', 'EMAIL_SECRET', 'PASSWORD_SECRET', 'SECOND_SECRET', 'OTP_SECRET', 'THIRD_SECRET', 'TEXTAREA_SECRET']) assert.ok(!JSON.stringify(page).includes(secret), secret);
+  } finally { h.close(); }
+});
+test('scrolled snapshots describe the current viewport and replace earlier text and destinations', async () => {
+  const h = await harness('<section id="top"><h1>Top of guide</h1><a href="https://top.test/start">Top source</a></section><section id="bottom"><h2>Pay periods</h2><p>US bi-weekly. UK monthly.</p><a href="https://bottom.test/payroll?token=URL_SECRET">Payroll details</a></section>');
+  try {
+    let position = 'top';
+    h.w.HTMLElement.prototype.getBoundingClientRect = function () {
+      const section = this.closest('#top,#bottom');
+      return section && section.id !== position ? { top: -500, bottom: -400, left: 0, right: 200, width: 200, height: 100 } :
+        { top: 10, bottom: 60, left: 0, right: 200, width: 200, height: 50 };
+    };
+    const first = await h.message({ type: 'snapshot' });
+    assert.ok(first.page.text.includes('Top of guide') && first.page.text.includes('https://top.test/start'));
+    assert.ok(!first.page.text.includes('Pay periods') && !first.page.text.includes('https://bottom.test'));
+    position = 'bottom';
+    const next = await h.message({ type: 'snapshot' });
+    assert.equal(next.nonce, first.nonce);
+    assert.ok(next.page.text.includes('US bi-weekly. UK monthly.') && next.page.text.includes('https://bottom.test/payroll'));
+    assert.ok(!next.page.text.includes('Top of guide') && !next.page.text.includes('https://top.test'));
+    assert.ok(!JSON.stringify(next).includes('URL_SECRET'));
+  } finally { h.close(); }
+});
+test('fresh SPA snapshots replace old route facts and preserve redacted route identity', async () => {
+  const h = await harness('<main><h1>Product A</h1><p>Ships Monday.</p><a href="https://docs.test/product-a">Read A</a></main>');
+  try {
+    const before = await h.message({ type: 'snapshot' });
+    h.w.history.pushState({}, '', '/product-b?session=NEW_ROUTE_SECRET#private');
+    h.w.document.title = 'Product B';
+    h.w.document.querySelector('main').innerHTML = '<h1>Product B</h1><p>Ships Friday.</p><a href="https://docs.test/product-b?token=DESTINATION_SECRET">Read B</a>';
+    await h.settle();
+    const after = await h.message({ type: 'snapshot' });
+    assert.equal(after.nonce, before.nonce);
+    assert.equal(after.page.url, 'https://shop.example.test/product-b');
+    assert.equal(after.page.title, 'Product B');
+    assert.ok(after.page.text.includes('Ships Friday.') && after.page.text.includes('https://docs.test/product-b'));
+    for (const stale of ['Product A', 'Ships Monday.', 'product-a', 'NEW_ROUTE_SECRET', 'DESTINATION_SECRET']) assert.ok(!JSON.stringify(after).includes(stale), stale);
+  } finally { h.close(); }
+});
+test('nested article, table, FAQ and navigation snapshots retain readable facts in order', async () => {
+  const h = await harness('<nav><a href="https://guide.test/start">Guide home</a></nav><main><article><header><h1>Employee guide</h1></header><section><details open><summary>When am I paid?</summary><div><table><thead><tr><th>Region</th><th>Schedule</th></tr></thead><tbody><tr><td>US</td><td>Bi-weekly</td></tr><tr><td>UK</td><td>Monthly</td></tr></tbody></table></div></details></section></article></main>');
+  try {
+    const { page } = await h.message({ type: 'snapshot' });
+    assert.ok(page.text.includes('Employee guide When am I paid? Region Schedule US Bi-weekly UK Monthly'));
+    assert.ok(page.text.includes('Guide home → https://guide.test/start'));
+    h.noWarning();
+  } finally { h.close(); }
+});
+test('chat snapshots exclude hidden and private subtrees, entered fields and URL secrets across layouts', async () => {
+  const h = await harness('<main><h1>Visible account help</h1><div hidden>HIDDEN_SECRET<a href="https://hidden.test">Hidden target</a></div><div aria-hidden="true">ARIA_SECRET</div><div data-muse-private>MARKED_SECRET</div><div style="visibility:hidden">INVISIBLE_SECRET</div><div style="opacity:0">TRANSPARENT_SECRET</div><form action="https://user:FORM_CREDENTIAL_SECRET@service.test/login?token=FORM_QUERY_SECRET" method="post"><label>Password<input type="password" value="INPUT_SECRET"></label><textarea>TEXTAREA_SECRET</textarea><select><option>OPTION_SECRET</option></select><div contenteditable="true">EDITOR_SECRET</div><button>Sign in</button></form><a href="https://user:LINK_CREDENTIAL_SECRET@service.test/help?token=LINK_QUERY_SECRET#LINK_FRAGMENT_SECRET">Read help</a></main>');
+  try {
+    const { page } = await h.message({ type: 'snapshot' });
+    assert.ok(page.text.includes('Visible account help') && page.text.includes('Password'));
+    assert.ok(page.text.includes('Read help → https://service.test/help'));
+    assert.ok(page.text.includes('Form destination: https://service.test/login'));
+    assert.ok(page.text.includes('field types: password, textarea, select-one'));
+    for (const secret of ['HIDDEN_SECRET', 'ARIA_SECRET', 'MARKED_SECRET', 'INVISIBLE_SECRET', 'TRANSPARENT_SECRET', 'INPUT_SECRET', 'TEXTAREA_SECRET', 'OPTION_SECRET', 'EDITOR_SECRET', 'FORM_CREDENTIAL_SECRET', 'FORM_QUERY_SECRET', 'LINK_CREDENTIAL_SECRET', 'LINK_QUERY_SECRET', 'LINK_FRAGMENT_SECRET', 'https://hidden.test']) assert.ok(!JSON.stringify(page).includes(secret), secret);
+  } finally { h.close(); }
+});
+test('pages with no readable text expose no invented evidence or private control contents', async () => {
+  const h = await harness('<canvas>CANVAS_FALLBACK_SECRET</canvas><svg><text>SVG_SECRET</text></svg><iframe title="frame"></iframe><input type="text" value="INPUT_SECRET"><div hidden>HIDDEN_SECRET</div>');
+  try {
+    const snap = await h.message({ type: 'snapshot' });
+    assert.equal(snap.page.text, 'Visible link destinations: Visible forms:');
+    assert.equal(snap.captureSupport, 2);
+    assert.ok(!JSON.stringify(snap).includes('_SECRET'));
+    h.noWarning();
   } finally { h.close(); }
 });

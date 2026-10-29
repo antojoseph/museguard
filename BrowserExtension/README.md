@@ -10,6 +10,8 @@ Protection starts on for all normal HTTP/HTTPS web tabs where Chrome permits the
 
 Loading, updating or restarting the extension also attaches to already-open HTTP/HTTPS tabs across Chrome windows. New navigations use the declared content script; activation and restored tabs provide another attachment check. Duplicate attachment requests reuse the same live listener. Discarded tabs start when Chrome restores them, and a saved Pause or disabled setting is preserved.
 
+Tab and Chrome-window activation explicitly refreshes the current tab's protection settings, including recovery from a temporary connection failure. Hidden tabs keep their own background checks. A metadata-only heartbeat reports the global protection state to Muse every 30 seconds, so changing tabs or finishing one inference does not trigger a nap or remove the on-duty glasses. Pause/Disable clears that state immediately; if Chrome disconnects, its native awake lease expires after 90 seconds. The model's real inference activity is tracked separately.
+
 Only a completed, still-current **high-risk** assessment calls Muse over or blocks a matching supported action. Low, medium, unknown and unavailable assessments stay quiet. Normal browsing also continues while an assessment is still running; that does not mean the content has been assessed as safe. A click made before a useful verdict is ready can proceed. This is proactive assistance with cached blocking, not an instantaneous network firewall.
 
 A high-risk page assessment can warn through Muse, but never blanket-blocks that page's links or forms. Blocking requires a fresh, exact high-risk action result, cached for at most 30 seconds and bound to the original page, document, destination and relevant action details. Changed pages or forms cannot reuse an older result. Risk explanations remain beside Muse on the desktop, and a dangerous action stays on the current page. Chrome retains the complete local destination URL; redacted analysis URLs are never substituted into navigation.
@@ -29,6 +31,8 @@ Pausing stops new automatic reads and clears cached decisions and pending extens
 Existing development installs migrate to this global behavior. The old site allowlist is ignored. A previously disabled global setting stays paused until you explicitly resume it.
 
 ## Manual checks and avatar warnings
+
+When a user asks Muse a chat question while Chrome is the source app, the desktop companion requests a fresh snapshot of the active tab. The extension polls a metadata-only mailbox over its existing local connection; it reads and sends page text only when that explicit one-time request exists. It checks the tab, window, URL, document and visible content again before replying, omits form values, and sends no automatic screenshot. This explicit chat path remains available while automatic protection is paused. The context is consumed once and expires after six seconds.
 
 **Check text** sends the current visible text and bounded destination metadata. **Check screenshot** captures the current visible tab for visual analysis. The popup shows only whether the check completed; findings are presented by Muse. Keep the real toolbar popup focused and open until a manual check finishes. Opening `popup.html` as an ordinary tab cannot capture or analyze content.
 

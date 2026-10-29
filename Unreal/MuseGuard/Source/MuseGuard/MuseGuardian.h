@@ -54,6 +54,7 @@ private:
     bool WasSleeping=false;
     void BuildMagic();
     UPROPERTY() USceneComponent* Head;
+    UPROPERTY() USceneComponent* SpyGlasses;
     UPROPERTY() UProceduralMeshComponent* CharacterMesh;
     UPROPERTY() UProceduralMeshComponent* FurMesh;
     UPROPERTY() UStaticMeshComponent* YawnMouth;
@@ -85,6 +86,12 @@ private:
     float Gaze = 0;
     float InspectionYaw = 0;
     bool ReduceMotion = false;
+    bool Working = false;
+    bool ProtectionActive = false, WasWorking = false;
+    float SpyCheckAge = 99;
+    float WorkingBlend = 0, WorkingVelocity = 0;
+    float SpyWear = 0, SpyWornHold = 0, SpyDoffGrabAge = 0, SpyGripDistance = 1000;
+    bool SpyCompletingPutOn = false;
     bool DesktopScene = false;
     bool Returning = false;
     int OutputWidth = 640, OutputHeight = 640;
@@ -102,6 +109,7 @@ private:
     void UpdateFur();
     void PoseLeg(int SideIndex, FVector AnkleTarget, FQuat AnkleRotation);
     void BuildAccessories();
+    void BuildSpyGlasses();
     void BuildContactShadow();
     void BuildBed();
     UProceduralMeshComponent* SoftBox(FName Name, USceneComponent* Parent, FVector Position, FVector Size, float Radius, FLinearColor Tint);

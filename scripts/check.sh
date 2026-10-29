@@ -6,11 +6,21 @@ mkdir -p build
 python3 scripts/check-muse-mesh.py
 python3 scripts/check-guard-accessories.py
 sources=Sources/SentinelPet
-xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/character-checks Tests/CharacterChecks.swift "$sources/Character/GuardianMotion.swift" "$sources/Character/GuardianPlacement.swift" "$sources/Character/UnrealCharacterRenderer.swift"
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/character-checks Tests/CharacterChecks.swift "$sources/Character/GuardianMotion.swift" "$sources/Character/GuardianPlacement.swift" "$sources/Character/GuardianWorkActivity.swift" "$sources/Character/UnrealCharacterRenderer.swift"
 ./build/character-checks
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/guardian-work-activity-checks Tests/GuardianWorkActivityChecks.swift "$sources/Character/GuardianWorkActivity.swift"
+./build/guardian-work-activity-checks
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/guardian-protection-checks Tests/GuardianProtectionChecks.swift "$sources/Character/GuardianProtectionActivity.swift" "$sources/Character/GuardianMotion.swift"
+./build/guardian-protection-checks
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/local-inference-activity-checks Tests/LocalInferenceActivityChecks.swift "$sources/Risk/LocalInferenceScheduler.swift"
+./build/local-inference-activity-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/guardian-acknowledgment-checks Tests/GuardianAcknowledgmentChecks.swift "$sources/Overlay/PetViewModel.swift" "$sources/Character/GuardianMotion.swift"
 ./build/guardian-acknowledgment-checks
 shared=("$sources/Risk/LocalRiskAnalyzer.swift" "$sources/Risk/LocalInferenceScheduler.swift" "$sources/Risk/LocalModelConfiguration.swift" "$sources/Risk/RiskVerdict.swift" "$sources/Accessibility/ScreenReader.swift" "$sources/Accessibility/AccessibilityPermissionController.swift")
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/screen-chat-checks Tests/ScreenChatChecks.swift "${shared[@]}"
+./build/screen-chat-checks
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-chat-context-checks Tests/BrowserChatContextChecks.swift "$sources/Browser/BrowserProtocol.swift" "$sources/Browser/BrowserChatContextBroker.swift"
+./build/browser-chat-context-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/response-checks Tests/ResponseChecks.swift "${shared[@]}"
 ./build/response-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-assessment-checks Tests/BrowserAssessmentChecks.swift "$sources/Browser/BrowserProtocol.swift" "$sources/Browser/BrowserAssessmentCoordinator.swift" "${shared[@]}"

@@ -8,6 +8,7 @@ final class BrowserAssessmentCoordinator {
     private let modelReady: () -> Bool
     private let isDenied: (ScreenSnapshot) -> Bool
     private let onPresent: (BrowserRequest, RiskVerdict, ScreenSnapshot) -> Bool
+    private let onProtectionChanged: (Bool) -> Void
     private let statusDetail: () -> String
     private let now: () -> Date
     private struct Receipt {
@@ -42,9 +43,11 @@ final class BrowserAssessmentCoordinator {
          isDenied: @escaping (ScreenSnapshot) -> Bool = { _ in false },
          statusDetail: @escaping () -> String = { "Text checks stay on this Mac. Visual checks require the screenshot button." },
          now: @escaping () -> Date = Date.init,
+         onProtectionChanged: @escaping (Bool) -> Void = { _ in },
          onPresent: @escaping (BrowserRequest, RiskVerdict, ScreenSnapshot) -> Bool = { _,_,_ in true }) {
         self.analyzer = analyzer; self.modelReady = modelReady; self.isDenied = isDenied
         self.statusDetail = statusDetail; self.now = now; self.onPresent = onPresent
+        self.onProtectionChanged = onProtectionChanged
     }
 
     func canContinue(assessmentID: String) -> Bool {
@@ -78,6 +81,14 @@ final class BrowserAssessmentCoordinator {
 
     private func handleValidated(_ request: BrowserRequest) async -> BrowserResponse {
         prune()
+        if request.type == "protection-state", let enabled = request.protectionEnabled {
+            // Repeated true messages renew the native awake lease. This is
+            // protection metadata, not a model operation or page assessment.
+            onProtectionChanged(enabled)
+            return BrowserResponse(id: request.id, ok: true, decision: "review", riskLevel: "unknown",
+                summary: enabled ? "Browser protection is active." : "Browser protection is paused.",
+                guidance: "Muse received the browser protection state.")
+        }
         if request.type == "status" {
             let ready = modelReady()
             return BrowserResponse(id: request.id, ok: true, decision: "review", riskLevel: "unknown",
