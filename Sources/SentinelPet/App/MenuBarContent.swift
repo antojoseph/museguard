@@ -3,11 +3,33 @@ import AppKit
 
 /// Contents of the menu-bar dropdown.
 struct MenuBarContent: View {
+    @ObservedObject private var pet = SentinelPetRuntime.shared.petViewModel
+    @ObservedObject private var renderer = UnrealCharacterRenderer.shared
+    @ObservedObject private var localModel = LocalModelService.shared
     @ObservedObject var runtime: SentinelPetRuntime = .shared
 
     var body: some View {
-        Text("Sentinel Pet")
+        Text("Muse Guard")
             .font(.headline)
+
+        Label(renderer.status, systemImage: "cube.transparent")
+        Button(pet.isAvatarHidden ? "Show Muse" : "Hide Muse") { runtime.toggleAvatarVisibility() }
+        Toggle("Stay out of my way", isOn:$pet.automaticallyPositions)
+        Button("Open Muse Studio…") { GuardianStudio.shared.show() }
+        Button("Preview guard intervention") { runtime.previewGuardianIntervention() }
+            .disabled(!renderer.isReady || pet.isAvatarHidden || pet.acknowledgment != nil)
+        Picker("Accessory", selection: $renderer.accessory) {
+            Text("Guard · cap & badge").tag("guard")
+            Text("Focus · headphones").tag("focus")
+            Text("Just Muse").tag("none")
+        }
+        Button("Return Muse home") { runtime.dismissPetBubble() }
+            .disabled(pet.acknowledgment != nil)
+        Menu("3D renderer") {
+            Button("Restart 3D renderer") { renderer.restart() }
+            Button("Open renderer logs") { renderer.showLogs() }
+        }
+        Divider()
 
         Label(
             runtime.accessibilityTrusted ? "Accessibility enabled" : "Accessibility optional",
@@ -19,10 +41,10 @@ struct MenuBarContent: View {
             systemImage: runtime.screenCaptureTrusted ? "checkmark.rectangle" : "camera.viewfinder"
         )
 
-        Label(
-            runtime.hasFireworksAPIKey ? "Fireworks configured" : "Fireworks API key required",
-            systemImage: runtime.hasFireworksAPIKey ? "checkmark.circle" : "key"
-        )
+        Label(localModel.status, systemImage: "desktopcomputer")
+        Label(runtime.browserStatus, systemImage: "globe")
+        Button("Start local model") { localModel.start() }
+        Button("Open model logs") { localModel.showLogs() }
 
         Label(
             runtime.isMonitoring ? runtime.monitorStatus : "Monitoring paused",
@@ -68,13 +90,15 @@ struct MenuBarContent: View {
             runtime.showAnalysisLogs()
         }
 
+        Button("Open mock lab…") { MockLab.shared.show() }
+
         Button("Settings…") {
             runtime.showSettings()
         }
 
         Divider()
 
-        Button("Quit Sentinel Pet") {
+        Button("Quit Muse Guard") {
             NSApplication.shared.terminate(nil)
         }
         .keyboardShortcut("q")

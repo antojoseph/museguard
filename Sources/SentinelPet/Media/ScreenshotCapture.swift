@@ -20,7 +20,7 @@ enum ScreenshotCaptureError: LocalizedError {
         case .captureFailed:
             return "I could not capture the current screen."
         case .encodeFailed:
-            return "I captured the screen, but could not prepare the image for Fireworks."
+            return "I captured the screen, but could not prepare the image for local analysis."
         }
     }
 }

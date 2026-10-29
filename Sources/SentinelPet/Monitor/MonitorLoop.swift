@@ -34,12 +34,11 @@ enum MonitorLoopStatus: Equatable {
 }
 
 /// Debounced continuous sampler for screenshots. Capture runs on a fixed cadence
-/// while Fireworks checks run asynchronously, so inference latency does not delay
-/// the next screen sample.
+/// with at most one local inference in flight, avoiding a backlog of stale captures.
 @MainActor
 final class MonitorLoop {
     private let screenReader: ScreenReader
-    private let riskAnalyzer: FireworksRiskAnalyzer
+    private let riskAnalyzer: LocalRiskAnalyzer
     private let screenshotCapture: ScreenshotCapture
     private var task: Task<Void, Never>?
     private var inferenceTasks: [UUID: Task<Void, Never>] = [:]
@@ -47,7 +46,7 @@ final class MonitorLoop {
 
     init(
         screenReader: ScreenReader,
-        riskAnalyzer: FireworksRiskAnalyzer,
+        riskAnalyzer: LocalRiskAnalyzer,
         screenshotCapture: ScreenshotCapture
     ) {
         self.screenReader = screenReader
@@ -61,7 +60,6 @@ final class MonitorLoop {
 
     func start(
         model: String,
-        apiKey: String,
         deniedAppNames: [String],
         intervalSeconds: Double = 10,
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
@@ -77,7 +75,6 @@ final class MonitorLoop {
             while !Task.isCancelled {
                 await self.sampleOnce(
                     model: model,
-                    apiKey: apiKey,
                     deniedAppNames: deniedAppNames,
                     onStatus: onStatus,
                     onVerdict: onVerdict,
@@ -100,7 +97,6 @@ final class MonitorLoop {
 
     private func sampleOnce(
         model: String,
-        apiKey: String,
         deniedAppNames: [String],
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
         onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Void,
@@ -110,6 +106,8 @@ final class MonitorLoop {
 
         do {
             onStatus(.sampling)
+            // A local GPU serves one request at a time; never accumulate stale screen captures.
+            guard inferenceTasks.isEmpty else { return }
             let screenSnapshot = try currentScreenContext()
             snapshot = screenSnapshot
 
@@ -132,7 +130,6 @@ final class MonitorLoop {
                 snapshot: screenSnapshot,
                 screenshot: screenshot,
                 model: model,
-                apiKey: apiKey,
                 onVerdict: onVerdict,
                 onError: onError
             )
@@ -147,7 +144,6 @@ final class MonitorLoop {
         snapshot: ScreenSnapshot,
         screenshot: CapturedScreenshot,
         model: String,
-        apiKey: String,
         onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Void,
         onError: @escaping @MainActor (Error, ScreenSnapshot?) -> Void
     ) {
@@ -164,13 +160,14 @@ final class MonitorLoop {
                     snapshot: snapshot,
                     screenshotDataURL: screenshot.dataURL,
                     model: model,
-                    apiKey: apiKey
+                    priority: .background
                 )
 
                 guard !Task.isCancelled else { return }
                 onVerdict(verdict, snapshot, true)
             } catch {
                 guard !Task.isCancelled else { return }
+                self.lastFingerprint = nil
                 onError(error, snapshot)
             }
         }

@@ -19,21 +19,46 @@ struct PetChatMessage: Identifiable {
     let text: String
 }
 
+/// A pending Chrome action that can be resolved only from Muse's native UI.
+struct BrowserAvatarAction: Equatable {
+    let assessmentID: String
+    let canContinue: Bool
+}
+
+/// A warning remains pinned until this exact warning is acknowledged.
+struct GuardianAcknowledgment: Equatable {
+    let id: String
+}
+
+/// Keep the model's finding and guidance distinct in the warning card.
+struct GuardianWarningDetails: Equatable {
+    let summary: String
+    let guidance: String
+}
+
 /// Observable state shared between the pet sprite and its speech bubble.
 @MainActor
 final class PetViewModel: ObservableObject {
+    @Published var isAvatarHidden = UserDefaults.standard.bool(forKey: "museAvatarHidden") {
+        didSet { UserDefaults.standard.set(isAvatarHidden, forKey: "museAvatarHidden") }
+    }
+    @Published var automaticallyPositions = (UserDefaults.standard.object(forKey: "museAutoPlacement") as? Bool) ?? true {
+        didSet { UserDefaults.standard.set(automaticallyPositions, forKey:"museAutoPlacement") }
+    }
+    @Published var intervention: GuardianIntervention?
     @Published var mood: PetMood = .idle
     @Published var message: String?
-    @Published private var idleThought: String?
     @Published var isChatOpen = false
     @Published var isChatThinking = false
     @Published var chatMessages: [PetChatMessage] = []
+    @Published var browserAction: BrowserAvatarAction?
+    @Published private(set) var acknowledgment: GuardianAcknowledgment?
+    @Published private(set) var warningDetails: GuardianWarningDetails?
 
     private var clearTask: Task<Void, Never>?
-    private var idleThoughtTask: Task<Void, Never>?
 
     var bubbleText: String? {
-        message ?? idleThought
+        message
     }
 
     var bubbleMood: PetMood {
@@ -41,22 +66,23 @@ final class PetViewModel: ObservableObject {
     }
 
     var bubbleIsDismissible: Bool {
-        message != nil
+        message != nil && acknowledgment == nil
     }
 
     /// Friendly first-launch greeting.
     func greet() {
-        startIdleThoughts()
         show(
-            "Hi! I'm Claude, your security buddy. I'll keep an eye out for phishing, scams, and other sketchy stuff. 🛡️",
+            "Hi, I’m Muse Guard. Your little extra pair of eyes. 🛡️",
             mood: .idle,
-            clearAfter: 9
+            clearAfter: 5
         )
     }
 
     /// Display a message in the speech bubble, optionally auto-clearing it.
     func show(_ text: String, mood: PetMood = .idle, clearAfter seconds: Double? = nil) {
+        guard acknowledgment == nil else { return }
         clearTask?.cancel()
+        browserAction = nil
         self.message = text
         self.mood = mood
         isChatOpen = false
@@ -66,10 +92,37 @@ final class PetViewModel: ObservableObject {
         guard let seconds else { return }
         clearTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled, self?.acknowledgment == nil else { return }
+            self?.intervention = nil
+            self?.browserAction = nil
             self?.message = nil
             self?.mood = .idle
         }
+    }
+
+    /// A new routine result, timer or dismissal cannot replace a pinned warning.
+    @discardableResult
+    func showAcknowledgment(id: String, text: String, details: GuardianWarningDetails? = nil) -> Bool {
+        if let acknowledgment { return acknowledgment.id == id }
+        clearTask?.cancel(); clearTask = nil
+        acknowledgment = GuardianAcknowledgment(id: id)
+        warningDetails = details
+        browserAction = nil
+        message = text
+        mood = .alert
+        isChatOpen = false
+        isChatThinking = false
+        chatMessages.removeAll()
+        return true
+    }
+
+    /// Only an explicit, matching Got it can release the warning and guardian.
+    @discardableResult
+    func acknowledge(id: String) -> Bool {
+        guard acknowledgment?.id == id else { return false }
+        acknowledgment = nil
+        dismissBubble()
+        return true
     }
 
     func openChat(seedText: String? = nil) {
@@ -92,6 +145,10 @@ final class PetViewModel: ObservableObject {
     }
 
     func dismissBubble() {
+        guard acknowledgment == nil else { return }
+        warningDetails = nil
+        browserAction = nil
+        intervention = nil
         clearTask?.cancel()
         message = nil
         mood = .idle
@@ -112,32 +169,9 @@ final class PetViewModel: ObservableObject {
         isChatThinking = isThinking
     }
 
-    private func startIdleThoughts() {
-        guard idleThoughtTask == nil else { return }
-
-        let thoughts = [
-            "Thinking about suspicious links...",
-            "Watching for sketchy vibes.",
-            "Tiny shield, big opinions.",
-            "Wondering if that login page is real.",
-            "Sniffing for scammy urgency.",
-            "Keeping an eye on the fine print."
-        ]
-        idleThought = thoughts[0]
-
-        idleThoughtTask = Task { [weak self] in
-            var index = 1
-            while !Task.isCancelled {
-                try? await Task.sleep(nanoseconds: 18 * 1_000_000_000)
-                guard !Task.isCancelled else { return }
-                self?.idleThought = thoughts[index % thoughts.count]
-                index += 1
-            }
-        }
+    func intervene(at target: CGPoint) {
+        intervention = GuardianIntervention(target: target)
     }
 
-    deinit {
-        clearTask?.cancel()
-        idleThoughtTask?.cancel()
-    }
+    deinit { clearTask?.cancel() }
 }

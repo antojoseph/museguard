@@ -9,6 +9,7 @@ BIN="$MACOS/SentinelPet"
 CACHE="${TMPDIR:-/tmp}/sentinelpet-module-cache"
 
 mkdir -p "$MACOS" "$CACHE"
+"$ROOT/scripts/build-renderer.sh"
 
 cat > "$CONTENTS/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -22,7 +23,7 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 	<key>CFBundleName</key>
 	<string>SentinelPet</string>
 	<key>CFBundleDisplayName</key>
-	<string>Sentinel Pet</string>
+	<string>Muse Guard</string>
 	<key>CFBundlePackageType</key>
 	<string>APPL</string>
 	<key>CFBundleShortVersionString</key>
@@ -36,7 +37,7 @@ cat > "$CONTENTS/Info.plist" <<'PLIST'
 	<key>NSAppleEventsUsageDescription</key>
 	<string>Sentinel Pet reads on-screen text to warn you about phishing, scams, and other risky situations.</string>
 	<key>NSScreenCaptureUsageDescription</key>
-	<string>Sentinel Pet captures screenshots only when you explicitly choose screenshot analysis, then sends that image to Fireworks for risk detection.</string>
+	<string>Sentinel Pet captures screenshots only when you explicitly choose screenshot analysis, then analyzes that image locally on this Mac.</string>
 </dict>
 </plist>
 PLIST
@@ -68,10 +69,15 @@ else
 	codesign --force --deep --sign - "$APP"
 fi
 
+if [[ "${1:-}" == "--build-only" ]]; then
+    echo "Built $APP"
+    exit 0
+fi
+
 if pgrep -x SentinelPet >/dev/null 2>&1; then
 	pkill -x SentinelPet || true
 	sleep 0.5
 fi
 
-open "$APP"
+open "$APP" --args "$@"
 echo "Launched $APP"

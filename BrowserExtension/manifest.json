@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "Muse Guard",
+  "version": "0.1.0",
+  "description": "A local guardian that checks web tabs proactively and interrupts only for confirmed high risk, with optional visual checks.",
+  "minimum_chrome_version": "120",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsYhZr6iPdMj82/493JeW9cdcvnne0hlTUIS+94tjm1dEvRj8SIVP3UbMXPlJmOf3+1FwSTWedybeJrXv7E9wZRiz2FLfM/Unb6g3HEdF/R4zGqOZzDsbzl29Zry4fn9fLRVqSSNTXkCnfVyyx1LC4A0Fr9D0yfOpy+m5NwpNC2nXfxahU96V59ihptSQizGeq+MxYX2tpqVZbKFkzjJH82Rc0zaZ4so9Rim1FrMw5FI6KwxpyWZU2uWImbptIwFhaBu/lcFC+ivMWejfM/gA6W4TwyjuEyOaYiNLUU2ChBGG7qaf24QzLXIdS6PCnVYfQE3AzmW9qelDWbX6h1k8yQIDAQAB",
+  "permissions": [
+    "nativeMessaging",
+    "storage",
+    "activeTab",
+    "alarms",
+    "scripting"
+  ],
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Muse Guard"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "shared.js",
+        "content.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false,
+      "world": "ISOLATED"
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none'; base-uri 'none'"
+  }
+}

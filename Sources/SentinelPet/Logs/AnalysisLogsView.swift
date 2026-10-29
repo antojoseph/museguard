@@ -9,7 +9,7 @@ struct AnalysisLogsView: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text("LLM Judging Logs")
                         .font(.title2.weight(.semibold))
-                    Text("Session history of Fireworks verdicts and model errors. Raw screen text and screenshots are not stored here.")
+                    Text("Session history of local Muse Glimmer verdicts and model errors. Raw screen text and screenshots are not stored here.")
                         .font(.callout)
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)

@@ -1,0 +1,74 @@
+{
+  "title": "Meta Muse - Jolly",
+  "creator": "MadDog2125",
+  "source": "https://makerworld.com/en/models/3441016-meta-muse-jolly",
+  "license": "CC BY-NC-SA 4.0",
+  "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+  "modifications": "None; original downloaded meshes.",
+  "files": [
+    {
+      "filename": "Meta Muse - Jolly - Body.stl",
+      "bytes": 1103484,
+      "triangles": 22068,
+      "bounds_min": [
+        -62.95800018310547,
+        -42.358001708984375,
+        0.0010000000474974513
+      ],
+      "bounds_max": [
+        63.0,
+        42.374000549316406,
+        150.0
+      ],
+      "sha256": "78b25e11d2a4d970ecddc9baf415fa25d79b9a11d68d53177cc1c71772a6fc68"
+    },
+    {
+      "filename": "Meta Muse - Jolly - Eye.stl",
+      "bytes": 414384,
+      "triangles": 8286,
+      "bounds_min": [
+        -1.9999200105667114,
+        -97.99992370605469,
+        -2.100181539788082e-08
+      ],
+      "bounds_max": [
+        3.999919891357422,
+        -92.00007629394531,
+        3.0
+      ],
+      "sha256": "572fb12faf6ec99e42a7d532e50efde56f68fcfed479ac14dd16cda280d55638"
+    },
+    {
+      "filename": "Meta Muse - Jolly - Lips.stl",
+      "bytes": 24284,
+      "triangles": 484,
+      "bounds_min": [
+        -22.100000381469727,
+        -97.19999694824219,
+        4.263256414560601e-14
+      ],
+      "bounds_max": [
+        -14.079676628112793,
+        -94.78299713134766,
+        1.400004506111145
+      ],
+      "sha256": "28c22f4336783e57ac25e107670e81ea4616393f85c46df22d9d0fd9eeddcdd6"
+    },
+    {
+      "filename": "Meta Muse - Jolly - Whole.stl",
+      "bytes": 1622884,
+      "triangles": 32456,
+      "bounds_min": [
+        -62.959999084472656,
+        -42.358001708984375,
+        0.0010000000474974513
+      ],
+      "bounds_max": [
+        62.998008728027344,
+        42.374000549316406,
+        149.99900817871094
+      ],
+      "sha256": "8dca9b129532e0b7bf200997d63f22703b56bf3fa3c2c676e6abf26015ab7e15"
+    }
+  ]
+}

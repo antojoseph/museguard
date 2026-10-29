@@ -29,8 +29,7 @@ enum ScreenReaderError: LocalizedError {
 }
 
 /// Reads text from the currently focused app/window through the macOS
-/// Accessibility API. This only samples local UI text; later milestones decide
-/// when and whether to send text to a remote model.
+/// Accessibility API. Analysis uses the authenticated local Muse Glimmer server.
 final class ScreenReader {
     private let maxDepth = 8
     private let maxChildrenPerAttribute = 120

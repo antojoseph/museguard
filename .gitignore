@@ -16,3 +16,10 @@ build/
 # Secrets (never commit API keys)
 *.env
 Secrets.plist
+
+# Unreal generated build products (source assets remain tracked)
+Unreal/**/Binaries/
+Unreal/**/Intermediate/
+Unreal/**/Saved/
+Unreal/**/DerivedDataCache/
+Unreal/**/.vs/

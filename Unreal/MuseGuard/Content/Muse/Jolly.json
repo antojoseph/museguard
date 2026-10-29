@@ -1,0 +1,109 @@
+{
+  "source": "Assets/Source/MuseJolly/Meta Muse - Jolly - Whole.stl",
+  "source_sha256": "8dca9b129532e0b7bf200997d63f22703b56bf3fa3c2c676e6abf26015ab7e15",
+  "creator": "MadDog2125",
+  "source_url": "https://makerworld.com/en/models/3441016-meta-muse-jolly",
+  "license": "CC BY-NC-SA 4.0",
+  "license_url": "https://creativecommons.org/licenses/by-nc-sa/4.0/",
+  "modifications": "Separated fused underarms for articulation; rebuilt both arms as continuous curved plush limbs with broad forearms, rounded ends and a subtle fused thumb; broad wrist blending removes the separate mitten cuff. Uniform volumetric surface reconstruction, Taubin relaxation and Loop subdivision; shallow convex face panel replacing the deep printable recess, with smooth button eyes and smile refitted to facial landmarks; elliptical torso fairing with two broad rounded plush cheeks with a soft central fold, blending continuously into the torso and upper thighs, plus a separate small round torso-weighted plush tail. Broader neck skinning. Smooth normals, facial material regions, twelve-bone deformation rig with rear pelvis anchored to the torso and articulated front thighs, hips, knees and paws, 0.82 scale, coordinate rotation and Unreal winding.",
+  "source_triangles": 32456,
+  "vertices": 101734,
+  "triangles": 203440,
+  "closed_parts": 7,
+  "articulated_body_parts": 3,
+  "voxel_pitch": 0.85,
+  "volume_smoothing_sigma": [
+    3.0,
+    1.8,
+    1.8
+  ],
+  "smoothing_iterations": 48,
+  "subdivision_levels": 1,
+  "bones": [
+    "torso",
+    "head",
+    "left_shoulder",
+    "right_shoulder",
+    "left_hip",
+    "right_hip",
+    "left_wrist",
+    "right_wrist",
+    "left_knee",
+    "right_knee",
+    "left_ankle",
+    "right_ankle"
+  ],
+  "pivots": [
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      78
+    ],
+    [
+      0,
+      -31.16,
+      65.6
+    ],
+    [
+      0,
+      31.16,
+      65.6
+    ],
+    [
+      0,
+      -16.4,
+      22
+    ],
+    [
+      0,
+      16.4,
+      22
+    ],
+    [
+      4.92,
+      -39.36,
+      36.9
+    ],
+    [
+      4.92,
+      39.36,
+      36.9
+    ],
+    [
+      0,
+      -16.4,
+      11
+    ],
+    [
+      0,
+      16.4,
+      11
+    ],
+    [
+      0,
+      -16.4,
+      3
+    ],
+    [
+      0,
+      16.4,
+      3
+    ]
+  ],
+  "tail": {
+    "center": [
+      -43.0530194160935,
+      0.0,
+      45.0
+    ],
+    "radius": 4.92,
+    "vertices": 642,
+    "triangles": 1280,
+    "torso_weight": 1.0
+  }
+}

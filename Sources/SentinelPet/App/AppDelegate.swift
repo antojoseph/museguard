@@ -13,16 +13,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         runtime.refreshAccessibilityStatus()
         runtime.refreshScreenCaptureStatus()
-        runtime.refreshFireworksAPIKeyStatus()
+        LocalModelService.shared.start()
+        runtime.startBrowserBridge()
 
         let overlay = PetOverlayController(viewModel: runtime.petViewModel)
         overlay.show()
         self.overlay = overlay
+        if ProcessInfo.processInfo.arguments.contains("--chat-corner-check") { overlay.showChatCornerCheck() }
+        if ProcessInfo.processInfo.arguments.contains("--mock-lab") { MockLab.shared.show() }
+        if ProcessInfo.processInfo.arguments.contains("--studio") { GuardianStudio.shared.show() }
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        runtime.stopBrowserBridge()
+        UnrealCharacterRenderer.shared.stop()
+        LocalModelService.shared.stop()
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {
         runtime.refreshAccessibilityStatus()
         runtime.refreshScreenCaptureStatus()
-        runtime.refreshFireworksAPIKeyStatus()
+        LocalModelService.shared.start()
     }
 }

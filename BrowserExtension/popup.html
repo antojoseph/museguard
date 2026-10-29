@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Muse Guard</title><link rel="stylesheet" href="popup.css"></head>
+<body>
+  <header><div class="mark" aria-hidden="true">✦</div><div><h1>Muse Guard</h1><p>Your little local guardian.</p></div><span class="local">On this Mac</span></header>
+  <main>
+    <section class="connection"><span id="light" class="light"></span><div><strong id="connection">Connecting to Muse…</strong><p id="connection-detail">Checking the desktop app and local model.</p></div></section>
+    <section class="protection">
+      <div class="protection-heading"><p class="eyebrow">Automatic protection</p><span id="protection-status" class="protection-status">Checking…</span></div>
+      <h2>All websites</h2>
+      <p id="protection-detail">Visible text is checked in normal web tabs. Muse speaks up only for high-risk findings.</p>
+      <div id="pause-controls" class="pause-controls"><button id="pause-30" disabled>Pause 30 minutes</button><button id="pause-until" disabled>Pause until resumed</button></div>
+      <button id="resume" class="primary" disabled hidden>Resume protection</button>
+    </section>
+    <p id="tab-detail" class="tab-detail">Open a website for a manual check.</p>
+    <div class="checks"><button id="text-check" disabled><span class="symbol">Aa</span><strong>Check text</strong><small>Fast local check</small></button><button id="vision-check" disabled><span class="symbol">◉</span><strong>Check screenshot</strong><small>Visual details, on request</small></button></div>
+    <p id="notice" class="notice" aria-live="polite"></p>
+    <p class="privacy">Text checks skip form values, passwords and editable fields. Screenshots include everything visible in the tab and are checked only when you request one. Analysis stays on this Mac.</p>
+  </main>
+  <footer>No cloud connection. No browsing history stored.</footer>
+  <script src="shared.js"></script><script src="popup.js"></script>
+</body></html>

@@ -2,26 +2,48 @@ import SwiftUI
 
 struct PetChatBubbleView: View {
     @ObservedObject var viewModel: PetViewModel
+    var acknowledgmentAvailableSize: CGSize? = nil
     let onSend: (String) -> Void
     let onDismiss: () -> Void
+    var onBrowserDecision: ((String, Bool) -> Void)?
+    var onAcknowledge: ((String) -> Void)?
 
     @State private var draft = ""
+
+    private var acknowledgmentSize: CGSize? {
+        guard viewModel.acknowledgment != nil, let acknowledgmentAvailableSize else { return nil }
+        return CGSize(width: max(0, min(MuseLayout.chatContentSize.width, acknowledgmentAvailableSize.width)),
+                      height: max(0, min(MuseLayout.chatContentSize.height, acknowledgmentAvailableSize.height)))
+    }
+
+    private var acknowledgmentTranscriptHeight: CGFloat? {
+        // Keep the header, acknowledgement and question field reachable when
+        // placement reduces the panel height; only the transcript gets shorter.
+        acknowledgmentSize.map { max(0, min(152, $0.height - 136)) }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 8) {
-                Text("Sentinel Pet")
+                Text("Muse Guard")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
 
                 Spacer()
 
-                Button(action: onDismiss) {
-                    Image(systemName: "xmark")
-                        .font(.caption.weight(.bold))
+                if viewModel.acknowledgment == nil {
+                    Button(action: onDismiss) {
+                        Image(systemName: "xmark")
+                            .font(.caption.weight(.bold))
+                            .frame(width:28,height:28)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Close chat")
+                    .help("Close chat (Esc)")
+                    .keyboardShortcut(.cancelAction)
+                    .foregroundStyle(.secondary)
                 }
-                .buttonStyle(.plain)
-                .foregroundStyle(.secondary)
             }
 
             ScrollViewReader { proxy in
@@ -45,13 +67,21 @@ struct PetChatBubbleView: View {
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                .frame(maxHeight: 196)
+                .frame(height: acknowledgmentTranscriptHeight)
+                .frame(maxHeight: viewModel.browserAction == nil && viewModel.acknowledgment == nil ? 196 : 152)
                 .onChange(of: viewModel.chatMessages.count) { _ in
                     scrollToBottom(proxy)
                 }
                 .onChange(of: viewModel.isChatThinking) { _ in
                     scrollToBottom(proxy)
                 }
+            }
+
+            if let acknowledgment = viewModel.acknowledgment, let onAcknowledge {
+                GuardianAcknowledgmentButton(acknowledgment: acknowledgment, onAcknowledge: onAcknowledge)
+                    .layoutPriority(1)
+            } else if viewModel.acknowledgment == nil, let action = viewModel.browserAction, let onBrowserDecision {
+                BrowserAvatarActionButtons(action: action, onDecision: onBrowserDecision)
             }
 
             HStack(spacing: 6) {
@@ -65,10 +95,12 @@ struct PetChatBubbleView: View {
                 }
                 .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isChatThinking)
             }
+            .layoutPriority(viewModel.acknowledgment == nil ? 0 : 1)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
-        .frame(width: 336, height: 296, alignment: .topLeading)
+        .frame(width: acknowledgmentSize?.width ?? MuseLayout.chatContentSize.width,
+               height: acknowledgmentSize?.height ?? MuseLayout.chatContentSize.height, alignment: .topLeading)
         .background {
             ZStack {
                 RoundedRectangle(cornerRadius: 15, style: .continuous)

@@ -7,24 +7,55 @@ struct SpeechBubbleView: View {
     let text: String
     let mood: PetMood
     var isDismissible = false
+    var browserAction: BrowserAvatarAction?
+    var acknowledgment: GuardianAcknowledgment?
+    var warningDetails: GuardianWarningDetails?
+    var warningAvailableSize: CGSize? = nil
+    var onOpen: (() -> Void)?
     var onDismiss: (() -> Void)?
+    var onBrowserDecision: ((String, Bool) -> Void)?
+    var onAcknowledge: ((String) -> Void)?
 
     var body: some View {
+        Group {
+            if let acknowledgment {
+                warningCard(acknowledgment)
+            } else {
+                regularBubble
+            }
+        }
+    }
+
+    private var regularBubble: some View {
         let style = BubbleStyle(mood: mood)
         let shouldScroll = shouldScroll(style: style)
+        let canDismiss = isDismissible && acknowledgment == nil
 
-        ZStack(alignment: .topTrailing) {
-            messageContent(style: style, shouldScroll: shouldScroll)
-                .padding(.trailing, isDismissible ? 20 : 0)
+        return ZStack(alignment: .topTrailing) {
+            VStack(alignment: .leading, spacing: 10) {
+                messageContent(style: style, shouldScroll: shouldScroll)
+                    .contentShape(Rectangle())
+                    .onTapGesture { onOpen?() }
+                if let acknowledgment, let onAcknowledge {
+                    GuardianAcknowledgmentButton(acknowledgment: acknowledgment, onAcknowledge: onAcknowledge)
+                } else if acknowledgment == nil, let browserAction, let onBrowserDecision {
+                    BrowserAvatarActionButtons(action: browserAction, onDecision: onBrowserDecision)
+                }
+            }
+            .padding(.trailing, canDismiss ? 34 : 0)
 
-            if isDismissible {
+            if canDismiss {
                 Button {
                     onDismiss?()
                 } label: {
                     Image(systemName: "xmark")
                         .font(.caption.weight(.bold))
+                        .frame(width:28,height:28)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("Dismiss message")
+                .keyboardShortcut(.cancelAction)
                 .foregroundStyle(.secondary)
                 .padding(.top, 1)
             }
@@ -46,6 +77,115 @@ struct SpeechBubbleView: View {
                     .strokeBorder(style.borderColor, lineWidth: style.borderWidth)
             }
             .shadow(color: style.shadowColor, radius: style.shadowRadius, y: 3)
+    }
+
+    private func warningCard(_ acknowledgment: GuardianAcknowledgment) -> some View {
+        let ink = Color(red: 0.10, green: 0.15, blue: 0.24)
+        let secondaryInk = Color(red: 0.36, green: 0.41, blue: 0.49)
+        let layout = WarningCardLayout(availableSize: warningAvailableSize)
+        return VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: layout.compact ? 9 : 11) {
+                if layout.width >= 250 {
+                    Image(systemName: "shield.lefthalf.filled")
+                        .font(.system(size: layout.compact ? 16 : 19, weight: .medium))
+                        .foregroundStyle(Color(red: 0.63, green: 0.43, blue: 0.13))
+                        .frame(width: layout.compact ? 30 : 38, height: layout.compact ? 30 : 38)
+                        .background(Color(red: 0.98, green: 0.93, blue: 0.81), in: RoundedRectangle(cornerRadius: 11))
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("Muse Guard")
+                        .font(.system(size: layout.compact ? 9.5 : 10.5, weight: .semibold))
+                        .tracking(0.3)
+                        .foregroundStyle(secondaryInk)
+                    Text("Let’s pause here")
+                        .font(.system(size: layout.compact ? 16 : 18, weight: .semibold, design: .rounded))
+                        .foregroundStyle(ink)
+                }
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, layout.horizontalPadding)
+            .frame(height: layout.headerHeight)
+            .clipped()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 13) {
+                    if let warningDetails {
+                        Text(warningDetails.summary)
+                            .font(.system(size: 14, weight: .semibold, design: .rounded))
+                            .foregroundStyle(ink)
+                            .lineSpacing(2)
+                        if !warningDetails.guidance.isEmpty {
+                            VStack(alignment: .leading, spacing: 5) {
+                                Text("Next step")
+                                    .font(.system(size: 10.5, weight: .semibold))
+                                    .foregroundStyle(secondaryInk)
+                                Text(warningDetails.guidance)
+                                    .font(.system(size: 13, weight: .regular, design: .rounded))
+                                    .foregroundStyle(secondaryInk)
+                                    .lineSpacing(3)
+                            }
+                        }
+                    } else {
+                        Text(text)
+                            .font(.system(size: 13, weight: .medium, design: .rounded))
+                            .foregroundStyle(ink)
+                            .lineSpacing(3)
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+            }
+            .frame(height: layout.bodyHeight)
+            .padding(.horizontal, layout.horizontalPadding)
+            .padding(.bottom, layout.bodyBottomPadding)
+
+            Rectangle().fill(ink.opacity(0.09)).frame(height: 1)
+
+            HStack(spacing: 12) {
+                if layout.width >= 240 {
+                    VStack(alignment: .leading, spacing: 4) {
+                        if warningDetails != nil && !layout.compact {
+                            Text("I’ll stay here.")
+                                .font(.system(size: 11, weight: .medium, design: .rounded))
+                                .foregroundStyle(secondaryInk)
+                        }
+                        if let onOpen {
+                            Button("Ask Muse", action: onOpen)
+                                .font(.system(size: 12, weight: .semibold, design: .rounded))
+                                .buttonStyle(.plain)
+                                .foregroundStyle(ink)
+                        }
+                    }
+                }
+                Spacer(minLength: 8)
+                if let onAcknowledge {
+                    GuardianAcknowledgmentButton(acknowledgment: acknowledgment, onAcknowledge: onAcknowledge)
+                        .controlSize(.large)
+                        .font(.system(size: 13, weight: .semibold, design: .rounded))
+                        .tint(ink)
+                }
+            }
+            .padding(.horizontal, layout.horizontalPadding)
+            .frame(height: layout.footerHeight)
+            .layoutPriority(1)
+        }
+        .frame(width: layout.width, height: layout.height, alignment: .topLeading)
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 20, style: .continuous).fill(.thickMaterial)
+                RoundedRectangle(cornerRadius: 20, style: .continuous)
+                    .fill(Color(red: 0.995, green: 0.987, blue: 0.965).opacity(0.97))
+            }
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .strokeBorder(ink.opacity(0.13), lineWidth: 1)
+        }
+        .shadow(color: ink.opacity(0.16), radius: 18, y: 7)
+        .accessibilityElement(children: .contain)
     }
 
     @ViewBuilder
@@ -77,6 +217,31 @@ struct SpeechBubbleView: View {
             .foregroundStyle(style.textColor)
             .multilineTextAlignment(.leading)
             .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+private struct WarningCardLayout {
+    let width: CGFloat
+    let height: CGFloat
+    let compact: Bool
+    let horizontalPadding: CGFloat
+    let headerHeight: CGFloat
+    let bodyHeight: CGFloat
+    let bodyBottomPadding: CGFloat
+    let footerHeight: CGFloat
+
+    init(availableSize: CGSize?) {
+        width = max(0, min(360, availableSize?.width ?? 360))
+        height = max(0, min(307, availableSize?.height ?? 307))
+        compact = width < 300 || height < 280
+        horizontalPadding = compact ? 14 : 18
+        let preferredFooter: CGFloat = height < 190 ? 48 : (compact ? 52 : 60)
+        footerHeight = min(height, preferredFooter)
+        let preferredHeader: CGFloat = height < 190 ? 44 : (compact ? 56 : 70)
+        headerHeight = min(preferredHeader, max(0, height - footerHeight - 1))
+        let remaining = max(0, height - headerHeight - footerHeight - 1)
+        bodyBottomPadding = min(compact ? 10 : 16, remaining)
+        bodyHeight = max(0, remaining - bodyBottomPadding)
     }
 }
 
