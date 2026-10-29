@@ -7,6 +7,8 @@ import Foundation
 final class UnrealCharacterRenderer: ObservableObject {
     static let shared = UnrealCharacterRenderer()
     @Published private(set) var image: CGImage?
+    /// Image and crop coordinates from one decoded frame, published atomically.
+    @Published private(set) var latestFrame: CharacterFrame?
     @Published private(set) var status = "Starting Muse’s 3D renderer…"
     @Published private(set) var isReady = false
     @Published private(set) var frameIsDesktopScene = false
@@ -121,7 +123,7 @@ final class UnrealCharacterRenderer: ObservableObject {
         }
     }
 
-    func restart() { stop(); image = nil; isReady = false; status = "Starting Muse’s 3D renderer…"; start() }
+    func restart() { stop(); image = nil; latestFrame = nil; isReady = false; status = "Starting Muse’s 3D renderer…"; start() }
     func stop() {
         timer?.invalidate(); timer = nil
         let ownedProcess = process
@@ -170,6 +172,7 @@ final class UnrealCharacterRenderer: ObservableObject {
         frameIsSleeping = frame.isSleeping
         isReady = true
         status = "Live Unreal 3D"
+        latestFrame = frame
     }
     func showLogs() { if let bridge { NSWorkspace.shared.open(bridge) } }
     private struct Configuration: Decodable { let executable: String; let project: String }

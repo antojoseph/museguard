@@ -199,7 +199,7 @@ void AMuseGuardian::BuildCharacter() {
         auto* Mat=UMaterialInstanceDynamic::Create(LoadObject<UMaterialInterface>(nullptr,S==0?TEXT("/Game/Muse/M_MusePlush.M_MusePlush"):TEXT("/Game/Muse/M_Guardian.M_Guardian")),this);
         Mat->SetVectorParameterValue(TEXT("Tint"),S==0?FLinearColor(.76,.43,.36):FLinearColor(R,G,B));
         if(S==0) Mat->SetVectorParameterValue(TEXT("FaceTint"),FLinearColor(.93,.73,.65));
-        Mat->SetVectorParameterValue(TEXT("Glow"),(S==0?FLinearColor(.76,.43,.36):FLinearColor(R,G,B))*(S==0?.16f:.035f));
+        Mat->SetVectorParameterValue(TEXT("Glow"),(S==0?FLinearColor(.76,.43,.36):FLinearColor(R,G,B))*(S==0?.075f:.035f));
         CharacterMesh->SetMaterial(S,Mat); Materials.Add(Mat);
         Skin.Add(MoveTemp(Section));
     }
@@ -303,7 +303,7 @@ void AMuseGuardian::BuildFur() {
         Total+=FVector::CrossProduct(B-A,C-A).Length()*.5;Areas.Add(Total);
     }
     FRandomStream Random(1729);
-    for(int Attempt=0;Attempt<320000 && FurRoots.Num()<32000;++Attempt) {
+    for(int Attempt=0;Attempt<400000 && FurRoots.Num()<40000;++Attempt) {
         const double Pick=Random.FRand()*Total;int Lo=0,Hi=Areas.Num()-1;
         while(Lo<Hi) { const int Mid=(Lo+Hi)/2;if(Areas[Mid]<Pick) Lo=Mid+1;else Hi=Mid; }
         const int A=Body.Indices[Lo*3],B=Body.Indices[Lo*3+1],C=Body.Indices[Lo*3+2];
@@ -315,16 +315,22 @@ void AMuseGuardian::BuildFur() {
         const FVector N=(Body.Normals[A]*Bary.X+Body.Normals[B]*Bary.Y+Body.Normals[C]*Bary.Z).GetSafeNormal();
         const FVector T=(Body.Positions[B]-Body.Positions[A]).GetSafeNormal();
         const FVector Side=FVector::CrossProduct(N,T).GetSafeNormal();
-        const FVector Down=(FVector(0,0,-1)+N*N.Z).GetSafeNormal();
+        const FVector Brush(0,.18*FMath::Sin(P.Z*.13)*FMath::Sin(P.Y*.12),-1);
+        const FVector Down=(Brush-N*FVector::DotProduct(Brush,N)).GetSafeNormal();
         const float Border=P.X>17?FMath::SmoothStep(1.2f,1.8f,Face):1.f;
-        const float Length=Random.FRandRange(.9f,1.5f)*FMath::Lerp(.42f,1.f,Border)*FMath::Lerp(.38f,1.f,FMath::SmoothStep(0.f,6.f,float(P.Z)));
-        FurRoots.Add({A,B,C,Bary,Length,Random.FRandRange(.075f,.12f),Random.FRandRange(0,PI),
-            FVector2D(FVector::DotProduct(Down,T),FVector::DotProduct(Down,Side)),Random.FRandRange(.35f,.65f)});
+        const float Pile=Random.FRandRange(1.65f,2.8f);
+        // Keep the forehead under the cap and the face border close-cropped.
+        const float HeadCrop=FMath::SmoothStep(102.f,110.f,float(P.Z));
+        const float Length=FMath::Lerp(Pile,1.1f,HeadCrop)*FMath::Lerp(.34f,1.f,Border)
+            *FMath::Lerp(.38f,1.f,FMath::SmoothStep(0.f,6.f,float(P.Z)));
+        const float Width=Random.FRandRange(.045f,.08f),Angle=Random.FRandRange(0,PI);
+        FurRoots.Add({A,B,C,Bary,Length,Width,FVector2D(FMath::Cos(Angle),FMath::Sin(Angle)),
+            FVector2D(FVector::DotProduct(Down,T),FVector::DotProduct(Down,Side)),Random.FRandRange(.8f,1.05f)});
         const float Occlusion=(Body.Colors[A].R*Bary.X+Body.Colors[B].R*Bary.Y+Body.Colors[C].R*Bary.Z)/255.f;
         const float Tone=Random.FRandRange(.98f,1.f)*Occlusion;
         for(int K=0;K<2;++K) {
             // Darker roots and pearl-colored tips provide soft pile depth.
-            for(float Level : {.87f,.87f,.96f,.96f,1.f}) {
+            for(float Level : {.78f,.78f,.94f,.94f,1.f}) {
                 const uint8 Shade=uint8(255*Tone*Level);
                 FurColors.Add(FColor(Shade,Shade,Shade));
             }
@@ -340,7 +346,7 @@ void AMuseGuardian::BuildFur() {
     UpdateFur();
     FurMesh->CreateMeshSection(0,FurPositions,FurIndices,FurNormals,TArray<FVector2D>(),FurColors,TArray<FProcMeshTangent>(),false);
     auto* Mat=UMaterialInstanceDynamic::Create(LoadObject<UMaterialInterface>(nullptr,TEXT("/Game/Muse/M_MuseFur.M_MuseFur")),this);
-    Mat->SetVectorParameterValue(TEXT("Tint"),FLinearColor(.80,.48,.40));Mat->SetVectorParameterValue(TEXT("Glow"),FLinearColor(.80,.48,.40)*.07f);
+    Mat->SetVectorParameterValue(TEXT("Tint"),FLinearColor(.80,.48,.40));Mat->SetVectorParameterValue(TEXT("Glow"),FLinearColor(.80,.48,.40)*.02f);
     FurMesh->SetMaterial(0,Mat);Materials.Add(Mat);
 }
 void AMuseGuardian::UpdateFur() {
@@ -350,21 +356,23 @@ void AMuseGuardian::UpdateFur() {
         const auto& F=FurRoots[I];
         const FVector N=(Body.Normals[F.A]*F.Bary.X+Body.Normals[F.B]*F.Bary.Y+Body.Normals[F.C]*F.Bary.Z).GetSafeNormal();
         const FVector P=Body.Positions[F.A]*F.Bary.X+Body.Positions[F.B]*F.Bary.Y+Body.Positions[F.C]*F.Bary.Z+N*.025;
-        const FVector Edge=(Body.Positions[F.B]-Body.Positions[F.A]).GetSafeNormal();
+        const FVector Edge=Body.Positions[F.B]-Body.Positions[F.A];
         const FVector T=(Edge-N*FVector::DotProduct(Edge,N)).GetSafeNormal();
         const FVector B=FVector::CrossProduct(N,T).GetSafeNormal();
         const FVector Comb=(T*F.Groom.X+B*F.Groom.Y).GetSafeNormal();
-        const FVector Middle=P+N*(F.Length*.57)+Comb*(F.Length*F.Bend*.20);
-        const FVector Tip=P+N*(F.Length*.92)+Comb*(F.Length*F.Bend);
+        const FVector Middle=P+N*(F.Length*.43)+Comb*(F.Length*F.Bend*.24);
+        const FVector Tip=P+N*(F.Length*.66)+Comb*(F.Length*F.Bend);
+        const FVector MiddleNormal=(N-Comb*.12).GetSafeNormal(),TipNormal=(N-Comb*.25).GetSafeNormal();
+        // Ribbon orientation is fixed at the root. Reuse its cached basis and
+        // shared normals instead of evaluating trigonometry for every frame.
         for(int Cross=0;Cross<2;++Cross) {
-            const float Angle=F.Angle+Cross*PI*.5;
-            const FVector W=(T*FMath::Cos(Angle)+B*FMath::Sin(Angle))*F.Width;
+            const FVector W=(Cross==0 ? T*F.RibbonAxis.X+B*F.RibbonAxis.Y : -T*F.RibbonAxis.Y+B*F.RibbonAxis.X)*F.Width;
             const int J=I*10+Cross*5;
             FurPositions[J]=P-W;FurPositions[J+1]=P+W;
             FurPositions[J+2]=Middle-W*.62;FurPositions[J+3]=Middle+W*.62;FurPositions[J+4]=Tip;
             FurNormals[J]=FurNormals[J+1]=N;
-            FurNormals[J+2]=FurNormals[J+3]=(N-Comb*.12).GetSafeNormal();
-            FurNormals[J+4]=(N-Comb*.25).GetSafeNormal();
+            FurNormals[J+2]=FurNormals[J+3]=MiddleNormal;
+            FurNormals[J+4]=TipNormal;
         }
     });
     if(FurMesh && FurMesh->GetProcMeshSection(0)) FurMesh->UpdateMeshSection(0,FurPositions,FurNormals,TArray<FVector2D>(),FurColors,TArray<FProcMeshTangent>());

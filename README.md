@@ -20,6 +20,12 @@ The build creates `build/Run/MuseGuardStudio.app`. A separate renderer project i
 
 The studio previews the guard/focus/plain accessories and avatar states, including breathing, looking around, stretching, walking, climbing, yawning, sleeping, waking, blocking, explaining, and a jump sequence. All character pixels are rendered live in Unreal; there are no sprite sheets or prerecorded animations.
 
+## Desktop tests
+
+Muse also appears as a transparent avatar on the desktop. In Studio, use **Jump to center**, **Walk across screen**, **Climb edge**, and **Return home** to test real movement across your display. These use the renderer's fixed-camera 3D journeys at a constant avatar size.
+
+Drag the desktop avatar to choose and save its home position. **Hide avatar** removes it completely; **Show avatar** brings it back. Transparent space remains clickable, and the overlay is click-through during travel. Studio keeps its last resting preview while a desktop test is playing.
+
 ## Contents
 
 - `Unreal/MuseGuard/Source`: procedural mesh loading, twelve-bone deformation, dedicated sleeping shape, walking/climbing/jump poses, fur, magic wand/bed, lighting, and transparent frame export.
@@ -29,7 +35,7 @@ The studio previews the guard/focus/plain accessories and avatar states, includi
 - `Assets/Source/MuseJolly`: original credited STL files and source metadata.
 - `scripts`: asset generation, validation, build, and rendered motion previews.
 
-The avatar has a peach plush coat with 32,000 curved fur tufts, a smooth pale face, rounded arms and paws, two sculpted cheeks with a soft central fold, and a separate round tail. Sleep blends into a low bed-space shape on upholstered bedding. Guard cap, badge and focus headphones are removable 3D accessories. The transparent home frame renders at 1280×1280 and resolves to 640×640; desktop journeys use a fixed camera and Retina-density cropped frames.
+The avatar has a peach plush coat with 40,000 finer curved fur tufts with a brushed groom and soft cloth sheen, a smooth pale face, rounded arms and paws, two sculpted cheeks with a soft central fold, and a separate round tail. Sleep blends into a low bed-space shape on upholstered bedding. Guard cap, badge and focus headphones are removable 3D accessories. The transparent home frame renders at 1280×1280 and resolves to 640×640; desktop journeys use a fixed camera and Retina-density cropped frames.
 
 ## Asset generation and visual checks
 

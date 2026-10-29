@@ -100,7 +100,7 @@ try:
     assert all(60 < m['restingBodyTop'] < 90 for m in sleeping), 'Upright body depth became a tall hump'
     assert all(26 < m['restingFootLow'] < 29 for m in sleeping), 'Tucked feet lost mattress contact'
     assert any(m.get('yawn',0)>.95 and m['sleepAmount']==0 for m in motion_samples)
-    assert all(m.get('furTufts',0)==32000 for m in motion_samples)
+    assert all(m.get('furTufts',0)==40000 for m in motion_samples)
     assert all(abs(m['bodyPitch']+90)<.01 and m['eyeClosure']>.99 for m in sleeping)
     assert all(abs(m['cameraYaw']-180)>30 for m in sleeping)
     assert max(m['breath'] for m in sleeping)-min(m['breath'] for m in sleeping)>1.5

@@ -26,8 +26,8 @@ struct FMuseSkinSection {
 struct FMuseFurRoot {
     int A, B, C;
     FVector Bary;
-    float Length, Width, Angle;
-    FVector2D Groom;
+    float Length, Width;
+    FVector2D RibbonAxis, Groom;
     float Bend;
 };
 class UMaterialInstanceDynamic;

@@ -8,7 +8,7 @@ struct MuseGuardStudioApp: App {
     @NSApplicationDelegateAdaptor(StudioDelegate.self) private var delegate
     var body: some Scene {
         WindowGroup("Muse Guard Studio") {
-            StudioView().frame(width: 620, height: 650)
+            StudioView().frame(width: 620, height: 770)
         }
         .windowResizability(.contentSize)
         .commands { CommandGroup(replacing: .newItem) {} }
@@ -18,7 +18,7 @@ struct MuseGuardStudioApp: App {
 @MainActor
 final class StudioDelegate: NSObject, NSApplicationDelegate {
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
-    func applicationWillTerminate(_ notification: Notification) { UnrealCharacterRenderer.shared.stop() }
+    func applicationWillTerminate(_ notification: Notification) { DesktopAvatarController.shared.stop(); UnrealCharacterRenderer.shared.stop() }
 }
 
 @MainActor
@@ -36,12 +36,13 @@ private final class StudioControls: ObservableObject {
         renderer.$isReady.removeDuplicates().sink { [weak self] in self?.ready = $0 }.store(in: &subscriptions)
         renderer.$status.removeDuplicates().sink { [weak self] in self?.status = $0 }.store(in: &subscriptions)
     }
-    func start() { renderer.previewState = "idle"; renderer.start() }
+    func start() { renderer.previewState = "idle"; renderer.start(); DesktopAvatarController.shared.start() }
+    func performDesktop(_ action: () -> Void) { sequence?.cancel(); sequence = nil; pose = "idle"; action() }
     func selectAccessory(_ value: String) { renderer.accessory = value }
     func selectPose(_ value: String) {
         sequence?.cancel()
         pose = value
-        renderer.desktopScene = nil
+        DesktopAvatarController.shared.prepareForPose()
         renderer.previewState = "live"
         renderer.animate(value, duration: value == "climb" ? 6 : 20)
         if value == "idle" { renderer.previewState = "idle" }
@@ -55,7 +56,7 @@ private final class StudioControls: ObservableObject {
     func jump() {
         sequence?.cancel()
         pose = "jump"
-        renderer.desktopScene = nil
+        DesktopAvatarController.shared.prepareForPose()
         sequence = Task { [weak self] in
             guard let self else { return }
             let wakeDelay = self.renderer.wakeForInteraction()
@@ -70,7 +71,7 @@ private final class StudioControls: ObservableObject {
     func wake() {
         sequence?.cancel()
         pose = "wake"
-        renderer.desktopScene = nil
+        DesktopAvatarController.shared.prepareForPose()
         renderer.animate("wake", duration: 1.1)
         sequence = Task { [weak self] in
             guard await Self.pause(1.1), let self else { return }
@@ -86,6 +87,7 @@ private final class StudioControls: ObservableObject {
 @MainActor
 private struct StudioView: View {
     @StateObject private var controls = StudioControls()
+    @ObservedObject private var desktop = DesktopAvatarController.shared
     private let poses: [(String, String)] = [("Idle", "idle"), ("Look", "scanning"), ("Stretch", "stretch"), ("Walk", "walk"), ("Climb", "climb"), ("Yawn", "yawn"), ("Sleep", "sleep"), ("Guard", "stop"), ("Explain", "explain")]
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -100,7 +102,13 @@ private struct StudioView: View {
             RoundedRectangle(cornerRadius: 24).fill(Color(red: 0.93, green: 0.94, blue: 0.97))
                 .frame(height: 320)
                 .overlay {
-                    AvatarPreview().frame(width: 310, height: 310)
+                    AvatarPreview().frame(width: 310, height: 310).opacity(desktop.isOnJourney ? 0.3 : 1)
+                    if desktop.isOnJourney {
+                        VStack(spacing: 8) {
+                            Image(systemName: "arrow.up.left.and.arrow.down.right").font(.title2)
+                            Text("Playing on your desktop").font(.subheadline.weight(.medium))
+                        }.foregroundStyle(.secondary)
+                    }
                     if !controls.ready { ProgressView(controls.status).padding() }
                 }
             HStack(spacing: 14) {
@@ -125,10 +133,28 @@ private struct StudioView: View {
                 Spacer()
                 Text(controls.status).font(.caption).foregroundStyle(.secondary)
             }.disabled(!controls.ready)
+            Divider()
+            VStack(alignment: .leading, spacing: 9) {
+                HStack {
+                    Text("On your desktop").font(.subheadline.weight(.semibold))
+                    Spacer()
+                    Button(desktop.isVisible ? "Hide avatar" : "Show avatar") { controls.performDesktop { desktop.toggleVisibility() } }
+                }
+                HStack {
+                    Button("Jump to center") { controls.performDesktop { desktop.jumpToCenter() } }.buttonStyle(.borderedProminent)
+                    Button("Walk across screen") { controls.performDesktop { desktop.walkAcrossScreen() } }
+                    Button("Climb edge") { controls.performDesktop { desktop.climbEdge() } }
+                }.disabled(!controls.ready)
+                HStack {
+                    Button("Return home") { controls.performDesktop { desktop.returnHome() } }.disabled(!controls.ready)
+                    Spacer()
+                    Text(desktop.status).font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.trailing).lineLimit(2)
+                }
+            }
             HStack {
                 Text("Live rendered character · No prerecorded animation").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Restart renderer") { controls.renderer.restart() }.font(.caption)
+                Button("Restart renderer") { controls.performDesktop { desktop.prepareForPose(); controls.renderer.restart() } }.font(.caption)
             }
         }
         .padding(28)
@@ -150,7 +176,11 @@ private final class AvatarFrameView: NSView {
         layer?.minificationFilter = .linear
         layer?.magnificationFilter = .linear
         layer?.actions = ["contents": NSNull(), "bounds": NSNull(), "position": NSNull()]
-        subscription = UnrealCharacterRenderer.shared.$image.sink { [weak self] image in self?.layer?.contents = image }
+        subscription = UnrealCharacterRenderer.shared.$latestFrame.compactMap { $0 }.sink { [weak self] frame in
+            // A desktop crop is a different camera. Keep the last home preview
+            // while the real avatar is travelling outside this window.
+            if !frame.isDesktopScene { self?.layer?.contents = frame.image }
+        }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
 }

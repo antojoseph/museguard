@@ -47,3 +47,34 @@ enum GuardianIdlePolicy {
         return "idle"
     }
 }
+
+/// Desktop points and crop metadata use AppKit's bottom-left coordinates.
+/// Keep these conversions independent of native windows for regression checks.
+enum AvatarDesktopGeometry {
+    static func viewport(screens: [CGRect]) -> CGRect {
+        let union = screens.reduce(CGRect.null) { $0.union($1) }
+        return union.isNull ? CGRect(x: 0,y: 0,width: 1440,height: 900) : union
+    }
+    static func bounded(_ point: CGPoint, screens: [CGRect]) -> CGPoint {
+        func distance(_ rect: CGRect) -> CGFloat {
+            hypot(max(rect.minX-point.x,0,point.x-rect.maxX),max(rect.minY-point.y,0,point.y-rect.maxY))
+        }
+        guard let screen = screens.min(by: { distance($0)<distance($1) }) else { return point }
+        return CGPoint(x:min(max(point.x,screen.minX+76),screen.maxX-76),y:min(max(point.y,screen.minY+86),screen.maxY-74))
+    }
+    static func homeRect(anchor: CGPoint, viewport: CGRect) -> CGRect {
+        CGRect(x:anchor.x-viewport.minX-110,y:anchor.y-viewport.minY-110,width:220,height:220)
+    }
+    static func hasVisiblePixel(in image: CGImage, worldRect: CGRect, at point: CGPoint, threshold: UInt8 = 24) -> Bool {
+        guard worldRect.width > 0, worldRect.height > 0, worldRect.contains(point),
+              let data = image.dataProvider?.data, let bytes = CFDataGetBytePtr(data) else { return false }
+        let x = Int((point.x-worldRect.minX)/worldRect.width*CGFloat(image.width))
+        let y = Int((worldRect.maxY-point.y)/worldRect.height*CGFloat(image.height))
+        guard x >= 0, y >= 0, x < image.width, y < image.height else { return false }
+        let index = y*image.bytesPerRow+x*4+3
+        return index < CFDataGetLength(data) && bytes[index] > threshold
+    }
+    static func cropAnchor(_ rect: CGRect, viewport: CGRect) -> CGPoint {
+        CGPoint(x:viewport.minX+rect.midX,y:viewport.minY+rect.midY)
+    }
+}
