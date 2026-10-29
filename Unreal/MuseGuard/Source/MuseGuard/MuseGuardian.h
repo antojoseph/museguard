@@ -50,7 +50,7 @@ private:
     UPROPERTY() USceneComponent* Wand;
     UPROPERTY() TArray<UStaticMeshComponent*> MagicMotes;
     FVector RumpOffset=FVector::ZeroVector, RumpVelocity=FVector::ZeroVector;
-    float DismissAge=99.f;
+    float ConjureAge=-3.f, DismissAge=99.f;
     bool WasSleeping=false;
     void BuildMagic();
     UPROPERTY() USceneComponent* Head;

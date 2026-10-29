@@ -735,15 +735,31 @@ void AMuseGuardian::Tick(float DeltaTime) {
     const float WalkSpeed=DesktopScene?FVector2D::Distance(FromAnchor,ToAnchor)/PhaseDuration:110.f;
     const float WalkCycle=StateAge*2*PI*FMath::Clamp(WalkSpeed/56.f,1.f,3.f);
     const float ClimbCycle=StateAge*2*PI*FMath::Clamp(WalkSpeed/65.f,.7f,1.5f);
-    const float Yawn=ReduceMotion?0.f:((State==TEXT("yawn")||State==TEXT("sleep"))?
-        FMath::SmoothStep(.15f,.95f,StateAge)*(1-FMath::SmoothStep(1.9f,2.8f,StateAge)):0.f);
-    const float ConjureAge=State==TEXT("sleep")?StateAge-3.f:StateAge;
-    if(WasSleeping&&!Sleeping&&SleepAmount>.05f) DismissAge=0;
-    else DismissAge+=DeltaTime;
+    // One magic episode per bed. Resuming an existing nap must not restart
+    // the yawn/conjure sequence or leave a previous dismissal running.
+    const bool CanDismiss=!DesktopScene&&!ReduceMotion&&(State==TEXT("wake")||State==TEXT("idle"));
+    if(Sleeping) {
+        if(!WasSleeping) ConjureAge=SleepAmount>.001f?2.f:(State==TEXT("sleep")?-3.f:0.f);
+        else ConjureAge+=DeltaTime;
+        if(ReduceMotion) ConjureAge=FMath::Max(ConjureAge,2.f);
+        DismissAge=99.f;
+    } else {
+        if(WasSleeping) DismissAge=CanDismiss&&SleepAmount>.05f?0.f:99.f;
+        else if(CanDismiss) DismissAge+=DeltaTime;
+        else DismissAge=99.f;
+        ConjureAge=-3.f;
+    }
     WasSleeping=Sleeping;
+    const float Yawn=ReduceMotion?0.f:((State==TEXT("yawn")||(State==TEXT("sleep")&&ConjureAge<0))?
+        FMath::SmoothStep(.15f,.95f,StateAge)*(1-FMath::SmoothStep(1.9f,2.8f,StateAge)):0.f);
     const float Cast=(!ReduceMotion&&Sleeping)?FMath::SmoothStep(0.f,.20f,ConjureAge)*(1-FMath::SmoothStep(1.25f,1.7f,ConjureAge)):0;
-    const float Dismiss=(!ReduceMotion&&!DesktopScene)?FMath::SmoothStep(.28f,.42f,DismissAge)*(1-FMath::SmoothStep(.72f,1.05f,DismissAge)):0;
+    const float Dismiss=CanDismiss?FMath::SmoothStep(.40f,.48f,DismissAge)*(1-FMath::SmoothStep(.72f,.84f,DismissAge)):0;
     const float Spell=FMath::Max(Cast,Dismiss);
+    // Summon and stow have their own short envelope. The wand stays full size
+    // for the complete flick instead of shrinking with the spell's strength.
+    const float ConjureWand=(!ReduceMotion&&Sleeping)?FMath::SmoothStep(-.25f,-.05f,ConjureAge)*(1-FMath::SmoothStep(1.7f,1.95f,ConjureAge)):0;
+    const float DismissWand=CanDismiss?FMath::SmoothStep(.32f,.40f,DismissAge)*(1-FMath::SmoothStep(.86f,1.05f,DismissAge)):0;
+    const float WandAmount=FMath::Max(ConjureWand,DismissWand);
     const bool BedReady=Sleeping&&(ReduceMotion||ConjureAge>=.65f);
     const bool Dozy=State==TEXT("drowsy")&&!DesktopScene;
     const bool Resting=State==TEXT("idle")||State==TEXT("stretch")||Dozy;
@@ -962,8 +978,6 @@ void AMuseGuardian::Tick(float DeltaTime) {
     for(auto* Lid:ClosedLids) Lid->SetVisibility(Blink>=.85f);
     AnimateMesh(Blink,Talk?FMath::Max(0.f,FMath::Sin(Time*5.f)):0);
     UpdateFur();
-    const bool CarryWand=!Sleeping&&SleepAmount<.01f&&!Climbing&&!Moving&&!Stop&&!Talk&&Yawn<.05f;
-    const float WandAmount=CarryWand?1.f:Spell*(1-SleepLie);
     const FVector WandGrip=Pivots[6]+BoneOffsets[6]+BoneRotations[6].RotateVector(FVector(10.5,-2,-5));
     const float MagicAge=Cast>0?ConjureAge:DismissAge;
     const FVector WandAim=FMath::Lerp(FVector(.12,-.12,1),FVector(.9,-.25,.15+.6*FMath::Sin(MagicAge*7)),double(Spell)).GetSafeNormal();
@@ -1007,6 +1021,8 @@ void AMuseGuardian::Tick(float DeltaTime) {
         J->SetNumberField(TEXT("rumpSway"),RumpOffset.Y);J->SetNumberField(TEXT("rumpBounce"),RumpOffset.Z);
         J->SetNumberField(TEXT("magicCast"),Cast);J->SetNumberField(TEXT("magicDismiss"),Dismiss);
         J->SetNumberField(TEXT("bedScale"),BedAppear);J->SetNumberField(TEXT("wandAmount"),WandAmount);
+        J->SetStringField(TEXT("wandPurpose"),ConjureWand>0?TEXT("conjure"):(DismissWand>0?TEXT("dismiss"):TEXT("stowed")));
+        J->SetNumberField(TEXT("conjureAge"),ConjureAge);J->SetNumberField(TEXT("dismissAge"),DismissAge);
         J->SetBoolField(TEXT("climbing"),Climbing);J->SetNumberField(TEXT("yawn"),Yawn);J->SetNumberField(TEXT("furTufts"),FurRoots.Num());
         if(SleepAmount>.001f&&!Skin.IsEmpty()) {
             const double MattressTop=Bed->GetRelativeTransform().TransformPosition(FVector(0,0,27)).Z;

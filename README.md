@@ -37,6 +37,8 @@ Drag the desktop avatar to choose and save its home position. **Hide avatar** re
 
 The avatar has a peach plush coat with 40,000 finer curved fur tufts with a brushed groom and soft cloth sheen, a smooth pale face, rounded arms and paws, two sculpted cheeks with a soft central fold, and a separate round tail. Sleep blends into a low bed-space shape on upholstered bedding. Guard cap, badge and focus headphones are removable 3D accessories. The transparent home frame renders at 1280×1280 and resolves to 640×640; desktop journeys use a fixed camera and Retina-density cropped frames.
 
+The wand is summoned only for creating or dismissing the bed. It stays full size during each magic gesture and is stowed afterward. Ordinary poses, desktop travel and reduced-motion animations keep it hidden; cancelling or resuming a nap clears stale magic.
+
 ## Asset generation and visual checks
 
 The committed runtime mesh loads without installing Python packages. Regenerate after editing the body or skinning:
@@ -53,6 +55,7 @@ Visual checks require [uv](https://docs.astral.sh/uv/) and the built studio's re
 uv run --with pillow --with imageio-ffmpeg python scripts/preview-idle-sleep.py
 uv run --with pillow --with imageio-ffmpeg --with numpy --with scipy python scripts/preview-locomotion.py
 uv run --with pillow --with imageio-ffmpeg python scripts/preview-desktop-jump.py
+python3 scripts/check-wand-lifecycle.py
 ```
 
 Preview images, motion diagnostics, and videos are written under ignored `build/` directories. The native bridge sends only avatar state commands and receives transparent pixels; it does not send screen captures or documents to the renderer. `GuardianDesktopScene` also exposes the fixed-camera journey format for integrating the avatar with another application.
