@@ -55,6 +55,12 @@ final class UnrealCharacterRenderer: ObservableObject {
     private var batchingCommand = false
     private lazy var inferenceActivity = GuardianWorkActivity { [weak self] _ in self?.writeCommand() }
     @Published private(set) var browserProtectionActive = false
+    private var pointingDirection: Double?
+
+    func setPointingDirection(_ direction: Double?) {
+        pointingDirection = direction.flatMap { $0.isFinite ? min(1, max(-1, $0)) : nil }
+        writeCommand()
+    }
 
     func setInferenceWorking(_ working: Bool) { inferenceActivity.setWorking(working) }
     func ownsProcess(_ pid: pid_t) -> Bool { process?.processIdentifier == pid }
@@ -86,11 +92,15 @@ final class UnrealCharacterRenderer: ObservableObject {
 
     func start() {
         guard process == nil else { return }
+        #if MUSE_DEVELOPMENT
+        let allowEditorDevelopment = true
+        #else
+        let allowEditorDevelopment = false
+        #endif
         guard let configURL = Bundle.main.url(forResource: "MuseRenderer", withExtension: "json"),
               let data = try? Data(contentsOf: configURL),
-              let config = try? JSONDecoder().decode(Configuration.self, from: data),
-              FileManager.default.isExecutableFile(atPath: config.executable),
-              FileManager.default.fileExists(atPath: config.project) else {
+              let config = try? RendererLaunchConfiguration.decode(data, bundleURL: Bundle.main.bundleURL,
+                                                                  allowEditorDevelopment: allowEditorDevelopment) else {
             status = "Muse’s 3D renderer is missing. Rebuild the app using the source setup guide."
             return
         }
@@ -100,8 +110,9 @@ final class UnrealCharacterRenderer: ObservableObject {
             bridge = directory
             writeCommand()
             let task = Process()
-            task.executableURL = URL(fileURLWithPath: config.executable)
-            task.arguments = [config.project, "/Game/Maps/MuseStage", "-game", "-RenderOffscreen", "-windowed", "-ResX=448", "-ResY=448", "-nosound", "-unattended", "-NoSplash", "-NoLoadingScreen", "-MuseBridge=\(directory.path)", "-log", "-abslog=\(directory.appendingPathComponent("unreal.log").path)"]
+            task.executableURL = config.executableURL
+            task.currentDirectoryURL = config.executableURL.deletingLastPathComponent()
+            task.arguments = config.arguments + ["-MuseBridge=\(directory.path)", "-log", "-abslog=\(directory.appendingPathComponent("unreal.log").path)"]
             let stdoutURL = directory.appendingPathComponent("stdout.log")
             FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
             logHandle = try FileHandle(forWritingTo: stdoutURL)
@@ -163,6 +174,8 @@ final class UnrealCharacterRenderer: ObservableObject {
         // the native analyzer. Explicit previews retain complete pose control.
         payload["working"] = previewState == "live" && inferenceActivity.isActive
         payload["protectionActive"] = previewState == "live" && browserProtectionActive
+        payload["precisePointing"] = pointingDirection != nil
+        payload["pointingDirection"] = pointingDirection ?? 0
         payload["desktopScene"] = desktopScene?.command ?? ["enabled": false]
         if let data = try? JSONSerialization.data(withJSONObject: payload) {
             try? data.write(to: bridge.appendingPathComponent("command.json"), options: .atomic)
@@ -175,7 +188,7 @@ final class UnrealCharacterRenderer: ObservableObject {
               data.withUnsafeBytes({ UInt32(littleEndian:$0.loadUnaligned(fromByteOffset:16,as:UInt32.self)) }) != lastSequence,
               let frame = CharacterFrame.decode(data) else {
             if isReady && Date().timeIntervalSince(lastFrameAt) > 5 { isReady = false; status = "Waiting for Muse’s renderer…" }
-            if !isReady && Date().timeIntervalSince(launchDate) > 90 { status = "Unreal is still starting. Renderer logs are available from the menu." }
+            if !isReady && Date().timeIntervalSince(launchDate) > 90 { status = "Muse’s 3D renderer is still starting. Renderer logs are available from the menu." }
             return
         }
         lastSequence = frame.sequence
@@ -186,7 +199,6 @@ final class UnrealCharacterRenderer: ObservableObject {
         latestFrame = frame
     }
     func showLogs() { if let bridge { NSWorkspace.shared.open(bridge) } }
-    private struct Configuration: Decodable { let executable: String; let project: String }
 }
 
 /// Versioned and bounded frame decoding; atomic rename prevents partial reads.

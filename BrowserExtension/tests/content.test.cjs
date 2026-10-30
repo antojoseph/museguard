@@ -17,7 +17,7 @@ async function harness(html, options = {}) {
   const w = dom.window, listeners = {}, observers = [], messages = [], checks = [], timers = new Map(), intervals = new Map(), configs = [], hashes = new Set(), receivers = new Set();
   let clock = 1000000, nextTimer = 0, receiver, hidden = options.hidden === true;
   let config = { enabled: true, active: true, supported: true, paused: false };
-  let deferredConfigs = options.deferredConfigs === true, presentResponse;
+  let deferredConfigs = options.deferredConfigs === true, presentResponse, secretResponse, targetResponse;
   Object.defineProperty(w.document, 'visibilityState', { get: () => hidden ? 'hidden' : 'visible' });
   w.Date.now = () => clock;
   w.TextEncoder = TextEncoder;
@@ -47,10 +47,14 @@ async function harness(html, options = {}) {
     if (message.type === 'configuration') return deferredConfigs ? new Promise((resolve, reject) => configs.push({ resolve, reject })) : Promise.resolve(config);
     if (message.type === 'assess') return new Promise(resolve => checks.push({ message, resolve }));
     if (message.type === 'present-block') return presentResponse ? presentResponse(message) : Promise.resolve({ ok: true, id: 'ui-' + messages.length, action_state: 'pending' });
+    if (message.type === 'secret-paste') return secretResponse ? secretResponse(message) : Promise.resolve({ ok: true, decision: 'block' });
+    if (message.type === 'target-update') return targetResponse ? targetResponse(message) : Promise.resolve({ ok: true });
     return Promise.resolve({ ok: true });
   } }; }
   w.chrome = { runtime: makeRuntime() };
   w.eval(fs.readFileSync(path.join(root, 'shared.js'), 'utf8'));
+  w.eval(fs.readFileSync(path.join(root, 'targets.js'), 'utf8'));
+  w.eval(fs.readFileSync(path.join(root, 'secrets.js'), 'utf8'));
   w.eval(fs.readFileSync(path.join(root, 'content.js'), 'utf8'));
   async function settle() { await turn(); await Promise.all([...hashes]); await turn(); }
   await settle();
@@ -78,6 +82,8 @@ async function harness(html, options = {}) {
     setConfig(value) { config = { ...config, ...value }; },
     setDeferredConfigs(value) { deferredConfigs = value; },
     setPresent(fn) { presentResponse = fn; },
+    setSecretResponse(fn) { secretResponse = fn; },
+    setTargetResponse(fn) { targetResponse = fn; },
     async reinject() { w.eval(fs.readFileSync(path.join(root, 'shared.js'), 'utf8')); w.eval(fs.readFileSync(path.join(root, 'content.js'), 'utf8')); await settle(); },
     invalidate() { w.chrome.runtime.id = undefined; },
     replaceRuntime() { w.chrome.runtime.id = undefined; w.chrome.runtime = makeRuntime(); },
@@ -103,7 +109,7 @@ test('existing-tab reinjection reuses one live monitor and preserves its documen
     assert.equal((await h.message({ type: 'monitor-ready' })).ready, true);
     await h.reinject(); await h.reinject();
     assert.equal(h.messages.filter(message => message.type === 'configuration').length, 1);
-    assert.equal(h.listenerCount('click'), 1); assert.equal(h.receiverCount(), 1); assert.equal(h.intervals.size, 1);
+    assert.equal(h.listenerCount('click'), 2); assert.equal(h.listenerCount('paste'), 1); assert.equal(h.receiverCount(), 1); assert.equal(h.intervals.size, 1);
     assert.equal((await h.message({ type: 'snapshot' })).nonce, first.nonce);
     await preflight(h, h.w.document.getElementById('go'));
     const before = h.messages.filter(message => message.type === 'present-block').length;
@@ -131,7 +137,7 @@ test('reloaded extension replaces a stale monitor without reusing its cached hig
     const link = h.w.document.getElementById('go'), first = await h.message({ type: 'snapshot' });
     await preflight(h, link);
     h.setConfig({ active: false, paused: true }); h.replaceRuntime(); await h.reinject();
-    assert.equal(h.receiverCount(), 1); assert.equal(h.listenerCount('click'), 1); assert.equal(h.intervals.size, 1);
+    assert.equal(h.receiverCount(), 1); assert.equal(h.listenerCount('click'), 2); assert.equal(h.listenerCount('paste'), 1); assert.equal(h.intervals.size, 1);
     assert.equal((await h.message({ type: 'monitor-ready' })).ready, true);
     assert.notEqual((await h.message({ type: 'snapshot' })).nonce, first.nonce);
     assert.equal(h.trigger(link).defaultPrevented, false);
@@ -678,4 +684,153 @@ test('pages with no readable text expose no invented evidence or private control
     assert.ok(!JSON.stringify(snap).includes('_SECRET'));
     h.noWarning();
   } finally { h.close(); }
+});
+
+const secretToken = 'ghp_AbCdEf0123456789GhIjKlMnOpQrStUvWxYz';
+function pasteEvent(text = secretToken) { return { cancelable: true, clipboardData: { getData: () => text } }; }
+async function grantNativeLease(h) {
+  await h.message({ type: 'native-availability', available_until: h.now() + 4500 });
+}
+test('integrated secret guard stops a trusted paste synchronously with metadata-only avatar delivery', async () => {
+  const h = await harness('<h1>Checkout</h1><input id="secret" aria-label="Private value">');
+  try {
+    await grantNativeLease(h);
+    const event = h.trigger(h.w.document.getElementById('secret'), 'paste', pasteEvent());
+    assert.equal(event.defaultPrevented, true); assert.equal(event.stopped, true);
+    assert.equal(h.messages.some(value => value.type === 'secret-paste'), false, 'The hold happens before asynchronous delivery.');
+    await h.settle();
+    const message = h.messages.find(value => value.type === 'secret-paste'); assert.ok(message);
+    assert.deepEqual(JSON.parse(JSON.stringify(message.secret)), { category: 'github_token', count: 1, categories: ['github_token'], phase: 'paste' });
+    assert.equal(message.page.text, ''); assert.equal(message.page.url, 'https://shop.example.test/account');
+    assert.equal(message.document_id, message.nonce); assert.ok(message.target);
+    assert.ok(!JSON.stringify(h.messages).includes(secretToken));
+    h.noWarning();
+  } finally { h.close(); }
+});
+test('secret protection requires a fresh lease and never traps ordinary, synthetic, paused or unavailable pastes', async () => {
+  for (const issue of ['unavailable', 'expired', 'password', 'synthetic', 'paused', 'hidden']) {
+    const h = await harness('<input id="field">');
+    try {
+      if (issue !== 'unavailable') await grantNativeLease(h);
+      if (issue === 'expired') h.elapse(4501);
+      if (issue === 'paused') { h.setConfig({ active: false, paused: true }); await h.message({ type: 'configuration-changed' }); }
+      if (issue === 'hidden') h.setHidden(true);
+      const event = h.trigger(h.w.document.getElementById('field'), 'paste', { ...pasteEvent(issue === 'password' ? 'ordinary password' : secretToken),
+        ...(issue === 'synthetic' ? { isTrusted: false } : {}) });
+      assert.equal(event.defaultPrevented, false, issue); await h.settle();
+      assert.equal(h.messages.some(value => value.type === 'secret-paste'), false, issue);
+    } finally { h.close(); }
+  }
+});
+test('failed secret delivery invalidates the lease, never inserts text and a retry needs a new lease', async () => {
+  const h = await harness('<textarea id="field"></textarea>');
+  try {
+    let attempts = 0;
+    h.setSecretResponse(() => { attempts++; return Promise.resolve({ ok: false }); });
+    await grantNativeLease(h); const field = h.w.document.getElementById('field');
+    assert.equal(h.trigger(field, 'paste', pasteEvent()).defaultPrevented, true); await h.settle();
+    assert.equal(h.trigger(field, 'paste', pasteEvent()).defaultPrevented, false); await h.settle(); assert.equal(attempts, 1);
+    await grantNativeLease(h);
+    assert.equal(h.trigger(field, 'paste', pasteEvent()).defaultPrevented, true); await h.settle(); assert.equal(attempts, 2);
+    assert.equal(field.textContent, ''); assert.ok(!h.w.document.body.textContent.includes(secretToken));
+  } finally { h.close(); }
+});
+test('precise element pointers invalidate after scroll, layout movement and document visibility changes', async () => {
+  for (const issue of ['scroll', 'layout', 'visibility']) {
+    const h = await harness('<a id="link" href="https://destination.test/path">Continue</a>');
+    try {
+      const link = h.w.document.getElementById('link'); await preflight(h, link);
+      const shown = h.messages.find(value => value.type === 'present-block'); assert.ok(shown.target);
+      if (issue === 'scroll') h.trigger(link, 'scroll');
+      if (issue === 'layout') { link.getBoundingClientRect = () => ({ x: 30, y: 20, left: 30, top: 20, right: 230, bottom: 70, width: 200, height: 50 }); await h.advance(150); }
+      if (issue === 'visibility') await h.foreground(false);
+      await h.settle();
+      const invalidated = h.messages.find(value => value.type === 'target-invalidated'); assert.ok(invalidated, issue);
+      assert.equal(invalidated.document_id, shown.document_id); assert.ok(invalidated.page_revision > shown.page_revision);
+      assert.equal(invalidated.target, undefined); h.noWarning();
+    } finally { h.close(); }
+  }
+});
+test('unchanged warning elements renew their geometry lease without repeating inference or moving the avatar', async () => {
+  const h = await harness('<a id="link" href="https://destination.test/path">Continue</a>');
+  try {
+    const link = h.w.document.getElementById('link'); await preflight(h, link);
+    const original = h.messages.find(value => value.type === 'present-block');
+    await h.advance(3500);
+    const updates = h.messages.filter(value => value.type === 'target-update'); assert.ok(updates.length >= 3);
+    for (const update of updates) {
+      assert.equal(update.document_id, original.document_id); assert.equal(update.page_revision, original.page_revision);
+      assert.ok(update.target.measured_at > original.target.measured_at);
+      assert.deepEqual(update.target.rect, original.target.rect); assert.equal(update.page, undefined); assert.equal(update.action, undefined);
+    }
+    assert.equal(h.messages.filter(value => value.type === 'present-block').length, 1);
+    h.trigger(link, 'scroll'); await h.settle(); const before = updates.length;
+    await h.advance(2000); assert.equal(h.messages.filter(value => value.type === 'target-update').length, before);
+  } finally { h.close(); }
+});
+test('dismissed native warnings and paused content stop geometry renewal without reviving a stale target', async () => {
+  for (const issue of ['dismissed', 'pause']) {
+    const h = await harness('<a id="link" href="https://destination.test/path">Continue</a>');
+    try {
+      let resolve;
+      h.setTargetResponse(() => issue === 'dismissed' ? Promise.resolve({ ok: false }) : new Promise(done => { resolve = done; }));
+      await preflight(h, h.w.document.getElementById('link')); await h.advance(1100);
+      if (issue === 'pause') {
+        assert.ok(resolve); h.setConfig({ active: false, paused: true }); await h.message({ type: 'configuration-changed' });
+        resolve({ ok: true }); await h.settle();
+      }
+      const before = h.messages.filter(value => value.type === 'target-update').length;
+      await h.advance(4000); assert.equal(h.messages.filter(value => value.type === 'target-update').length, before, issue);
+      assert.ok(h.messages.some(value => value.type === 'target-invalidated'));
+    } finally { h.close(); }
+  }
+});
+test('input and DOM changes invalidate targets while preserving a fresh trusted viewport calibration', async () => {
+  for (const issue of ['input', 'dom']) {
+    const h = await harness('<a id="link" href="https://destination.test/path">Continue</a><input id="field"><p id="status">Ready</p>');
+    try {
+      const link = h.w.document.getElementById('link'), field = h.w.document.getElementById('field');
+      h.trigger(link, 'pointermove', { clientX: 100, clientY: 30, screenX: 140, screenY: 174 });
+      await preflight(h, link);
+      const original = h.messages.find(value => value.type === 'present-block'); assert.ok(original.target.pointer);
+      if (issue === 'input') h.trigger(field, 'input');
+      if (issue === 'dom') h.w.document.getElementById('status').textContent = 'Updated';
+      await h.settle();
+      assert.ok(h.messages.some(value => value.type === 'target-invalidated'), issue);
+      await grantNativeLease(h);
+      assert.equal(h.trigger(field, 'paste', pasteEvent()).defaultPrevented, true); await h.settle();
+      const message = h.messages.find(value => value.type === 'secret-paste'); assert.ok(message.target.pointer, issue);
+      assert.deepEqual(message.target.pointer, original.target.pointer, issue);
+      assert.ok(message.target.revision > original.target.revision, 'The old element geometry is not reused.');
+    } finally { h.close(); }
+  }
+});
+test('nonactivating overlay blur and focus preserve unchanged element targeting and its renewal', async () => {
+  const h = await harness('<a id="link" href="https://destination.test/path">Continue</a>');
+  try {
+    const link = h.w.document.getElementById('link'); await preflight(h, link);
+    const revision = (await h.message({ type: 'target-state' })).revision;
+    const before = h.messages.filter(value => value.type === 'target-invalidated').length;
+    h.trigger(link, 'blur'); h.trigger(link, 'focus'); await h.settle();
+    assert.equal((await h.message({ type: 'target-state' })).revision, revision);
+    assert.equal(h.messages.filter(value => value.type === 'target-invalidated').length, before);
+    await h.advance(1100); assert.ok(h.messages.some(value => value.type === 'target-update'));
+  } finally { h.close(); }
+});
+test('preserved pointer calibration is omitted after window movement, viewport resize or its expiry', async () => {
+  for (const issue of ['window', 'viewport', 'age']) {
+    const h = await harness('<input id="field">');
+    try {
+      const field = h.w.document.getElementById('field');
+      h.trigger(field, 'pointermove', { clientX: 100, clientY: 30, screenX: 140, screenY: 174 });
+      h.trigger(field, 'input');
+      if (issue === 'window') Object.defineProperty(h.w, 'screenX', { value: h.w.screenX + 40, configurable: true });
+      if (issue === 'viewport') Object.defineProperty(h.w, 'innerHeight', { value: h.w.innerHeight - 40, configurable: true });
+      if (issue === 'age') h.elapse(12001);
+      await grantNativeLease(h);
+      h.trigger(field, 'paste', pasteEvent()); await h.settle();
+      const message = h.messages.find(value => value.type === 'secret-paste'); assert.ok(message.target);
+      assert.equal(message.target.pointer, undefined, issue);
+    } finally { h.close(); }
+  }
 });

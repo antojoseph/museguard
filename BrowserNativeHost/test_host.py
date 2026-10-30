@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 _SPEC = importlib.util.spec_from_file_location('muse_guard_host', Path(__file__).with_name('muse_guard_host.py'))
 host = importlib.util.module_from_spec(_SPEC)
@@ -18,6 +19,25 @@ _SPEC.loader.exec_module(host)
 
 
 class HostChecks(unittest.TestCase):
+    @staticmethod
+    def wait_until(predicate, timeout=2):
+        deadline = time.monotonic() + timeout
+        while not predicate():
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(.005)
+        return True
+
+    @staticmethod
+    def responses(output):
+        snapshot = io.BytesIO(output.getvalue())
+        result = []
+        while True:
+            value = host.read_frame(snapshot)
+            if value is None:
+                return result
+            result.append(value)
+
     def test_frames_are_utf8_and_bounded(self):
         value = {'id': 'unicode', 'text': 'Café ☕'}
         framed = host.encode_frame(value)
@@ -135,6 +155,137 @@ class HostChecks(unittest.TestCase):
             host.run(io.BytesIO(host.encode_frame(dict(id='one-shot'))), output, endpoint, one_shot=True)
             self.assertEqual(host.read_frame(io.BytesIO(output.getvalue()))['id'], 'one-shot')
             accepting.join(timeout=1); server.close()
+
+    def test_saturated_analyses_cannot_delay_pause_or_secret_warning_delivery(self):
+        release = threading.Event()
+        lock = threading.Lock()
+        started = []
+        output = io.BytesIO()
+
+        def forward(request, *_):
+            with lock:
+                started.append(request['id'])
+            if request.get('type') == 'assess':
+                release.wait(3)
+            return dict(id=request['id'], ok=True, decision='review')
+
+        input_read, input_write = os.pipe()
+        with patch.object(host, 'forward', side_effect=forward), os.fdopen(input_read, 'rb', buffering=0) as native_input:
+            running = threading.Thread(target=host.run, args=(native_input, output, '/tmp/unused.sock'))
+            running.start()
+            try:
+                with os.fdopen(input_write, 'wb', buffering=0) as chrome_output:
+                    for index in range(host.ANALYSIS_CAPACITY):
+                        chrome_output.write(host.encode_frame(dict(version=1, id=f'analysis-{index}', type='assess')))
+                    self.assertTrue(self.wait_until(lambda: len(started) == host.ANALYSIS_WORKERS))
+                    chrome_output.write(host.encode_frame(dict(version=1, id='overflow', type='assess')))
+                    chrome_output.write(host.encode_frame(dict(version=1, id='pause-now', type='monitoring-control')))
+                    chrome_output.write(host.encode_frame(dict(version=1, id='secret-now', type='secret-paste')))
+                    self.assertTrue(self.wait_until(lambda: {'pause-now', 'secret-now'}.issubset({item['id'] for item in self.responses(output)})),
+                                    'Control messages must reach the app while all analysis workers are blocked.')
+                    responses = {item['id']: item for item in self.responses(output)}
+                    self.assertFalse(responses['overflow']['ok'])
+                    self.assertEqual(sum(item.startswith('analysis-') for item in started), host.ANALYSIS_WORKERS)
+                    self.assertNotIn('overflow', started)
+                    release.set()
+            finally:
+                release.set()
+                running.join(timeout=2)
+                self.assertFalse(running.is_alive())
+
+    def test_control_lane_has_its_own_bound_and_invalid_ids_never_reserve_slots(self):
+        release = threading.Event()
+        started = []
+        output = io.BytesIO()
+
+        def forward(request, *_):
+            started.append(request['id'])
+            if request.get('type') == 'monitoring-state':
+                release.wait(3)
+            return dict(id=request['id'], ok=True, decision='review')
+
+        input_read, input_write = os.pipe()
+        with patch.object(host, 'forward', side_effect=forward), os.fdopen(input_read, 'rb', buffering=0) as native_input:
+            running = threading.Thread(target=host.run, args=(native_input, output, '/tmp/unused.sock'))
+            running.start()
+            try:
+                with os.fdopen(input_write, 'wb', buffering=0) as chrome_output:
+                    chrome_output.write(host.encode_frame(dict(version=1, id='bad\nidentifier', type='monitoring-state')))
+                    for index in range(host.CONTROL_CAPACITY):
+                        chrome_output.write(host.encode_frame(dict(version=1, id=f'control-{index}', type='monitoring-state')))
+                    self.assertTrue(self.wait_until(lambda: len(started) == host.CONTROL_WORKERS))
+                    chrome_output.write(host.encode_frame(dict(version=1, id='control-overflow', type='monitoring-state')))
+                    chrome_output.write(host.encode_frame(dict(version=1, id='analysis-now', type='assess')))
+                    self.assertTrue(self.wait_until(lambda: 'analysis-now' in {item['id'] for item in self.responses(output)}))
+                    responses = {item['id']: item for item in self.responses(output)}
+                    self.assertFalse(responses['']['ok'])
+                    self.assertFalse(responses['control-overflow']['ok'])
+                    self.assertNotIn('bad\nidentifier', started)
+                    self.assertNotIn('control-overflow', started)
+                    self.assertEqual(sum(item.startswith('control-') for item in started), host.CONTROL_WORKERS)
+                    release.set()
+            finally:
+                release.set()
+                running.join(timeout=2)
+                self.assertFalse(running.is_alive())
+
+    def test_reserved_lane_uses_exact_type_and_valid_id(self):
+        for kind in host.CONTROL_REQUESTS:
+            self.assertTrue(host.control_request(dict(version=1, type=kind)))
+        for request in [dict(version=1, type={}), dict(version=1, type='download-inspect'),
+                        dict(version=1, type='assess'), dict(version=2, type='secret-paste'),
+                        dict(version=1, type='secret-paste', mode='vision')]:
+            self.assertFalse(host.control_request(request))
+        for value in ['', 'x'*129, 'line\nfeed', '\ud800', None, {}]:
+            self.assertFalse(host.valid_request_id(dict(id=value)))
+        self.assertTrue(host.valid_request_id(dict(id='safe-identifier')))
+
+    def test_complete_download_lane_cannot_delay_new_analysis_metadata_or_monitoring(self):
+        release = threading.Event()
+        started = []
+        output = io.BytesIO()
+
+        def forward(request, *_):
+            started.append(request['id'])
+            if host.complete_download_request(request):
+                release.wait(3)
+            return dict(id=request['id'], ok=True, decision='review')
+
+        input_read, input_write = os.pipe()
+        with patch.object(host, 'forward', side_effect=forward), os.fdopen(input_read, 'rb', buffering=0) as native_input:
+            running = threading.Thread(target=host.run, args=(native_input, output, '/tmp/unused.sock'))
+            running.start()
+            try:
+                with os.fdopen(input_write, 'wb', buffering=0) as chrome_output:
+                    for index in range(host.DOWNLOAD_CAPACITY):
+                        chrome_output.write(host.encode_frame(dict(version=1, id=f'download-{index}', type='download-inspect', download=dict(phase='complete'))))
+                    self.assertTrue(self.wait_until(lambda: len(started) == host.DOWNLOAD_WORKERS))
+                    chrome_output.write(host.encode_frame(dict(version=1, id='download-overflow', type='download-inspect', download=dict(phase='complete'))))
+                    chrome_output.write(host.encode_frame(dict(version=1, id='analysis-now', type='assess')))
+                    chrome_output.write(host.encode_frame(dict(version=1, id='metadata-now', type='download-inspect', download=dict(phase='metadata'))))
+                    chrome_output.write(host.encode_frame(dict(version=1, id='monitoring-now', type='monitoring-state')))
+                    chrome_output.write(host.encode_frame(dict(version=1, id='pause-now', type='monitoring-control')))
+                    chrome_output.write(host.encode_frame(dict(version=1, id='secret-now', type='secret-paste')))
+                    expected = {'analysis-now', 'metadata-now', 'monitoring-now', 'pause-now', 'secret-now'}
+                    self.assertTrue(self.wait_until(lambda: expected.issubset({item['id'] for item in self.responses(output)})),
+                                    'File scans must not occupy analysis or short control workers.')
+                    responses = {item['id']: item for item in self.responses(output)}
+                    self.assertFalse(responses['download-overflow']['ok'])
+                    self.assertNotIn('download-overflow', started)
+                    self.assertEqual(sum(item.startswith('download-') for item in started), host.DOWNLOAD_WORKERS)
+                    release.set()
+            finally:
+                release.set()
+                running.join(timeout=2)
+                self.assertFalse(running.is_alive())
+
+    def test_download_lane_classification_requires_exact_phase(self):
+        self.assertTrue(host.control_request(dict(version=1, type='download-inspect', download=dict(phase='metadata'))))
+        self.assertTrue(host.complete_download_request(dict(version=1, type='download-inspect', download=dict(phase='complete'))))
+        for download in [None, [], {}, dict(phase='metadata '), dict(phase='complete '), dict(phase='invalid'), dict(phase={})]:
+            request = dict(version=1, type='download-inspect', download=download)
+            self.assertFalse(host.control_request(request))
+            self.assertFalse(host.complete_download_request(request))
 
 
 if __name__ == '__main__':

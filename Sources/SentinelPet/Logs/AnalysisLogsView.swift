@@ -66,7 +66,7 @@ private struct ActivityEntryView: View {
                         if !verdict.guidance.isEmpty { Text(verdict.guidance) }
                         if !verdict.categories.isEmpty { Text("Categories: \(verdict.categories.joined(separator: ", "))") }
                     }
-                    Text("Model: \(entry.model)").font(.system(.caption, design: .monospaced))
+                    Text("Engine: \(entry.model)").font(.system(.caption, design: .monospaced))
                     if entry.includesScreenshot { Text("This check included an image.") }
                 }.font(.caption).foregroundStyle(.secondary)
                     .textSelection(.enabled).padding(.top, 6)
@@ -78,6 +78,8 @@ private struct ActivityEntryView: View {
 
     private var sourceLabel: String {
         switch entry.source {
+        case .downloadInspection: return "Download inspection"
+        case .secretPaste: return "Secret paste protection"
         case .browserText: return "Browser check"
         case .monitorScreenshot: return "Desktop visual check"
         case .monitorText: return "Desktop text check"

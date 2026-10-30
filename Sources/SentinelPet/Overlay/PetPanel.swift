@@ -5,7 +5,10 @@ import AppKit
 /// speech bubbles, chat fields and transparent space cannot move the window.
 final class PetPanel: NSPanel {
 
-    init(contentRect: NSRect) {
+    private let acceptsKeyboard: Bool
+
+    init(contentRect: NSRect, acceptsKeyboard: Bool = false) {
+        self.acceptsKeyboard = acceptsKeyboard
         super.init(
             contentRect: contentRect,
             styleMask: [.borderless, .nonactivatingPanel],
@@ -24,8 +27,9 @@ final class PetPanel: NSPanel {
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
     }
 
-    // The panel can become key so the in-bubble chat text field accepts input.
-    override var canBecomeKey: Bool { true }
+    // Only the chat surface can take keyboard focus. Full-screen transparent
+    // renderer panels must leave Chrome's window and current tab focused.
+    override var canBecomeKey: Bool { acceptsKeyboard }
     override var canBecomeMain: Bool { false }
     // Transparent render margins may extend beyond the display. Placement
     // clamps the visible body and message independently.

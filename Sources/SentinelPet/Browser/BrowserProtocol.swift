@@ -34,8 +34,13 @@ struct BrowserRequest: Codable {
     let monitoringCommand: String?
     let pauseDurationMS: Int?
     let monitoringRevision: Int64?
+    let download: BrowserDownloadRequest?
+    let downloadCommand: BrowserDownloadCommandResult?
+    let secret: BrowserSecretRequest?
+    let target: BrowserElementTarget?
+    let pageRevision: Int?
 
-    init(version: Int = 1, id: String, type: String, mode: String = "text", page: Page? = nil, action: Action? = nil, screenshot: String? = nil, assessmentID: String? = nil, reason: String? = nil, purpose: String? = nil, protectionEnabled: Bool? = nil, contextRequestID: String? = nil, contextError: String? = nil, tabID: Int? = nil, windowID: Int? = nil, documentID: String? = nil, monitoringCommand: String? = nil, pauseDurationMS: Int? = nil, monitoringRevision: Int64? = nil) {
+    init(version: Int = 1, id: String, type: String, mode: String = "text", page: Page? = nil, action: Action? = nil, screenshot: String? = nil, assessmentID: String? = nil, reason: String? = nil, purpose: String? = nil, protectionEnabled: Bool? = nil, contextRequestID: String? = nil, contextError: String? = nil, tabID: Int? = nil, windowID: Int? = nil, documentID: String? = nil, monitoringCommand: String? = nil, pauseDurationMS: Int? = nil, monitoringRevision: Int64? = nil, download: BrowserDownloadRequest? = nil, downloadCommand: BrowserDownloadCommandResult? = nil, secret: BrowserSecretRequest? = nil, target: BrowserElementTarget? = nil, pageRevision: Int? = nil) {
         self.version = version; self.id = id; self.type = type; self.mode = mode
         self.page = page; self.action = action; self.screenshot = screenshot; self.assessmentID = assessmentID; self.reason = reason
         self.purpose = purpose
@@ -43,9 +48,11 @@ struct BrowserRequest: Codable {
         self.contextRequestID = contextRequestID; self.contextError = contextError
         self.tabID = tabID; self.windowID = windowID; self.documentID = documentID
         self.monitoringCommand = monitoringCommand; self.pauseDurationMS = pauseDurationMS; self.monitoringRevision = monitoringRevision
+        self.download = download; self.downloadCommand = downloadCommand; self.secret = secret; self.target = target; self.pageRevision = pageRevision
     }
     private enum CodingKeys: String, CodingKey {
-        case version, id, type, mode, page, action, screenshot, reason, purpose
+        case version, id, type, mode, page, action, screenshot, reason, purpose, download, secret, target
+        case downloadCommand = "download_command", pageRevision = "page_revision"
         case assessmentID = "assessment_id"
         case protectionEnabled = "protection_enabled"
         case contextRequestID = "context_request_id", contextError = "context_error"
@@ -73,12 +80,27 @@ struct BrowserRequest: Codable {
         monitoringCommand = try values.decodeIfPresent(String.self, forKey: .monitoringCommand)
         pauseDurationMS = try values.decodeIfPresent(Int.self, forKey: .pauseDurationMS)
         monitoringRevision = try values.decodeIfPresent(Int64.self, forKey: .monitoringRevision)
+        download = try values.decodeIfPresent(BrowserDownloadRequest.self, forKey: .download)
+        downloadCommand = try values.decodeIfPresent(BrowserDownloadCommandResult.self, forKey: .downloadCommand)
+        secret = try values.decodeIfPresent(BrowserSecretRequest.self, forKey: .secret)
+        target = try values.decodeIfPresent(BrowserElementTarget.self, forKey: .target)
+        pageRevision = try values.decodeIfPresent(Int.self, forKey: .pageRevision)
     }
     func validated() throws -> BrowserRequest {
         guard version == 1, !id.isEmpty, id.utf8.count <= 128,
               !id.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains), mode == "text",
-              ["status", "assess", "present-block", "cancel", "protection-state", "chat-context-poll", "chat-context-result", "monitoring-state", "monitoring-control"].contains(type),
+              ["status", "assess", "present-block", "cancel", "protection-state", "chat-context-poll", "chat-context-result", "monitoring-state", "monitoring-control", "download-inspect", "download-command-result", "secret-paste", "target-invalidated", "target-update"].contains(type),
               screenshot == nil, reason == nil else { throw BrowserProtocolError.invalidRequest }
+        if ["download-inspect", "download-command-result", "secret-paste", "target-invalidated", "target-update"].contains(type) {
+            return try validatedSafetyRequest()
+        }
+        guard download == nil, downloadCommand == nil, secret == nil else { throw BrowserProtocolError.invalidRequest }
+        if type != "present-block" {
+            guard target == nil, pageRevision == nil else { throw BrowserProtocolError.invalidRequest }
+        }
+        if type == "present-block", target != nil || documentID != nil || tabID != nil || windowID != nil || pageRevision != nil {
+            guard validTargetIdentity else { throw BrowserProtocolError.invalidRequest }
+        }
         if ["monitoring-state", "monitoring-control"].contains(type) {
             guard page == nil, action == nil, assessmentID == nil, purpose == nil, protectionEnabled == nil,
                   contextRequestID == nil, contextError == nil, tabID == nil, windowID == nil, documentID == nil,
@@ -107,7 +129,7 @@ struct BrowserRequest: Codable {
             return BrowserRequest(id:id,type:type,page:try Self.validatedPage(page),contextRequestID:contextRequestID,
                 tabID:tabID,windowID:windowID,documentID:documentID)
         }
-        guard contextRequestID == nil, contextError == nil, tabID == nil, windowID == nil, documentID == nil else { throw BrowserProtocolError.invalidRequest }
+        guard contextRequestID == nil, contextError == nil, (type == "present-block" && validTargetIdentity) || (tabID == nil && windowID == nil && documentID == nil && pageRevision == nil) else { throw BrowserProtocolError.invalidRequest }
         if type == "protection-state" {
             guard protectionEnabled != nil, page == nil, action == nil, assessmentID == nil, purpose == nil else { throw BrowserProtocolError.invalidRequest }
             return self
@@ -187,6 +209,15 @@ struct BrowserResponse: Codable {
             case riskLevel = "risk_level", completedAt = "completed_at"
         }
     }
+    struct DownloadMonitoringMetadata: Codable {
+        let completed: Int
+        let lastStatus: String, lastScanStatus: String, scanner: String
+        var metadataChecks = 0
+        var receivedFiles = 0
+        var inFlight = 0
+        var failed = 0
+        enum CodingKeys: String, CodingKey { case completed, scanner, metadataChecks = "metadata_checks", receivedFiles = "received_files", inFlight = "in_flight", failed, lastStatus = "last_status", lastScanStatus = "last_scan_status" }
+    }
     var version = 1
     let id: String
     let ok: Bool
@@ -205,12 +236,16 @@ struct BrowserResponse: Codable {
     let contextExpiresAt: Int64?
     let monitoring: MonitoringState?
     let desktopMonitoring: DesktopMonitoringMetadata?
+    var downloadMonitoring: DownloadMonitoringMetadata? = nil
+    var downloadInspection: BrowserDownloadStatus? = nil
+    var downloadCommands: [BrowserDownloadCommand]? = nil
     enum CodingKeys: String, CodingKey {
         case version, id, ok, decision, summary, guidance, categories, mode, error, monitoring
         case riskLevel = "risk_level", durationMS = "duration_ms", modelReady = "model_ready"
         case lastAssessment = "last_assessment", completedAssessments = "completed_assessments"
         case contextRequestID = "context_request_id", contextExpiresAt = "context_expires_at"
         case desktopMonitoring = "desktop_monitoring"
+        case downloadMonitoring = "download_monitoring", downloadInspection = "download_inspection", downloadCommands = "download_commands"
     }
     init(id: String, ok: Bool, decision: String, riskLevel: String, summary: String, guidance: String, categories: [String] = [], mode: String = "text", durationMS: Int = 0, error: String? = nil, modelReady: Bool? = nil, lastAssessment: AssessmentMetadata? = nil, completedAssessments: Int? = nil, contextRequestID: String? = nil, contextExpiresAt: Int64? = nil, monitoring: MonitoringState? = nil, desktopMonitoring: DesktopMonitoringMetadata? = nil) {
         self.id = id; self.ok = ok; self.decision = decision; self.riskLevel = riskLevel

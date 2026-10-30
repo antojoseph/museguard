@@ -1,6 +1,9 @@
 'use strict';
 importScripts('shared.js');
+importScripts('targets.js');
+importScripts('downloads.js');
 const C = MuseGuardCore;
+const T = MuseGuardTargets;
 const HOST = 'com.antojoseph.museguard';
 const RESUME_ALARM = 'muse-guard-resume';
 const MONITORING_SYNC_ALARM = 'muse-guard-monitoring-sync';
@@ -22,7 +25,47 @@ let lastHeartbeatEnabled = null, lastHeartbeatAt = 0, lastHeartbeatSucceeded = f
 let chatContextTimer = null, chatContextFlight = null, monitoringFlight = null, monitoringTimer = null;
 let monitoringAvailable = false, commandTail = Promise.resolve();
 let monitoringTail = Promise.resolve(), monitoringAppliedRevision = 0;
+const NATIVE_AVAILABILITY_MS = 4500;
+let nativeAvailableUntil = 0, lastAvailabilityBroadcast = 0;
+const downloadCommands = new Map();
+const downloadGuard = MuseGuardDownloads.create({ chrome, nativeRequest,
+  isEnabled: async () => (await config()).active });
+// MV3 must register wake-up listeners during initial script evaluation, before
+// any configuration read. Each event still checks the persisted Pause state.
+void downloadGuard.start().catch(() => {});
 function quietFailure(message) { return { ...C.failure(message), confirmed_extreme: false, retry_after_ms: 15000 }; }
+
+async function setNativeAvailability(available) {
+  const hadLease = nativeAvailableUntil > 0;
+  nativeAvailableUntil = available ? Date.now() + NATIVE_AVAILABILITY_MS : 0;
+  if ((available && Date.now() - lastAvailabilityBroadcast < 2000) || (!available && !hadLease)) return;
+  lastAvailabilityBroadcast = Date.now();
+  const tabs = await chrome.tabs.query({});
+  await Promise.allSettled(tabs.filter(tab => tab.id && C.url(tab.url)).map(tab =>
+    chrome.tabs.sendMessage(tab.id, { type: 'native-availability', available_until: nativeAvailableUntil }, { frameId: 0 })));
+}
+async function processDownloadCommands(commands) {
+  if (!Array.isArray(commands)) return;
+  for (const value of commands.slice(0, 32)) {
+    if (!value || typeof value.command_id !== 'string' || !/^[a-z0-9-]{1,128}$/i.test(value.command_id) ||
+        !Number.isSafeInteger(value.download_id) || value.download_id < 0 || typeof value.hold_id !== 'string' ||
+        !/^[a-z0-9-]{1,128}$/i.test(value.hold_id) || !['resume', 'cancel', 'show'].includes(value.action)) continue;
+    const command = { command_id: value.command_id, download_id: value.download_id, hold_id: value.hold_id, action: value.action };
+    // A repeated native poll can carry the same command until its ack arrives.
+    // Execute it once, including when two polls overlap.
+    const key = command.command_id;
+    if (!downloadCommands.has(key)) {
+      const task = Promise.resolve().then(() => downloadGuard.handleCommand(command)).catch(() => ({ ok: false }));
+      downloadCommands.set(key, { signature: JSON.stringify(command), task });
+      if (downloadCommands.size > 128) downloadCommands.delete(downloadCommands.keys().next().value);
+    }
+    const saved = downloadCommands.get(key);
+    if (saved.signature !== JSON.stringify(command)) continue;
+    const result = await saved.task;
+    await nativeRequest({ type: 'download-command-result', mode: 'text',
+      download_command: { ...command, ok: result?.ok === true } }, 1500);
+  }
+}
 
 function nativeRequest(payload, timeout = 35000, expectedPort = null, signal = null) {
   return new Promise(resolve => {
@@ -37,7 +80,7 @@ function nativeRequest(payload, timeout = 35000, expectedPort = null, signal = n
       if (finished) return;
       finish(quietFailure('This scan was replaced by a newer or higher-priority check.'));
       // Release queued/native model work, not just the eventual local answer.
-      if (request.type === 'assess' && sentPort && port === sentPort)
+      if (['assess', 'download-inspect'].includes(request.type) && sentPort && port === sentPort)
         void nativeRequest({ type: 'cancel', assessment_id: request.id }, 1500, sentPort);
     };
     try {
@@ -54,13 +97,14 @@ function nativeRequest(payload, timeout = 35000, expectedPort = null, signal = n
           port = null; cache.clear(); receipts.clear();
           clearTimeout(chatContextTimer); chatContextTimer = null;
           clearTimeout(monitoringTimer); monitoringTimer = null; monitoringAvailable = false;
+          void setNativeAvailability(false).catch(() => {});
           for (const item of [...pending.values()]) item.finish(C.failure(message));
         });
         scheduleChatContextPoll(connected);
         scheduleMonitoringPoll(connected);
       }
       const timer = setTimeout(() => {
-        if (request.type === 'assess') abort();
+        if (['assess', 'download-inspect'].includes(request.type)) abort();
         else finish(C.failure('The local check timed out. This action has not been cleared.', request.id));
       }, timeout);
       pending.set(request.id, { finish, timer }); sentPort = port; port.postMessage(request);
@@ -104,6 +148,7 @@ async function applyMonitoringStateOrdered(value, fromCommand) {
   if (value.revision === current.monitoringRevision && current.enabled && current.paused === value.paused && current.pauseUntil === value.pause_until && monitoringAppliedRevision === value.revision && !current.monitoringPending) return true;
   clearAutomaticState(value.paused ? 'All monitoring is paused.' : 'Monitoring resumed with fresh checks.');
   await writeConfig({ enabled: true, paused: value.paused, pauseUntil: value.pause_until, monitoringRevision: value.revision, monitoringPending: false });
+  await downloadGuard.setPaused(value.paused);
   const applied = await broadcastConfiguration();
   if (applied) monitoringAppliedRevision = value.revision;
   return applied;
@@ -120,7 +165,11 @@ function pollMonitoringState(connected = port) {
       result = await nativeRequest({ type: 'monitoring-control', monitoring_command: 'pause', pause_duration_ms: value.pauseUntil > Date.now() ? 1800000 : 0 }, 1500, connected);
     if (port === connected) {
       monitoringAvailable = result?.ok === true && validMonitoring(result.monitoring);
-      if (monitoringAvailable) await applyMonitoringState(result.monitoring);
+      await setNativeAvailability(monitoringAvailable);
+      if (monitoringAvailable) {
+        await applyMonitoringState(result.monitoring);
+        await processDownloadCommands(result.download_commands);
+      }
     }
   })();
   monitoringFlight = task;
@@ -281,17 +330,93 @@ function syncProtectionState(force = false) {
 }
 async function allowed(rawURL) { return !!C.url(rawURL) && (await config()).active; }
 function context(sender, nonce) {
-  if (sender.id !== chrome.runtime.id || sender.frameId !== 0 || !sender.tab || !C.url(sender.url) || typeof nonce !== 'string') throw new Error('This page is not supported.');
+  if (sender.id !== chrome.runtime.id || sender.frameId !== 0 || !Number.isInteger(sender.tab?.id) ||
+      !Number.isInteger(sender.tab?.windowId) || !C.url(sender.url) || typeof nonce !== 'string' ||
+      !/^[a-z0-9-]{1,256}$/i.test(nonce)) throw new Error('This page is not supported.');
   return { tabId: sender.tab.id, windowId: sender.tab.windowId, rawURL: sender.url, documentId: sender.documentId, nonce };
 }
-function remember(ctx) { documents.set(ctx.tabId, { documentId: ctx.documentId, nonce: ctx.nonce }); }
+function remember(ctx) {
+  const previous = documents.get(ctx.tabId);
+  documents.set(ctx.tabId, { ...(previous?.nonce === ctx.nonce ? previous : {}), documentId: ctx.documentId, nonce: ctx.nonce, windowId: ctx.windowId });
+}
 async function current(ctx, active = false) {
   try {
     const tab = await chrome.tabs.get(ctx.tabId);
     const focused = !active || (tab.active && (await chrome.windows.get(tab.windowId)).focused);
     const known = documents.get(ctx.tabId);
-    return tab.url === ctx.rawURL && focused && known?.nonce === ctx.nonce && (!ctx.documentId || known.documentId === ctx.documentId);
+    return tab.url === ctx.rawURL && tab.windowId === ctx.windowId && focused && known?.nonce === ctx.nonce && (!ctx.documentId || known.documentId === ctx.documentId);
   } catch { return false; }
+}
+function sourceFields(ctx, revision) {
+  return { document_id: ctx.nonce, page_revision: revision, tab_id: ctx.tabId, window_id: ctx.windowId };
+}
+async function boundTarget(message, ctx, allowUnfocused = false) {
+  if (!message.target || !Number.isSafeInteger(message.page_revision) || message.page_revision < 0 ||
+      message.document_id !== ctx.nonce) return undefined;
+  try {
+    const [tab, window, zoom, state] = await Promise.all([
+      chrome.tabs.get(ctx.tabId), chrome.windows.get(ctx.windowId), chrome.tabs.getZoom(ctx.tabId),
+      chrome.tabs.sendMessage(ctx.tabId, { type: 'target-state' }, { frameId: 0 })
+    ]);
+    if (tab.url !== ctx.rawURL || tab.windowId !== ctx.windowId || !tab.active || (!allowUnfocused && !window.focused) ||
+        state?.nonce !== ctx.nonce || state.revision !== message.page_revision || !await current(ctx, !allowUnfocused)) return undefined;
+    const result = T.bind(message.target, { tabID: ctx.tabId, windowID: ctx.windowId, window, zoom },
+      { documentID: ctx.nonce, revision: state.revision }) || undefined;
+    if (result) Object.assign(documents.get(ctx.tabId), { target: true, revision: state.revision });
+    return result;
+  } catch { return undefined; }
+}
+async function invalidateTarget(message, sender) {
+  const ctx = context(sender, message.nonce), known = documents.get(ctx.tabId);
+  if (known?.nonce !== ctx.nonce || !Number.isSafeInteger(message.page_revision) || message.page_revision < 0) return { ok: false };
+  known.target = false; known.revision = message.page_revision;
+  // No availability reconnect just to erase a pointer. Native also expires its
+  // geometry; a navigation or worker disconnect must never preserve precision.
+  if (!port) return { ok: true };
+  return nativeRequest({ type: 'target-invalidated', mode: 'text', ...sourceFields(ctx, message.page_revision) }, 1500, port);
+}
+async function updateTarget(message, sender) {
+  const ctx = context(sender, message.nonce), generation = protectionGeneration, connected = port;
+  if (!connected || documents.get(ctx.tabId)?.target !== true || !await current(ctx) || !await allowed(ctx.rawURL)) return { ok: false };
+  // A nonactivating Muse overlay may temporarily remove Chrome's key-window
+  // focus. Renew only its existing active tab; native still verifies that the
+  // same Chrome app/window is foreground before accepting this geometry.
+  const target = await boundTarget(message, ctx, true);
+  if (!target || generation !== protectionGeneration || connected !== port || !await current(ctx) || !await allowed(ctx.rawURL)) return { ok: false };
+  const response = await nativeRequest({ type: 'target-update', mode: 'text', ...sourceFields(ctx, message.page_revision), target }, 1500, connected);
+  return { ok: response?.ok === true && generation === protectionGeneration && connected === port && await current(ctx) };
+}
+function clearTabTarget(tabID) {
+  const known = documents.get(tabID);
+  if (!known?.target || !port) return;
+  known.target = false;
+  void nativeRequest({ type: 'target-invalidated', mode: 'text', document_id: known.nonce,
+    page_revision: known.revision || 0, tab_id: tabID, window_id: known.windowId }, 1500, port);
+}
+const SECRET_CATEGORIES = new Set(['private_key', 'wallet_seed', 'github_token', 'openai_key', 'anthropic_key',
+  'stripe_secret_key', 'slack_token', 'aws_credentials']);
+function safeSecret(value) {
+  if (!value || !SECRET_CATEGORIES.has(value.category) || !Number.isInteger(value.count) || value.count < 1 || value.count > 8 ||
+      !Array.isArray(value.categories) || value.categories.length < 1 || value.categories.length > 8 ||
+      value.categories.some(category => !SECRET_CATEGORIES.has(category)) || !value.categories.includes(value.category) ||
+      !['paste', 'submit'].includes(value.phase)) throw new Error('Unsupported secret warning.');
+  return { category: value.category, count: value.count, categories: [...new Set(value.categories)], phase: value.phase };
+}
+async function secretPaste(message, sender) {
+  const ctx = context(sender, message.nonce), stamp = protectionGeneration, connected = port;
+  const secret = safeSecret(message.secret);
+  if (!connected || nativeAvailableUntil <= Date.now() || !Number.isSafeInteger(message.page_revision) || message.page_revision < 0 ||
+      message.document_id !== ctx.nonce || !await allowed(ctx.rawURL) || !await current(ctx, true)) return { ok: false };
+  const target = await boundTarget(message, ctx);
+  if (stamp !== protectionGeneration || port !== connected || nativeAvailableUntil <= Date.now() || !await allowed(ctx.rawURL) || !await current(ctx, true)) return { ok: false };
+  const response = await nativeRequest({ type: 'secret-paste', mode: 'text', secret,
+    page: { url: C.url(ctx.rawURL), title: C.cleanText(message.page?.title, 250), text: '' },
+    ...sourceFields(ctx, message.page_revision), ...(target ? { target } : {}) }, 2000, connected);
+  const sourceCurrent = stamp === protectionGeneration && port === connected && await allowed(ctx.rawURL) && await current(ctx, true);
+  const delivered = response?.ok === true && response?.decision === 'block' && sourceCurrent;
+  if (!sourceCurrent && response?.id) void nativeRequest({ type: 'cancel', assessment_id: response.id }, 1500);
+  if (!delivered) await setNativeAvailability(false);
+  return { ok: delivered, decision: delivered ? 'block' : 'review' };
 }
 function saveReceipt(id, value) {
   for (const [key, item] of receipts) if (item.expiresAt <= Date.now()) receipts.delete(key);
@@ -456,7 +581,10 @@ async function presentBlock(message, sender) {
   const request = validatedPayload(message, ctx), signature = proofSignature(message, request), fingerprint = actionFingerprint(message);
   if (exactKey(ctx, request, signature, fingerprint) !== receipt.key) return { ok: false };
   if (generation !== protectionGeneration || receipts.get(message.assessment_id) !== receipt) return { ok: false };
-  const response = await nativeRequest({ type: 'present-block', mode: 'text', assessment_id: message.assessment_id }, 3000);
+  const target = await boundTarget(message, ctx);
+  if (generation !== protectionGeneration || !await current(ctx, true) || !await allowed(ctx.rawURL)) return { ok: false };
+  const response = await nativeRequest({ type: 'present-block', mode: 'text', assessment_id: message.assessment_id,
+    ...sourceFields(ctx, Number.isSafeInteger(message.page_revision) ? message.page_revision : 0), ...(target ? { target } : {}) }, 3000);
   if (!await current(ctx, true) || !await allowed(ctx.rawURL) || generation !== protectionGeneration) {
     if (response.id) void nativeRequest({ type: 'cancel', assessment_id: response.id }, 1500);
     return { ok: false };
@@ -487,7 +615,7 @@ async function ensureTabMonitoring(tabId) {
       // Declarative content scripts cover new navigations. Attach to existing
       // HTTP(S) documents as well, without reloading any of the user's tabs.
       await chrome.scripting.executeScript({ target: { tabId, frameIds: [0] },
-        files: ['shared.js', 'content.js'], world: 'ISOLATED', injectImmediately: true });
+        files: ['shared.js', 'targets.js', 'secrets.js', 'content.js'], world: 'ISOLATED', injectImmediately: true });
       return true;
     } catch { return false; } // Restricted, closed, suspended or withheld tabs.
   })();
@@ -512,7 +640,10 @@ function hydrateOpenTabs() {
 async function restoreMonitoring() {
   if (chrome.alarms) await chrome.alarms.create(MONITORING_SYNC_ALARM, { periodInMinutes: 0.5 });
   alarmKey = null; heartbeatAlarmKey = null;
-  await config();
+  const value = await config();
+  await downloadGuard.setPaused(!value.active);
+  // Recovered file inspections must not delay browser monitoring startup.
+  void downloadGuard.start().catch(() => {});
   void syncProtectionState(true).catch(() => {});
   await hydrateOpenTabs();
   await broadcastConfiguration();
@@ -541,7 +672,8 @@ function clearAutomaticState(message = 'Protection settings changed.') {
   receipts.clear();
 }
 async function protectionChanged() {
-  clearAutomaticState(); alarmKey = null; heartbeatAlarmKey = null; await config();
+  clearAutomaticState(); alarmKey = null; heartbeatAlarmKey = null;
+  const value = await config(); await downloadGuard.setPaused(!value.active);
   void syncProtectionState(true).catch(() => {});
   await broadcastConfiguration();
 }
@@ -559,6 +691,7 @@ async function changeMonitoringOrdered(command, duration) {
     monitoringAppliedRevision = 0;
     clearAutomaticState('Monitoring is being paused.');
     await writeConfig({ enabled: true, paused: true, pauseUntil: duration ? Date.now() + duration : 0, monitoringPending: true });
+    await downloadGuard.setPaused(true);
     await broadcastConfiguration();
   }
   const result = await nativeRequest({ type: 'monitoring-control', monitoring_command: command,
@@ -583,17 +716,21 @@ async function handle(message, sender) {
   if (message.type === 'configuration') {
     const ctx = context(sender, message.nonce); remember(ctx); const value = await config();
     void syncProtectionState().catch(() => {});
-    return { ...value, supported: true, origin: C.origin(ctx.rawURL), approved: value.active };
+    return { ...value, supported: true, origin: C.origin(ctx.rawURL), approved: value.active,
+      native_available_until: value.active && nativeAvailableUntil > Date.now() ? nativeAvailableUntil : 0 };
   }
   if (message.type === 'assess') return assessPage(message, sender);
   if (message.type === 'present-block') return presentBlock(message, sender);
+  if (message.type === 'secret-paste') return secretPaste(message, sender);
+  if (message.type === 'target-invalidated') return invalidateTarget(message, sender);
+  if (message.type === 'target-update') return updateTarget(message, sender);
   if (message.type === 'cancel') return cancelAction(message, sender);
   if (!fromPopup(sender)) return C.failure('This request must come from Muse Guard.');
   if (message.type === 'popup-state') {
     await pollMonitoringState();
     const tab = await activeTab(), value = await config(); const supported = !!tab?.id && !!C.url(tab.url);
     return { ...value, monitoringConfirmed: monitoringAvailable && !value.monitoringPending && monitoringAppliedRevision === value.monitoringRevision, supported, origin: supported ? C.origin(tab.url) : null,
-      readable: supported ? await ensureTabMonitoring(tab.id) : false };
+      readable: supported ? await ensureTabMonitoring(tab.id) : false, downloads: downloadGuard.status() };
   }
   if (message.type === 'status') return nativeRequest({ type: 'status', mode: 'text' }, 3500);
   if (message.type === 'pause') return changeMonitoring('pause', message.duration_ms);
@@ -603,6 +740,7 @@ async function handle(message, sender) {
 chrome.runtime.onMessage.addListener((message, sender, reply) => { handle(message, sender).then(reply).catch(error => reply(C.failure(error.message))); return true; });
 chrome.storage.onChanged.addListener((_, area) => { if (area === 'local') void protectionChanged(); });
 function forget(tabId) {
+  clearTabTarget(tabId);
   documents.delete(tabId);
   if (activeAutomatic?.ctx.tabId === tabId) activeAutomatic.controller.abort();
   for (const [slot, job] of automaticQueue) if (job.ctx.tabId === tabId) { automaticQueue.delete(slot); latestSlots.delete(slot); job.resolve(quietFailure('The tab navigated.')); }
@@ -615,15 +753,25 @@ chrome.tabs.onUpdated.addListener((tabId, change) => {
 });
 chrome.tabs.onRemoved.addListener(forget);
 chrome.tabs.onActivated?.addListener(info => {
+  for (const tabID of documents.keys()) clearTabTarget(tabID);
   void pumpAutomatic();
   void syncProtectionState().catch(() => {});
   void activateTabMonitoring(info?.tabId).catch(() => {});
 });
 chrome.windows.onFocusChanged?.addListener(windowId => {
   if (!Number.isInteger(windowId) || windowId < 0) return;
+  // WINDOW_ID_NONE also occurs while Muse's nonactivating panel owns key
+  // focus. Native foreground validation handles real app switches; another
+  // Chrome window invalidates only targets belonging to the previous one.
+  for (const [tabID, known] of documents) if (known.windowId !== windowId) clearTabTarget(tabID);
   void syncProtectionState().catch(() => {});
   void chrome.tabs.query({ active: true, windowId }).then(tabs =>
     Promise.allSettled(tabs.map(tab => activateTabMonitoring(tab.id)))).catch(() => {});
+});
+chrome.tabs.onZoomChange?.addListener(info => clearTabTarget(info.tabId));
+chrome.tabs.onDetached?.addListener(tabID => clearTabTarget(tabID));
+chrome.windows.onBoundsChanged?.addListener(window => {
+  for (const [tabID, known] of documents) if (known.windowId === window.id) clearTabTarget(tabID);
 });
 chrome.alarms?.onAlarm.addListener(alarm => {
   if (alarm.name === MONITORING_SYNC_ALARM) void nativeRequest({ type: 'monitoring-state', monitoring_revision: monitoringAppliedRevision || undefined }, 1500).then(result => {

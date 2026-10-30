@@ -3,13 +3,17 @@ set -euo pipefail
 
 MUSE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 configuration=release
+renderer=packaged
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --configuration)
             [[ $# -ge 2 ]] || { echo 'Missing build configuration.' >&2; exit 2; }
             configuration="$2"; shift 2 ;;
+        --renderer)
+            [[ $# -ge 2 ]] || { echo 'Missing renderer mode.' >&2; exit 2; }
+            renderer="$2"; shift 2 ;;
         --help)
-            echo 'Usage: scripts/build-app.sh [--configuration release|development]'
+            echo 'Usage: scripts/build-app.sh [--configuration release|development] [--renderer packaged|editor]'
             exit 0 ;;
         *) echo "Unknown build argument: $1" >&2; exit 2 ;;
     esac
@@ -23,6 +27,12 @@ case "$configuration" in
         flags=(-Onone -D MUSE_DEVELOPMENT) ;;
     *) echo "Unknown build configuration: $configuration" >&2; exit 2 ;;
 esac
+case "$renderer" in
+    packaged) ;;
+    editor)
+        [[ "$configuration" == development ]] || { echo 'The editor renderer is available only in development builds.' >&2; exit 2; } ;;
+    *) echo "Unknown renderer mode: $renderer" >&2; exit 2 ;;
+esac
 [[ "$(uname -s)" == Darwin && "$(uname -m)" == arm64 ]] || {
     echo 'Muse Guard requires an Apple Silicon Mac.' >&2; exit 1;
 }
@@ -34,7 +44,31 @@ contents="$app/Contents"
 binary="$contents/MacOS/SentinelPet"
 cache="${TMPDIR:-/tmp}/muse-guard-module-cache"
 mkdir -p "$contents/MacOS" "$contents/Resources" "$cache"
-MUSE_APP_RESOURCES="$contents/Resources" "$MUSE_ROOT/scripts/build-renderer.sh"
+if [[ "$renderer" == packaged ]]; then
+    "$MUSE_ROOT/scripts/package-renderer.sh"
+    mkdir -p "$contents/Helpers"
+    rm -rf "$contents/Helpers/MuseRenderer.app"
+    ditto "$MUSE_ROOT/build/PackagedRenderer/MuseRenderer.app" "$contents/Helpers/MuseRenderer.app"
+    python3 - "$contents" <<'PY'
+import json,pathlib,plistlib,sys
+contents=pathlib.Path(sys.argv[1])
+helper=contents/'Helpers/MuseRenderer.app'
+info=plistlib.loads((helper/'Contents/Info.plist').read_bytes())
+executable=info['CFBundleExecutable']
+if not executable or '/' in executable or executable in ('.','..'):
+    raise SystemExit('Invalid packaged renderer executable name')
+arguments=['/Game/Maps/MuseStage','-game','-RenderOffscreen','-windowed','-ResX=448','-ResY=448','-nosound','-unattended','-NoSplash','-NoLoadingScreen']
+(contents/'Resources/MuseRenderer.json').write_text(json.dumps({
+    'version':2,
+    'executable':'Contents/Helpers/MuseRenderer.app/Contents/MacOS/'+executable,
+    'arguments':arguments
+},indent=2)+'\n')
+PY
+else
+    MUSE_APP_RESOURCES="$contents/Resources" "$MUSE_ROOT/scripts/build-renderer.sh"
+fi
+cp "$MUSE_ROOT/Sources/SentinelPet/Secrets/bip39-english.txt" "$contents/Resources/"
+cp "$MUSE_ROOT/Sources/SentinelPet/Secrets/BIP39_ATTRIBUTION.txt" "$contents/Resources/"
 cp "$MUSE_ROOT/Configuration/Info.plist" "$contents/Info.plist"
 
 sources=()
@@ -62,5 +96,5 @@ if [[ -z "$identity" ]]; then
     echo 'Using local ad-hoc signing. Screen permissions may need renewal after a rebuild.' >&2
 fi
 codesign --force --options runtime --timestamp=none --sign "$identity" "$app"
-codesign --verify --strict "$app"
+codesign --verify --deep --strict "$app"
 echo "Built $configuration app: $app"

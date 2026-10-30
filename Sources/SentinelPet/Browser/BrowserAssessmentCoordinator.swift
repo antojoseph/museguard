@@ -95,7 +95,8 @@ final class BrowserAssessmentCoordinator {
             // warning cannot dismiss a newer one. No action override exists.
             let original = finding.request
             let displayRequest = BrowserRequest(id: request.id, type: original.type, mode: original.mode,
-                page: original.page, action: original.action, reason: original.reason, purpose: original.purpose)
+                page: original.page, action: original.action, reason: original.reason, purpose: original.purpose,
+                tabID: request.tabID, windowID: request.windowID, documentID: request.documentID, target: request.target, pageRevision: request.pageRevision)
             let display = Receipt(request: displayRequest, verdict: finding.verdict, snapshot: finding.snapshot,
                 date: now(), error: nil)
             rememberPresentation(request.id)

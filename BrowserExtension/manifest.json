@@ -9,7 +9,8 @@
     "nativeMessaging",
     "storage",
     "alarms",
-    "scripting"
+    "scripting",
+    "downloads"
   ],
   "host_permissions": [
     "http://*/*",
@@ -30,6 +31,8 @@
       ],
       "js": [
         "shared.js",
+        "targets.js",
+        "secrets.js",
         "content.js"
       ],
       "run_at": "document_start",

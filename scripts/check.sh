@@ -6,6 +6,7 @@ mkdir -p build
 python3 scripts/check-muse-mesh.py
 python3 scripts/check-guard-accessories.py
 sources=Sources/SentinelPet
+browser_safety=("$sources/Browser/BrowserSafetyProtocol.swift" "$sources/Browser/BrowserElementTarget.swift")
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/menu-bar-state-checks Tests/MenuBarStateChecks.swift "$sources/App/MenuBarState.swift"
 ./build/menu-bar-state-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/release-configuration-checks Tests/BuildConfigurationChecks.swift "$sources/App/BuildConfiguration.swift"
@@ -14,7 +15,7 @@ xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -D MUSE_DEVELOPMENT
 ./build/development-configuration-checks --visual-test --expect-enabled
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/local-model-configuration-checks Tests/LocalModelConfigurationChecks.swift "$sources/Risk/LocalModelConfiguration.swift"
 ./build/local-model-configuration-checks
-xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/character-checks Tests/CharacterChecks.swift "$sources/Character/GuardianMotion.swift" "$sources/Character/GuardianPlacement.swift" "$sources/Character/GuardianWorkActivity.swift" "$sources/Character/UnrealCharacterRenderer.swift" "$sources/App/BuildConfiguration.swift"
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/character-checks Tests/CharacterChecks.swift "$sources/Character/GuardianMotion.swift" "$sources/Character/GuardianPlacement.swift" "$sources/Character/GuardianWorkActivity.swift" "$sources/Character/UnrealCharacterRenderer.swift" "$sources/Character/RendererLaunchConfiguration.swift" "$sources/App/BuildConfiguration.swift"
 ./build/character-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/guardian-work-activity-checks Tests/GuardianWorkActivityChecks.swift "$sources/Character/GuardianWorkActivity.swift"
 ./build/guardian-work-activity-checks
@@ -41,15 +42,15 @@ xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/screen-cha
 ./build/screen-chat-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/streaming-chat-checks Tests/StreamingChatChecks.swift "${shared[@]}" "$sources/Overlay/PetViewModel.swift" "$sources/Character/GuardianMotion.swift"
 ./build/streaming-chat-checks
-xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-chat-context-checks Tests/BrowserChatContextChecks.swift "$sources/Browser/BrowserProtocol.swift" "$sources/Browser/BrowserChatContextBroker.swift"
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-chat-context-checks Tests/BrowserChatContextChecks.swift "$sources/Browser/BrowserProtocol.swift" "${browser_safety[@]}" "$sources/Browser/BrowserChatContextBroker.swift"
 ./build/browser-chat-context-checks
-xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/monitoring-control-checks Tests/MonitoringControlChecks.swift "$sources/App/MonitoringControl.swift" "$sources/Browser/BrowserProtocol.swift"
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/monitoring-control-checks Tests/MonitoringControlChecks.swift "$sources/App/MonitoringControl.swift" "$sources/Browser/BrowserProtocol.swift" "${browser_safety[@]}"
 ./build/monitoring-control-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/response-checks Tests/ResponseChecks.swift "${shared[@]}"
 ./build/response-checks
-xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-assessment-checks Tests/BrowserAssessmentChecks.swift "$sources/Browser/BrowserProtocol.swift" "$sources/Browser/BrowserAssessmentCoordinator.swift" "${shared[@]}"
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-assessment-checks Tests/BrowserAssessmentChecks.swift "$sources/Browser/BrowserProtocol.swift" "${browser_safety[@]}" "$sources/Browser/BrowserAssessmentCoordinator.swift" "${shared[@]}"
 ./build/browser-assessment-checks
-xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-bridge-checks Tests/BrowserBridgeChecks.swift "$sources/Browser/BrowserProtocol.swift" "$sources/Browser/BrowserBridgeServer.swift"
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-bridge-checks Tests/BrowserBridgeChecks.swift "$sources/Browser/BrowserProtocol.swift" "${browser_safety[@]}" "$sources/Browser/BrowserBridgeServer.swift"
 ./build/browser-bridge-checks
 python3 -m unittest discover -s BrowserNativeHost -p 'test_*.py'
 if [[ "${1:-}" == "--local-model" ]]; then
@@ -58,3 +59,17 @@ if [[ "${1:-}" == "--local-model" ]]; then
     xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/desktop-risk-model-checks Tests/DesktopRiskModelChecks.swift "${shared[@]}"
     ./build/desktop-risk-model-checks
 fi
+
+xcrun swiftc -warnings-as-errors -swift-version 5 -target arm64-apple-macosx13.0 -o build/secret-detection-checks Tests/SecretDetectionChecks.swift "$sources/Secrets/SecretDetector.swift" "$sources/Secrets/NativeSecretPasteMonitor.swift"
+./build/secret-detection-checks
+xcrun swiftc -warnings-as-errors -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-target-checks Tests/BrowserElementTargetChecks.swift "$sources/Browser/BrowserElementTarget.swift"
+./build/browser-target-checks
+xcrun swiftc -warnings-as-errors -swift-version 5 -target arm64-apple-macosx13.0 -o build/download-inspection-checks Tests/DownloadInspectionChecks.swift "$sources/Downloads/DownloadInspection.swift" "$sources/Downloads/DownloadZipInspection.swift" "$sources/Downloads/DownloadScannerMaintenance.swift" "$sources/Risk/RiskVerdict.swift"
+./build/download-inspection-checks
+xcrun swiftc -warnings-as-errors -swift-version 5 -target arm64-apple-macosx13.0 -o build/renderer-launch-checks Tests/RendererLaunchChecks.swift "$sources/Character/RendererLaunchConfiguration.swift"
+./build/renderer-launch-checks
+
+xcrun swiftc -warnings-as-errors -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-safety-protocol-checks Tests/BrowserSafetyProtocolChecks.swift "$sources/Browser/BrowserProtocol.swift" "${browser_safety[@]}"
+./build/browser-safety-protocol-checks
+xcrun swiftc -warnings-as-errors -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-pointing-window-checks Tests/BrowserPointingWindowChecks.swift "$sources/Browser/BrowserPointingController.swift" "$sources/Browser/BrowserElementTarget.swift"
+./build/browser-pointing-window-checks

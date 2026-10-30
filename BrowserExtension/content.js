@@ -9,17 +9,21 @@
   try { previous?.dispose(); } catch { /* A replacement never depends on stale context cleanup. */ }
   const runtime = chrome.runtime, extensionID = runtime.id;
   const C = MuseGuardCore;
+  const T = MuseGuardTargets, S = MuseGuardSecrets;
   const nonce = crypto.randomUUID?.() || [...crypto.getRandomValues(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, '0')).join('');
   const PRIVATE = 'input,textarea,select,option,script,style,noscript,template,svg,canvas,iframe,[contenteditable]:not([contenteditable="false"]),[hidden],[aria-hidden="true"],[data-private],[data-muse-private]';
   let active = false, generation = 0, configurationSequence = 0, edits = 0, lastURL = location.href;
   let pageTimer, hoverTimer, mutationTimer, resumeTimer, lastPageKey = '', lastPageAttempt = 0, retryFailures = 0;
   let lastSuccessfulPageKey = '', lastSuccessfulPageUntil = 0, lastSuccessfulPageRisk = null;
   let disposed = false, observer, routeTimer, runtimeMessage, instance;
+  let nativeAvailableUntil = 0, trackedTarget = null, targetTimer = null;
+  let secretGuard;
   const removals = [];
   const cache = new Map(), assessmentReuse = new Map(), inflight = new Map(), presentations = new Set(), localProofs = new Map();
   function dispose() {
     if (disposed) return;
     disposed = true; active = false; generation++; configurationSequence++;
+    secretGuard?.dispose(); T.invalidate(window); clearTimeout(targetTimer); trackedTarget = null; nativeAvailableUntil = 0;
     for (const timer of [pageTimer, hoverTimer, mutationTimer, resumeTimer]) clearTimeout(timer);
     clearInterval(routeTimer); observer?.disconnect();
     for (const remove of removals.splice(0)) remove();
@@ -47,6 +51,70 @@
   }
   instance = { isAlive: usable, dispose };
   window[INSTANCE_KEY] = instance;
+  function sourceGeometry(element) {
+    const target = element ? T.capture(element, { documentID: nonce, revision: edits }) : null;
+    if (target) {
+      trackedTarget = { element, measurement: target, presented: false, renewing: false,
+        renewAt: Date.now() + 1000, expiresAt: Date.now() + 12000 };
+      clearTimeout(targetTimer); targetTimer = setTimeout(checkTarget, 150);
+    }
+    return { document_id: nonce, page_revision: edits, ...(target ? { target } : {}) };
+  }
+  function confirmTarget(target) {
+    if (target && trackedTarget?.measurement === target) trackedTarget.presented = true;
+  }
+  function invalidateGeometry(increment = true) {
+    if (increment) edits++;
+    // A field edit, DOM mutation or focus event invalidates the element's
+    // placement, but does not move the viewport's screen origin. Preserve its
+    // recent trusted pointer anchor; targets.capture checks geometryKey again
+    // and omits it after window/viewport/zoom changes or its 12-second expiry.
+    clearTimeout(targetTimer);
+    const hadTarget = trackedTarget !== null; trackedTarget = null;
+    if (hadTarget && usable()) send({ type: 'target-invalidated', document_id: nonce, page_revision: edits }).catch(() => {});
+  }
+  function checkTarget() {
+    if (!trackedTarget || !usable()) return;
+    if (Date.now() >= trackedTarget.expiresAt || !T.revalidate(trackedTarget.element, trackedTarget.measurement, { documentID: nonce, revision: edits })) {
+      invalidateGeometry(); return;
+    }
+    if (trackedTarget.presented && !trackedTarget.renewing && Date.now() >= trackedTarget.renewAt) void renewTarget(trackedTarget);
+    targetTimer = setTimeout(checkTarget, 150);
+  }
+  async function renewTarget(tracking) {
+    const target = T.capture(tracking.element, { documentID: nonce, revision: edits });
+    if (!target || !T.same(tracking.measurement, target)) { invalidateGeometry(); return; }
+    tracking.renewing = true;
+    let response;
+    try { response = await send({ type: 'target-update', document_id: nonce, page_revision: edits, target }); }
+    catch { response = null; }
+    if (trackedTarget !== tracking) return;
+    tracking.renewing = false;
+    if (response?.ok !== true || !active || !T.revalidate(tracking.element, target, { documentID: nonce, revision: edits })) {
+      invalidateGeometry(); return;
+    }
+    tracking.measurement = target; tracking.renewAt = Date.now() + 1000;
+  }
+  secretGuard = S.createGuard({ window,
+    isActive: () => active && usable() && document.visibilityState === 'visible',
+    isAvailable: () => nativeAvailableUntil > Date.now(),
+    contextForTarget: element => ({ pageURL: location.href, destinationURL: element.form?.action || location.href }),
+    deliveryTimeoutMS: 2500,
+    onUnavailable: () => { nativeAvailableUntil = 0; },
+    notify: async (metadata, element) => {
+      if (!active || !usable() || nativeAvailableUntil <= Date.now()) return false;
+      // Never send clipboard text, field values, fingerprints or text around
+      // the field. Static detector categories are sufficient for the warning.
+      const geometry = sourceGeometry(element);
+      const response = await send({ type: 'secret-paste',
+        secret: { category: metadata.category, count: metadata.count, categories: [...metadata.categories], phase: metadata.phase },
+        page: { url: C.url(location.href), title: C.cleanText(document.title, 250), text: '' }, ...geometry });
+      const delivered = response?.ok === true && response.decision === 'block';
+      if (!delivered) nativeAvailableUntil = 0;
+      else confirmTarget(geometry.target);
+      return delivered;
+    }
+  });
   function displayed(element) {
     for (let ancestor = element; ancestor; ancestor = ancestor.parentElement) {
       const style = getComputedStyle(ancestor);
@@ -207,15 +275,18 @@
     if (!stillCurrent(entry.candidate, entry.proof)) return;
     const stamp = generation; entry.presenting = true;
     try {
+      const geometry = sourceGeometry(entry.candidate?.submitter || entry.candidate?.element);
       const response = await send({ type: 'present-block', assessment_id: entry.result.id,
         page: entry.proof.page, action: entry.proof.action, public_signature: entry.proof.public_signature,
-        action_fingerprint: entry.proof.action_fingerprint });
+        action_fingerprint: entry.proof.action_fingerprint,
+        ...geometry });
       if (response?.ok === true) {
         if (stamp !== generation || !stillCurrent(entry.candidate, entry.proof)) {
           if (response.id) send({ type: 'cancel', assessment_id: response.id }).catch(() => {});
           return;
         }
         entry.warned = true;
+        confirmTarget(geometry.target);
         if (typeof response.id === 'string') presentations.add(response.id);
       }
     } catch { /* The original click remains untouched, or held only for known extreme risk. */ }
@@ -297,6 +368,12 @@
     // extreme finding can synchronously stop this browser action.
     event.preventDefault(); event.stopImmediatePropagation(); void warn(entry, true);
   }
+  // Secret detection runs before the ordinary form gate; its synchronous
+  // listener can stop insertion/submission before any page listener receives it.
+  listen(window, 'paste', event => secretGuard.paste(event), true);
+  listen(window, 'submit', event => secretGuard.submit(event), true);
+  for (const type of ['pointermove', 'mousemove', 'pointerdown', 'mousedown', 'click', 'auxclick'])
+    listen(window, type, event => T.observeEvent(event, window), { capture: true, passive: true });
   for (const type of ['click', 'auxclick', 'submit']) listen(window, type, gate, true);
   function intent(event) {
     if (!active || !event.isTrusted || document.visibilityState !== 'visible') return;
@@ -313,9 +390,12 @@
   for (const type of ['pointerover', 'mouseover', 'focusin', 'pointerdown', 'touchstart']) listen(window, type, intent, { capture: true, passive: true });
   for (const type of ['pointerout', 'mouseout', 'focusout']) listen(window, type, () => clearTimeout(hoverTimer), { capture: true, passive: true });
   listen(window, 'keydown', event => { if (event.key === 'Enter') intent(event); }, true);
-  for (const type of ['input', 'change']) listen(window, type, () => { edits++; if (active) schedulePage(1200); }, true);
-  for (const type of ['scroll', 'resize']) listen(window, type, () => { if (active) schedulePage(400); }, { capture: true, passive: true });
+  for (const type of ['input', 'change']) listen(window, type, () => { invalidateGeometry(); if (active) schedulePage(1200); }, true);
+  for (const type of ['scroll', 'resize']) listen(window, type, () => { invalidateGeometry(); if (active) schedulePage(400); }, { capture: true, passive: true });
+  if (window.visualViewport) for (const type of ['scroll', 'resize'])
+    listen(window.visualViewport, type, () => invalidateGeometry(), { passive: true });
   function resetAutomatic() {
+    invalidateGeometry();
     generation++; clearTimeout(pageTimer); clearTimeout(hoverTimer); clearTimeout(mutationTimer);
     cache.clear(); assessmentReuse.clear(); inflight.clear(); localProofs.clear(); lastPageKey = ''; lastPageAttempt = 0;
     lastSuccessfulPageKey = ''; lastSuccessfulPageUntil = 0; lastSuccessfulPageRisk = null; retryFailures = 0; cancelWarnings();
@@ -337,9 +417,10 @@
       if (sequence !== configurationSequence) return;
       const next = value.supported !== false && value.enabled !== false && value.paused !== true && (value.active ?? value.approved) === true;
       const changed = next !== active; active = next; clearTimeout(resumeTimer);
+      nativeAvailableUntil = active && Number.isFinite(value.native_available_until) ? Math.min(value.native_available_until, Date.now() + 4500) : 0;
       if (!active) { resetAutomatic(); if (Number.isFinite(value.pauseUntil) && value.pauseUntil > Date.now()) resumeTimer = setTimeout(refresh, value.pauseUntil - Date.now() + 50); }
       else if (changed || stamp === generation) { lastURL = location.href; schedulePage(100); prefetchForms(); }
-    } catch { if (sequence === configurationSequence) { active = false; resetAutomatic(); } }
+    } catch { if (sequence === configurationSequence) { active = false; nativeAvailableUntil = 0; resetAutomatic(); } }
   }
   function mutations(records) {
     if (!active) return;
@@ -349,16 +430,21 @@
       return element && !element.closest(PRIVATE);
     });
     if (!meaningful) return;
+    invalidateGeometry();
     cancelWarnings();
     clearTimeout(mutationTimer); mutationTimer = setTimeout(() => { routeChanged(); schedulePage(1000); prefetchForms(); }, 150);
   }
   observer = new MutationObserver(records => { if (usable()) mutations(records); });
   observer.observe(document, { subtree: true, childList: true, characterData: true, attributes: true,
-    attributeFilter: ['href', 'action', 'formaction', 'method', 'formmethod', 'target', 'type', 'autocomplete', 'hidden', 'aria-hidden'] });
+    attributeFilter: ['href', 'action', 'formaction', 'method', 'formmethod', 'target', 'type', 'autocomplete', 'hidden', 'aria-hidden', 'class', 'style'] });
   listen(window, 'popstate', routeChanged); listen(window, 'hashchange', routeChanged);
-  listen(document, 'visibilitychange', () => { if (document.visibilityState === 'visible') activate(); }); listen(window, 'focus', activate);
+  listen(document, 'visibilitychange', () => { invalidateGeometry(); if (document.visibilityState === 'visible') activate(); });
+  // Muse's nonactivating overlay can briefly take key-window focus without
+  // changing the page viewport. Tab visibility and measured geometry still
+  // invalidate precision; native independently verifies the foreground app.
+  listen(window, 'focus', activate);
   listen(document, 'DOMContentLoaded', activate, { once: true });
-  listen(window, 'pagehide', () => { resetAutomatic(); clearTimeout(resumeTimer); }, true);
+  listen(window, 'pagehide', () => { nativeAvailableUntil = 0; resetAutomatic(); clearTimeout(resumeTimer); }, true);
   // A back/forward-cache restore keeps this content instance alive, but global
   // protection may have been paused while the page was frozen.
   listen(window, 'pageshow', event => { if (event.persisted) void refresh(); else activate(); });
@@ -366,6 +452,11 @@
   runtimeMessage = (message, sender, reply) => {
     if (!usable() || sender.id !== extensionID) { reply({ ok: false }); return; }
     if (message.type === 'monitor-ready') { reply({ ready: true }); return; }
+    if (message.type === 'native-availability') {
+      nativeAvailableUntil = active && Number.isFinite(message.available_until) ? Math.min(message.available_until, Date.now() + 4500) : 0;
+      reply({ ok: true }); return;
+    }
+    if (message.type === 'target-state') { reply({ nonce, revision: edits }); return; }
     if (message.type === 'monitor-activated') {
       // Chrome's tab event is an independent recovery path when a document's
       // visibility/focus event was missed or its initial config read failed.

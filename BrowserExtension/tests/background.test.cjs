@@ -9,7 +9,7 @@ const root = path.resolve(__dirname, '..');
 const turn = () => new Promise(resolve => setImmediate(resolve));
 
 function harness(settings = {}, options = {}) {
-  const sent = [], heartbeats = [], contextPolls = [], contextResults = [], contextRequests = [], onNative = [], onDisconnect = [], opened = [], writes = [], badges = [], tabMessages = [], injections = [];
+  const sent = [], heartbeats = [], contextPolls = [], contextResults = [], contextRequests = [], onNative = [], onDisconnect = [], opened = [], writes = [], badges = [], tabMessages = [], injections = [], downloadOps = [], monitoringCommands = [], timers = [];
   const local = { configVersion: 2, enabled: true, paused: false, pauseUntil: 0, ...settings }, session = {};
   const monitoring = { paused: settings.paused === true || settings.enabled === false, pause_until: settings.pauseUntil || 0, revision: 1 };
   const monitoringRequests = [];
@@ -20,7 +20,7 @@ function harness(settings = {}, options = {}) {
   let focused = true, now = Date.now(), nextGetGate = null, sessionSetGate = null, injectionGate = null, windowReadGate = null;
   let autoHeartbeatReply = options.autoHeartbeatReply !== false;
   let lastFocusedWindow = options.lastFocusedWindow || 2, snapshotReply = null, connections = 0;
-  const listen = name => ({ addListener(fn) { events[name] = fn; } });
+  const listen = name => ({ addListener(fn) { events[name] = fn; }, removeListener(fn) { if (events[name] === fn) delete events[name]; } });
   const storage = (target, area) => ({
     async get(value) {
       const result = typeof value === 'string' ? { [value]: target[value] } : { ...value, ...target };
@@ -46,7 +46,7 @@ function harness(settings = {}, options = {}) {
             if (monitoring.paused && monitoring.pause_until > 0 && monitoring.pause_until <= now) {
               monitoring.paused = false; monitoring.pause_until = 0; monitoring.revision++;
             }
-            const response = { version: 1, id: value.id, ok: options.monitoringUnavailable !== true && !conflict, ...(options.monitoringUnavailable ? {} : { monitoring: { ...monitoring } }) };
+            const response = { version: 1, id: value.id, ok: options.monitoringUnavailable !== true && !conflict, ...(options.monitoringUnavailable ? {} : { monitoring: { ...monitoring }, download_commands: structuredClone(monitoringCommands) }) };
             queueMicrotask(() => { for (const listener of onNative) listener(response); });
             return;
           }
@@ -66,21 +66,31 @@ function harness(settings = {}, options = {}) {
       }; }, onMessage: listen('message'), onStartup: listen('startup'), onInstalled: listen('installed') },
     storage: { local: storage(local, 'local'), session: storage(session, 'session'), onChanged: listen('storage') },
     tabs: { async get(id) { if (!tabs.has(id)) throw new Error('Missing tab'); return { ...tabs.get(id) }; },
+      async getZoom() { return options.zoom || 1; },
       async query(query = {}) { return [...tabs.values()].filter(value => (!query.active || value.active) &&
         (query.windowId === undefined || query.windowId === value.windowId) &&
         (!query.lastFocusedWindow || value.windowId === lastFocusedWindow)).map(value => ({ ...value })); },
       async sendMessage(id, message) { tabMessages.push({ tabId: id, ...message });
         if (message.type === 'monitor-ready') return { ready: monitoringTabs.has(id) };
-        if (message.type === 'snapshot' && snapshotReply) return snapshotReply(id);
+        if (['snapshot', 'target-state'].includes(message.type) && snapshotReply) return snapshotReply(id);
         return structuredClone(snapshot); },
-      async create(value) { opened.push(value); }, onUpdated: listen('updated'), onRemoved: listen('removed'), onActivated: listen('activated') },
+      async create(value) { opened.push(value); }, onUpdated: listen('updated'), onRemoved: listen('removed'), onActivated: listen('activated'), onZoomChange: listen('zoom'), onDetached: listen('detached') },
     windows: { async get() {
       if (windowReadGate) { const gate=windowReadGate; windowReadGate=null; gate.entered(); await gate.wait; }
-      return { focused };
-    }, async create(value) { opened.push(value); }, onFocusChanged: listen('window-focused') },
+      return { id: 2, focused, left: 80, top: 30, width: 1200, height: 900 };
+    }, async create(value) { opened.push(value); }, onFocusChanged: listen('window-focused'), onBoundsChanged: listen('window-bounds') },
     alarms: { async get(name) { return alarms.get(name); }, async create(name, value) { alarms.set(name, { name, scheduledTime: value.when, periodInMinutes: value.periodInMinutes }); },
       async clear(name) { return alarms.delete(name); }, onAlarm: listen('alarm') },
     action: { async setBadgeText(value) { badges.push(structuredClone(value)); } }
+  };
+  const downloadItems = new Map((options.downloads || []).map(item => [item.id, { ...item }]));
+  if (options.downloads) chrome.downloads = {
+    async search(query) { return [...downloadItems.values()].filter(item => (query.id === undefined || item.id === query.id) && (!query.state || item.state === query.state)).map(item => ({ ...item })); },
+    async pause(id) { downloadOps.push(['pause', id]); downloadItems.get(id).paused = true; },
+    async resume(id) { downloadOps.push(['resume', id]); downloadItems.get(id).paused = false; },
+    async cancel(id) { downloadOps.push(['cancel', id]); downloadItems.get(id).state = 'interrupted'; },
+    async show(id) { downloadOps.push(['show', id]); },
+    onCreated: listen('download-created'), onChanged: listen('download-changed'), onErased: listen('download-erased')
   };
   chrome.scripting = { async executeScript(value) {
     injections.push(structuredClone(value));
@@ -90,10 +100,10 @@ function harness(settings = {}, options = {}) {
   } };
   const sandbox = vm.createContext({ chrome, crypto: { randomUUID }, URL, console, structuredClone, AbortController,
     Date: class extends Date { static now() { return now; } },
-    setTimeout: (fn, time) => { const handle = setTimeout(fn, time); handle.unref(); return handle; }, clearTimeout });
+    setTimeout: (fn, time) => { const handle = setTimeout(fn, time); handle.unref(); timers.push({ fn, time, handle }); return handle; }, clearTimeout });
   sandbox.importScripts = file => vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), sandbox);
   vm.runInContext(fs.readFileSync(path.join(root, 'background.js'), 'utf8'), sandbox);
-  const api = vm.runInContext('({handle, documents, pending, forget, config, cache, receipts, automaticQueue, ensureTabMonitoring, hydrateOpenTabs, restoreMonitoring, syncProtectionState, pollChatContext, pollMonitoringState, applyMonitoringState, core:C, getActive:()=>activeAutomatic, hasContextTimer:()=>chatContextTimer!==null})', sandbox);
+  const api = vm.runInContext('({handle, documents, pending, forget, config, cache, receipts, automaticQueue, ensureTabMonitoring, hydrateOpenTabs, restoreMonitoring, syncProtectionState, pollChatContext, pollMonitoringState, applyMonitoringState, processDownloadCommands, downloadGuard, core:C, getActive:()=>activeAutomatic, hasContextTimer:()=>chatContextTimer!==null})', sandbox);
   const senderFor = id => { const value = tabs.get(id); return { id: 'extension-id', frameId: 0, documentId: 'document-'+id,
     url: value.url, tab: { ...value } }; };
   const sender = { ...senderFor(7), documentId: 'document-a' };
@@ -119,7 +129,7 @@ function harness(settings = {}, options = {}) {
       summary: 'Concrete concern', guidance: 'Stay here.', categories: [], mode: request.mode || 'text', duration_ms: 20, ...value };
     for (const listener of onNative) listener(response);
   }
-  return { api, monitoring, monitoringRequests, sent, heartbeats, contextPolls, contextResults, tab, tabs, sender, senderFor, popup, local, snapshot, writes, badges, opened, pageRequest, automatic, answer, tabMessages, session, alarms, events, injections, monitoringTabs,
+  return { api, monitoring, monitoringRequests, monitoringCommands, downloadItems, downloadOps, timers, now: () => now, sent, heartbeats, contextPolls, contextResults, tab, tabs, sender, senderFor, popup, local, snapshot, writes, badges, opened, pageRequest, automatic, answer, tabMessages, session, alarms, events, injections, monitoringTabs,
     focus: value => { focused = value; }, advance: value => { now += value; },
     addTab(id, active = false) { const value = { id, active, windowId: 2, url: 'https://tab'+id+'.test/page' }; tabs.set(id, value); return value; },
     blockNextRead() { let release; nextGetGate = new Promise(resolve => { release = resolve; }); return release; },
@@ -501,7 +511,7 @@ test('confirmed extremes re-present through fresh native IDs with metadata-only 
   const h=harness(), request=h.automatic('link'), finding=await automaticResult(h,request);
   const first=await nativeCall(h,blockMessage(request,finding.id),{});
   assert.equal(first.request.type,'present-block'); assert.equal(first.request.assessment_id,finding.id);
-  assert.deepEqual(Object.keys(first.request).sort(),['assessment_id','id','mode','type','version']);
+  assert.deepEqual(Object.keys(first.request).sort(),['assessment_id','document_id','id','mode','page_revision','tab_id','type','version','window_id']);
   assert.notEqual(first.result.id,finding.id); assert.equal(h.api.receipts.get(first.result.id).presented,true);
   const second=await nativeCall(h,blockMessage(request,finding.id),{});
   assert.notEqual(second.result.id,first.result.id); assert.equal(second.request.assessment_id,finding.id);
@@ -545,10 +555,11 @@ test('navigation cancels the fresh display ID and a pause during presentation di
 test('the manifest covers new HTTP(S) documents and permits attaching to already-open tabs', () => {
   const manifest = JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8'));
   assert.ok(manifest.permissions.includes('scripting'));
+  assert.ok(manifest.permissions.includes('downloads'));
   assert.deepEqual(manifest.host_permissions, ['http://*/*', 'https://*/*']);
   assert.deepEqual(manifest.content_scripts[0].matches, ['http://*/*', 'https://*/*']);
   assert.equal(manifest.content_scripts[0].run_at, 'document_start');
-  assert.deepEqual(manifest.content_scripts[0].js, ['shared.js', 'content.js']);
+  assert.deepEqual(manifest.content_scripts[0].js, ['shared.js', 'targets.js', 'secrets.js', 'content.js']);
 });
 
 test('worker startup hydrates existing active and background tabs across windows while isolating restricted tabs', async () => {
@@ -569,7 +580,7 @@ test('worker startup hydrates existing active and background tabs across windows
   assert.equal(h.injections.some(value => value.target.tabId === 7), false, 'A live current instance needs no reinjection.');
   for (const injection of h.injections) {
     assert.deepEqual(injection.target.frameIds, [0]);
-    assert.deepEqual(injection.files, ['shared.js', 'content.js']);
+    assert.deepEqual(injection.files, ['shared.js', 'targets.js', 'secrets.js', 'content.js']);
     assert.equal(injection.world, 'ISOLATED');
     assert.equal(injection.injectImmediately, true);
   }
@@ -899,4 +910,230 @@ test('a late Chrome pause cannot overwrite a newer native Resume', async () => {
   assert.equal(late.ok, false); assert.match(late.error, /newer setting/);
   assert.equal(h.monitoring.revision, 6); assert.equal(h.monitoring.paused, false);
   assert.equal((await h.api.config()).active, true);
+});
+
+function targetMeasurement(h, revision = 0) {
+  return { version: 1, document_id: 'nonce-a', revision, measured_at: h.now(),
+    rect: { x: 40, y: 80, width: 180, height: 42 },
+    viewport: { width: 1000, height: 700, scroll_x: 0, scroll_y: 0, device_pixel_ratio: 2,
+      visual_scale: 1, offset_x: 0, offset_y: 0 } };
+}
+async function lease(h) {
+  await h.api.handle({ type: 'configuration', nonce: 'nonce-a' }, h.sender);
+  await until(() => h.heartbeats.length > 0);
+  await h.api.pollMonitoringState();
+}
+function secretMessage() {
+  return { type: 'secret-paste', nonce: 'nonce-a', document_id: 'nonce-a', page_revision: 0,
+    page: { title: 'Checkout', text: 'RAW_VALUE_MUST_NOT_PASS' },
+    secret: { category: 'github_token', count: 1, categories: ['github_token'], phase: 'paste',
+      value: 'RAW_VALUE_MUST_NOT_PASS', label: 'RAW_VALUE_MUST_NOT_PASS' } };
+}
+test('native availability expires and failed secret delivery revokes interception until a successful poll', async () => {
+  const h = harness(); await lease(h);
+  assert.ok((await h.api.handle({ type: 'configuration', nonce: 'nonce-a' }, h.sender)).native_available_until > h.now());
+  h.advance(4501);
+  assert.equal((await h.api.handle(secretMessage(), h.sender)).ok, false);
+  await h.api.pollMonitoringState();
+  const { result, request } = await nativeCall(h, secretMessage(), { ok: false });
+  assert.equal(result.ok, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(request.secret)), { category: 'github_token', count: 1, categories: ['github_token'], phase: 'paste' });
+  assert.equal(request.page.text, ''); assert.equal(request.page.url, 'https://shop.example.test/account');
+  assert.ok(!JSON.stringify(request).includes('RAW_VALUE_MUST_NOT_PASS'));
+  const before = h.sent.length;
+  assert.equal((await h.api.handle(secretMessage(), h.sender)).ok, false); assert.equal(h.sent.length, before);
+  assert.ok(h.tabMessages.some(value => value.type === 'native-availability' && value.available_until === 0));
+});
+test('secret warnings require the focused original document, global monitoring and valid static categories', async () => {
+  for (const issue of ['hidden', 'document', 'pause', 'category']) {
+    const h = harness(); await lease(h); const message = secretMessage();
+    if (issue === 'hidden') h.focus(false);
+    if (issue === 'document') h.api.documents.set(7, { nonce: 'replacement', documentId: 'replacement' });
+    if (issue === 'pause') await h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup);
+    if (issue === 'category') message.secret.categories.push('arbitrary_private_text');
+    const before = h.sent.length;
+    if (issue === 'category') await assert.rejects(h.api.handle(message, h.sender));
+    else assert.equal((await h.api.handle(message, h.sender)).ok, false, issue);
+    assert.equal(h.sent.length, before, issue);
+  }
+});
+test('precise warning targets bind current content geometry to trusted Chrome window and zoom', async () => {
+  const h = harness({}, { zoom: 1.25 }), request = h.automatic('link'), finding = await automaticResult(h, request);
+  const message = { ...blockMessage(request, finding.id), document_id: 'nonce-a', page_revision: 0,
+    target: { ...targetMeasurement(h), browser_window: { id: 999, tab_id: 999, left: 9999 }, raw: 'PRIVATE' } };
+  const { request: native } = await nativeCall(h, message);
+  assert.equal(native.target.browser_window.id, 2); assert.equal(native.target.browser_window.tab_id, 7);
+  assert.equal(native.target.browser_window.zoom, 1.25); assert.equal(native.target.browser_window.left, 80);
+  assert.equal(native.target.viewport.device_pixel_ratio, 2); assert.ok(!JSON.stringify(native).includes('PRIVATE'));
+  assert.equal(native.document_id, 'nonce-a'); assert.equal(native.tab_id, 7); assert.equal(native.window_id, 2);
+});
+test('changed or stale layout falls back to a warning without claiming an element target', async () => {
+  for (const issue of ['revision', 'document', 'age', 'offscreen']) {
+    const h = harness(), request = h.automatic('link'), finding = await automaticResult(h, request);
+    const message = { ...blockMessage(request, finding.id), document_id: 'nonce-a', page_revision: 0, target: targetMeasurement(h) };
+    if (issue === 'revision') h.snapshot.revision++;
+    if (issue === 'document') h.snapshot.nonce = 'replacement';
+    if (issue === 'age') message.target.measured_at -= 2501;
+    if (issue === 'offscreen') message.target.rect.x = 1100;
+    const { request: native } = await nativeCall(h, message);
+    assert.equal(native.type, 'present-block'); assert.equal(native.target, undefined, issue);
+  }
+});
+test('target invalidation carries source identity only and cannot be issued by a foreign document', async () => {
+  const h = harness(); await lease(h);
+  const { request } = await nativeCall(h, { type: 'target-invalidated', nonce: 'nonce-a', page_revision: 12, target: { raw: 'PRIVATE' } });
+  assert.equal(request.document_id, 'nonce-a'); assert.equal(request.page_revision, 12); assert.equal(request.target, undefined);
+  const before = h.sent.length;
+  assert.equal((await h.api.handle({ type: 'target-invalidated', nonce: 'replacement', page_revision: 12 }, h.sender)).ok, false);
+  assert.equal(h.sent.length, before);
+});
+test('download lifecycle reaches native inspection and repeated commands execute once with exact acknowledgements', async () => {
+  const item = { id: 41, state: 'in_progress', paused: false, danger: 'safe', url: 'https://files.test/tool.dmg?token=PRIVATE', filename: '/tmp/tool.dmg' };
+  const h = harness({}, { downloads: [item] });
+  await sentCount(h, 1);
+  const inspection = h.sent.find(value => value.type === 'download-inspect'); assert.ok(inspection);
+  assert.equal(inspection.download.url, 'https://files.test/tool.dmg'); assert.ok(!JSON.stringify(inspection).includes('PRIVATE'));
+  h.answer(inspection, { risk_level: 'high', decision: 'block' });
+  await until(() => h.api.downloadGuard.pending().length === 1);
+  const hold = h.api.downloadGuard.pending()[0], command = { command_id: 'command-1', ...hold, action: 'resume' };
+  const first = h.api.processDownloadCommands([command]);
+  await until(() => h.sent.some(value => value.type === 'download-command-result'));
+  h.answer(h.sent.find(value => value.type === 'download-command-result')); await first;
+  const second = h.api.processDownloadCommands([command]);
+  await until(() => h.sent.filter(value => value.type === 'download-command-result').length === 2);
+  h.answer(h.sent.filter(value => value.type === 'download-command-result').at(-1)); await second;
+  assert.deepEqual(h.downloadOps, [['pause', 41], ['resume', 41]]);
+  const ack = h.sent.filter(value => value.type === 'download-command-result').at(-1).download_command;
+  assert.deepEqual(JSON.parse(JSON.stringify(ack)), { command_id: 'command-1', download_id: 41, hold_id: hold.hold_id, action: 'resume', ok: true });
+});
+test('popup download health exposes wiring and work counters without download identities', async () => {
+  const missing = harness(); await missing.api.restoreMonitoring();
+  const unavailable = await missing.api.handle({ type: 'popup-state' }, missing.popup);
+  assert.deepEqual(JSON.parse(JSON.stringify(unavailable.downloads)), { available: false, started: false, paused: false, processing: 0, pending: 0 });
+  const item = { id: 45, state: 'complete', exists: true, fileSize: 6, endTime: new Date().toISOString(), danger: 'safe', filename: '/tmp/PRIVATE.txt' };
+  const h = harness({}, { downloads: [item] }); await sentCount(h, 1);
+  const working = await h.api.handle({ type: 'popup-state' }, h.popup);
+  assert.deepEqual(JSON.parse(JSON.stringify(working.downloads)), { available: true, started: true, paused: false, processing: 1, pending: 1 });
+  assert.ok(!JSON.stringify(working.downloads).includes('PRIVATE'));
+  assert.equal(h.heartbeats.length > 0, true, 'A file scan cannot hold the browser startup heartbeat.');
+  h.answer(h.sent.find(value => value.type === 'download-inspect'), { risk_level: 'low', download_inspection: { status: 'scanned', scan_status: 'clean' } });
+  await until(() => h.api.downloadGuard.status().processing === 0);
+  await h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup);
+  const paused = await h.api.handle({ type: 'popup-state' }, h.popup);
+  assert.equal(paused.downloads.paused, true); assert.equal(paused.downloads.processing, 0);
+});
+test('MV3 download wake-up listeners register before asynchronous configuration startup', async () => {
+  const h = harness({}, { downloads: [] });
+  assert.equal(typeof h.events['download-created'], 'function');
+  assert.equal(typeof h.events['download-changed'], 'function');
+  assert.equal(h.api.downloadGuard.status().started, true);
+  const item = { id: 46, state: 'complete', exists: true, fileSize: 6, endTime: new Date().toISOString(), danger: 'safe', filename: '/tmp/wake-up.txt' };
+  h.downloadItems.set(46, item); h.events['download-created'](item);
+  await sentCount(h, 1); assert.equal(h.sent[0].download.phase, 'complete');
+  h.answer(h.sent[0], { risk_level: 'low', download_inspection: { status: 'scanned', scan_status: 'clean' } });
+});
+test('Pause cancels the original native download task and a late finding gains no hold or receipt', async () => {
+  const item = { id: 47, state: 'complete', exists: true, fileSize: 6, endTime: new Date().toISOString(), danger: 'safe', filename: '/tmp/pause.txt' };
+  const h = harness({}, { downloads: [item] }); await sentCount(h, 1);
+  const inspection = h.sent.find(value => value.type === 'download-inspect');
+  await h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup);
+  const cancel = h.sent.find(value => value.type === 'cancel'); assert.ok(cancel);
+  assert.equal(cancel.assessment_id, inspection.id); assert.notEqual(cancel.id, inspection.id);
+  h.answer(cancel, { risk_level: 'unknown' }); h.answer(inspection, { risk_level: 'high', decision: 'block' });
+  await until(() => h.api.downloadGuard.status().processing === 0);
+  assert.equal(h.api.downloadGuard.pending().length, 0); assert.equal(h.api.receipts.size, 0); assert.equal(h.api.cache.size, 0);
+  await h.api.downloadGuard.stop();
+});
+test('download timeout cancels the matching native task rather than leaving its scanner running', async () => {
+  const item = { id: 48, state: 'complete', exists: true, fileSize: 6, endTime: new Date().toISOString(), danger: 'safe', filename: '/tmp/timeout.txt' };
+  const h = harness({}, { downloads: [item] }); await sentCount(h, 1);
+  const inspection = h.sent.find(value => value.type === 'download-inspect');
+  const timer = h.timers.find(value => value.time === 75000); assert.ok(timer); timer.fn();
+  await until(() => h.sent.some(value => value.type === 'cancel'));
+  const cancel = h.sent.find(value => value.type === 'cancel'); assert.equal(cancel.assessment_id, inspection.id);
+  h.answer(cancel, { risk_level: 'unknown' }); h.answer(inspection, { risk_level: 'high', decision: 'block' });
+  await until(() => h.api.downloadGuard.status().processing === 0);
+  assert.equal(h.api.downloadGuard.pending().length, 0); assert.equal(h.api.receipts.size, 0);
+  await h.api.downloadGuard.stop();
+});
+test('tab activation, window movement and zoom invalidate only a previously bound target', async () => {
+  for (const event of ['activated', 'window-bounds', 'zoom', 'detached']) {
+    const h = harness(), request = h.automatic('link'), finding = await automaticResult(h, request);
+    const message = { ...blockMessage(request, finding.id), document_id: 'nonce-a', page_revision: 0, target: targetMeasurement(h) };
+    await nativeCall(h, message);
+    const before = h.sent.length;
+    h.events[event](event === 'window-bounds' ? { id: 2 } : event === 'detached' ? 7 : { tabId: 7 });
+    await until(() => h.sent.length > before);
+    const invalidation = h.sent.slice(before).find(value => value.type === 'target-invalidated'); assert.ok(invalidation, event);
+    assert.equal(invalidation.tab_id, 7); assert.equal(invalidation.window_id, 2); assert.equal(invalidation.document_id, 'nonce-a');
+    assert.ok(h.api.receipts.has(finding.id), 'Geometry invalidation does not clear the underlying warning.');
+  }
+});
+test('global Pause releases guardian-owned download holds and pauses both page and download monitoring', async () => {
+  const item = { id: 42, state: 'in_progress', paused: false, danger: 'safe', url: 'https://files.test/tool.dmg', filename: '/tmp/tool.dmg' };
+  const h = harness({}, { downloads: [item] }); await sentCount(h, 1);
+  h.answer(h.sent.find(value => value.type === 'download-inspect'), { risk_level: 'high', decision: 'block' });
+  await until(() => h.api.downloadGuard.pending().length === 1);
+  assert.equal((await h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup)).ok, true);
+  assert.deepEqual(h.downloadOps, [['pause', 42], ['resume', 42]]); assert.equal(h.api.downloadGuard.pending().length, 0);
+  h.downloadItems.set(43, { ...item, id: 43 }); h.events['download-created'](h.downloadItems.get(43)); await turn(); await turn();
+  assert.equal(h.sent.filter(value => value.type === 'download-inspect').length, 1);
+});
+test('monitoring polls deliver download commands and acknowledge execution without opening a file', async () => {
+  const item = { id: 44, state: 'in_progress', paused: false, danger: 'safe', url: 'https://files.test/tool.dmg', filename: '/tmp/tool.dmg' };
+  const h = harness({}, { downloads: [item] }); await sentCount(h, 1);
+  h.answer(h.sent.find(value => value.type === 'download-inspect'), { risk_level: 'high', decision: 'block' });
+  await until(() => h.api.downloadGuard.pending().length === 1);
+  const hold = h.api.downloadGuard.pending()[0];
+  h.monitoringCommands.push({ command_id: randomUUID(), download_id: hold.download_id, hold_id: hold.hold_id, action: 'cancel' });
+  const poll = h.api.pollMonitoringState();
+  await until(() => h.sent.some(value => value.type === 'download-command-result'));
+  const ack = h.sent.find(value => value.type === 'download-command-result'); h.answer(ack); await poll;
+  assert.equal(ack.download_command.ok, true); assert.deepEqual(h.downloadOps, [['pause', 44], ['cancel', 44]]);
+  assert.equal(h.opened.length, 0);
+});
+test('target renewal cannot create a warning and carries fresh bound geometry only for the original active document', async () => {
+  const h = harness(); await lease(h);
+  const update = { type: 'target-update', nonce: 'nonce-a', document_id: 'nonce-a', page_revision: 0, target: targetMeasurement(h) };
+  assert.equal((await h.api.handle(update, h.sender)).ok, false);
+  const request = h.automatic('link'), finding = await automaticResult(h, request);
+  await nativeCall(h, { ...blockMessage(request, finding.id), ...update, type: 'present-block' });
+  h.advance(1000); update.target = targetMeasurement(h);
+  const { request: native, result } = await nativeCall(h, update);
+  assert.equal(result.ok, true); assert.equal(native.type, 'target-update'); assert.ok(native.target);
+  assert.equal(native.page, undefined); assert.equal(native.action, undefined); assert.equal(native.assessment_id, undefined);
+  assert.equal(native.target.browser_window.tab_id, 7); assert.equal(native.target.measured_at, h.now());
+  h.snapshot.revision++;
+  const before = h.sent.length;
+  assert.equal((await h.api.handle(update, h.sender)).ok, false); assert.equal(h.sent.length, before);
+});
+test('Muse overlay focus loss permits only native-verified renewal, never a new secret intervention', async () => {
+  const h = harness(); await lease(h);
+  const request = h.automatic('link'), finding = await automaticResult(h, request);
+  const geometry = { document_id: 'nonce-a', page_revision: 0, target: targetMeasurement(h) };
+  await nativeCall(h, { ...blockMessage(request, finding.id), ...geometry });
+  h.focus(false);
+  const before = h.sent.length;
+  h.events['window-focused'](-1); await turn();
+  assert.equal(h.sent.length, before, 'WINDOW_ID_NONE alone cannot declare unchanged geometry stale.');
+  const update = { type: 'target-update', nonce: 'nonce-a', ...geometry };
+  const renewed = await nativeCall(h, update, { ok: true }); assert.equal(renewed.result.ok, true);
+  const secretBefore = h.sent.length;
+  assert.equal((await h.api.handle(secretMessage(), h.sender)).ok, false);
+  assert.equal(h.sent.length, secretBefore, 'New interventions still require a focused Chrome window.');
+  const rejected = await nativeCall(h, update, { ok: false }); assert.equal(rejected.result.ok, false, 'Native source rejection is final.');
+  h.tab.active = false;
+  const inactiveBefore = h.sent.length;
+  assert.equal((await h.api.handle(update, h.sender)).ok, false); assert.equal(h.sent.length, inactiveBefore);
+});
+test('a real Chrome window focus change invalidates targets from other windows only', async () => {
+  const h = harness(); await lease(h);
+  const request = h.automatic('link'), finding = await automaticResult(h, request);
+  await nativeCall(h, { ...blockMessage(request, finding.id), document_id: 'nonce-a', page_revision: 0, target: targetMeasurement(h) });
+  const before = h.sent.length;
+  h.events['window-focused'](2); await turn(); await turn();
+  assert.equal(h.sent.slice(before).some(value => value.type === 'target-invalidated'), false);
+  h.events['window-focused'](3);
+  await until(() => h.sent.slice(before).some(value => value.type === 'target-invalidated'));
+  assert.equal(h.sent.filter(value => value.type === 'target-invalidated').at(-1).window_id, 2);
 });

@@ -35,3 +35,9 @@ uv run --with pillow --with imageio-ffmpeg python scripts/preview-spy-glasses.py
 ```
 
 Keep original-source attribution, the mesh metadata, and the matching preparation scripts when changing derived geometry. Generated binaries, downloaded models, credentials, dependency directories, captures, and benchmark output are excluded from the source release.
+
+### Harmless protection fixtures
+
+`python3 Development/protection-demo.py` serves the local secret-paste, pointer and download fixtures at `http://127.0.0.1:8767/`. Its copy button uses a public BIP39 test vector, never a real wallet. The page counts delivered paste events and never retains submitted bodies. The antivirus fixture is the harmless standard EICAR test, not live malware. No fixture is executed.
+
+`SecretPasteFixture.swift` is excluded from ordinary builds. Compile it with `-parse-as-library -D MUSE_SECRET_PASTE_FIXTURE` into a local AppKit test bundle to verify that native keyboard paste inserts the public test phrase and produces an exposure warning afterward. The fixture has no save or network path. Browser paste should instead be stopped before page delivery. Always verify the actual foreground app; selecting a tab through automation can leave the coding app foreground.

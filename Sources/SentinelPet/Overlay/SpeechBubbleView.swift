@@ -9,6 +9,9 @@ struct SpeechBubbleView: View {
     var isDismissible = false
     var acknowledgment: GuardianAcknowledgment?
     var warningDetails: GuardianWarningDetails?
+    var warningActions: [GuardianWarningAction] = []
+    var warningActionStatus: String? = nil
+    var onWarningAction: ((String) -> Void)? = nil
     var warningAvailableSize: CGSize? = nil
     var onOpen: (() -> Void)?
     var onDismiss: (() -> Void)?
@@ -125,6 +128,14 @@ struct SpeechBubbleView: View {
                             .font(.system(size: 13, weight: .medium, design: .rounded))
                             .foregroundStyle(ink)
                             .lineSpacing(3)
+                    }
+                    if let status = warningActionStatus {
+                        Text(status).font(.caption).foregroundStyle(secondaryInk)
+                    }
+                    ForEach(warningActions) { action in
+                        Button(action.title) { onWarningAction?(action.id) }
+                            .buttonStyle(.bordered).font(.system(size: 12, weight: .semibold))
+                            .foregroundStyle(ink)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)

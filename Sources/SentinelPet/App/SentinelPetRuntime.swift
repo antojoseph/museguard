@@ -18,9 +18,24 @@ final class SentinelPetRuntime: ObservableObject {
     @Published private(set) var isAnalyzing = false
     @Published private(set) var lastMockResult: String?
     #endif
+    @Published private(set) var downloadStatus = DownloadInspector.installedScanner() == nil ? "Download antivirus unavailable · set up the local scanner" : "Local download scanner installed"
     @Published private(set) var browserStatus = "Browser guard stopped"
     private let browserBridge = BrowserBridgeServer()
     private let browserChatContext = BrowserChatContextBroker()
+    private let downloadInspector = DownloadInspector()
+    private let downloadMaintenance = DownloadScannerMaintenance()
+    private let downloadCommands = BrowserDownloadCommandBroker()
+    private let secretPasteMonitor = NativeSecretPasteMonitor()
+    private let pointing = BrowserPointingController()
+    private var completedDownloadInspections = 0
+    private var metadataDownloadChecks = 0
+    private var receivedDownloadFiles = 0
+    private var failedDownloadInspections = 0
+    private var lastDownloadMonitoring: BrowserResponse.DownloadMonitoringMetadata?
+    private var downloadTasks: [String: Task<DownloadInspectionResult, Error>] = [:]
+    private var warningDownloadActions: [String: (downloadID: Int, holdID: String, action: String)] = [:]
+    private var pendingDownloadActions: [String: String] = [:]
+    private var recentSafetyNotices: [String: Date] = [:]
     private let monitoringControl = MonitoringControl.shared
     private lazy var browserAssessments: BrowserAssessmentCoordinator = BrowserAssessmentCoordinator(
         modelReady: { LocalModelService.shared.isReady },
@@ -52,12 +67,21 @@ final class SentinelPetRuntime: ObservableObject {
             }
             let warningContext = "browser:" + (request.page?.url ?? snapshot.windowTitle ?? snapshot.appName)
             if self.petViewModel.acknowledgment != nil {
-                // A repeated finding for the same page is already visible.
-                // Other findings remain retryable after the user acknowledges it.
-                guard self.acknowledgmentContext == warningContext else { return false }
+                // A blocked action always gets its own explanation, even
+                // while another serious finding is waiting for Got it.
+                if self.acknowledgmentContext != warningContext {
+                    _ = self.presentSafety(verdict, context: warningContext)
+                } else {
+                    self.cancelChat(); self.petViewModel.returnToWarning()
+                }
                 let wasHidden = self.petViewModel.isAvatarHidden
                 self.petViewModel.revealForWarning()
                 if wasHidden, let target = self.acknowledgmentTarget { self.petViewModel.intervene(at: target) }
+                if let precise = self.resolveBrowserTarget(request), let measurement = request.target {
+                    let landing = BrowserPointingController.landingPoint(for: precise.resolved.elementRect)
+                    self.petViewModel.intervene(at: landing); self.acknowledgmentTarget = landing
+                    self.pointing.show(target: measurement, resolved: precise.resolved, app: precise.app, bounds: precise.bounds, landing: self.petViewModel.interventionAnchor ?? landing)
+                }
                 return true
             }
             self.updateChatReport(verdict, source: .browserText, snapshot: snapshot)
@@ -66,10 +90,14 @@ final class SentinelPetRuntime: ObservableObject {
             // display center after verifying Chrome is foreground.
             let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
             let fallback = screen.map { CGPoint(x: $0.visibleFrame.midX, y: $0.visibleFrame.midY) }
-            let target = GuardianTarget.activeWindowCenter(expectedAppName: snapshot.appName) ?? fallback
+            let precise = self.resolveBrowserTarget(request)
+            let target = precise.map { BrowserPointingController.landingPoint(for: $0.resolved.elementRect) } ?? GuardianTarget.activeWindowCenter(expectedAppName: snapshot.appName) ?? fallback
             self.browserStatus = "Chrome warning delivered to Muse."
             guard self.presentVerdict(verdict, snapshot: snapshot, target: target,
                 acknowledgmentID: request.id, acknowledgmentContext: warningContext) else { return false }
+            if let precise, let target, let measurement = request.target {
+                self.pointing.show(target: measurement, resolved: precise.resolved, app: precise.app, bounds: precise.bounds, landing: self.petViewModel.interventionAnchor ?? target)
+            }
             if self.petViewModel.acknowledgment != nil { self.browserStatus = "Muse is waiting for Got it." }
             return true
         })
@@ -155,15 +183,30 @@ final class SentinelPetRuntime: ObservableObject {
         do {
             try browserBridge.start { [weak self] request in
                 guard let self else { return .failure(id: request.id, mode: request.mode, message: "Muse Guard is closing.") }
-                if let controlReply = self.monitoringControl.handle(request) { return controlReply }
+                if var controlReply = self.monitoringControl.handle(request) {
+                    if request.type == "monitoring-state" { controlReply.downloadCommands = self.downloadCommands.pending() }
+                    return controlReply
+                }
+                if let safetyReply = await self.handleSafetyRequest(request) { return safetyReply }
                 if let contextReply = self.browserChatContext.handle(request) { return contextReply }
                 if request.type == "assess", request.purpose != nil, !self.monitoringPaused { self.browserProtection.refreshFromAutomaticCheck() }
-                return await self.browserAssessments.handle(request)
+                var reply = await self.browserAssessments.handle(request)
+                if request.type == "status" {
+                    var download = self.lastDownloadMonitoring ?? .init(completed: 0, lastStatus: "none", lastScanStatus: "none", scanner: DownloadInspector.installedScanner() == nil ? "unavailable" : "clamav")
+                    download.metadataChecks = self.metadataDownloadChecks
+                    download.receivedFiles = self.receivedDownloadFiles
+                    download.inFlight = self.downloadTasks.count
+                    download.failed = self.failedDownloadInspections
+                    reply.downloadMonitoring = download
+                }
+                return reply
             }
             browserStatus = "Browser guard · local connection ready"
+            startSecretPasteMonitoring()
+            startDownloadMaintenance()
         } catch { browserStatus = "Browser guard unavailable: \(error.localizedDescription)" }
     }
-    func stopBrowserBridge() { browserBridge.stop(); browserStatus = "Browser guard stopped" }
+    func stopBrowserBridge() { browserBridge.stop(); downloadMaintenance.stop(); secretPasteMonitor.stop(); pointing.hide(); browserStatus = "Browser guard stopped" }
 
     func toggleAvatarVisibility() {
         if petViewModel.isAvatarHidden {
@@ -178,7 +221,7 @@ final class SentinelPetRuntime: ObservableObject {
 
     func refreshAccessibilityStatus() {
         accessibilityTrusted = AccessibilityPermissionController.isTrusted
-        if accessibilityTrusted { reconcileDesktopMonitoring() }
+        if accessibilityTrusted { reconcileDesktopMonitoring(); startSecretPasteMonitoring() }
         else if !screenCaptureTrusted { stopMonitoring() }
     }
     func refreshScreenCaptureStatus() {
@@ -223,8 +266,14 @@ final class SentinelPetRuntime: ObservableObject {
             stopMonitoring()
             browserAssessments.cancelAll()
             browserProtection.update(enabled: false)
+            downloadMaintenance.stop(); downloadStatus = "Download protection paused"
+            downloadTasks.values.forEach { $0.cancel() }; downloadTasks.removeAll()
+            downloadCommands.cancelAll(); warningDownloadActions.removeAll(); pendingDownloadActions.removeAll()
+            petViewModel.setWarningActions([]); pointing.hide()
         } else {
             reconcileDesktopMonitoring()
+            startSecretPasteMonitoring()
+            startDownloadMaintenance()
         }
         DispatchQueue.main.async { [weak self] in self?.refreshMonitoringStatus() }
     }
@@ -323,6 +372,8 @@ final class SentinelPetRuntime: ObservableObject {
         // Acknowledgement dismisses this explanation, never the browser's
         // high-risk block. Native controls never grant a browser action.
         cancelDemo(); cancelChat()
+        pointing.hide()
+        warningDownloadActions.removeAll()
         acknowledgmentContext = nil; acknowledgmentTarget = nil
         latestChatContext = nil
         screenChatHistory.reset()
@@ -629,6 +680,185 @@ final class SentinelPetRuntime: ObservableObject {
         if risky, let point = target ?? GuardianTarget.activeWindowCenter(expectedAppName: snapshot.appName) { petViewModel.intervene(at: point) }
         return true
     }
+
+    private func startDownloadMaintenance() {
+        downloadMaintenance.start(isEnabled: { [weak self] in self?.monitoringPaused == false },
+            onStatus: { [weak self] status in self?.downloadStatus = status })
+    }
+    private func startSecretPasteMonitoring() {
+        guard AccessibilityPermissionController.isTrusted else { return }
+        _ = secretPasteMonitor.start(isEnabled: { [weak self] in self?.monitoringPaused == false },
+            shouldIgnoreApp: { UnrealCharacterRenderer.shared.ownsProcess($0.processIdentifier) },
+            onDetection: { [weak self] processID, detection in
+                guard let self, !self.monitoringPaused, let app = NSRunningApplication(processIdentifier: processID) else { return }
+                let key = "native-secret:\(processID):\(detection.category.rawValue)"
+                if let date = self.recentSafetyNotices[key], Date().timeIntervalSince(date) < 5 { return }
+                self.recentSafetyNotices = self.recentSafetyNotices.filter { Date().timeIntervalSince($0.value) < 60 }
+                self.recentSafetyNotices[key] = Date()
+                let verdict = RiskVerdict(riskLevel: .high,
+                    summary: "You may have pasted a \(detection.label) into \(app.localizedName ?? "this app").",
+                    guidance: "This was a warning after the paste; Muse could not prevent it. If this was not intentional, undo the paste. If you sent it, revoke or rotate the credential. A wallet recovery phrase should stay private.",
+                    categories: detection.categories.map(\.rawValue))
+                self.logSafety(verdict, source: .secretPaste, app: app.localizedName ?? "Current app")
+                _ = self.presentSafety(verdict, context: key)
+            })
+    }
+
+    private func resolveBrowserTarget(_ request: BrowserRequest) -> (resolved: BrowserElementTarget.Resolved, app: NSRunningApplication, bounds: CGRect)? {
+        guard let target = request.target else { BrowserTargetDiagnostics.record("missing_measurement"); return nil }
+        guard request.validTargetIdentity else { BrowserTargetDiagnostics.record("source_mismatch"); return nil }
+        guard let app = NSWorkspace.shared.frontmostApplication, app.bundleIdentifier == "com.google.Chrome" else {
+            BrowserTargetDiagnostics.record("chrome_not_foreground"); return nil
+        }
+        guard let bounds = BrowserPointingController.verifiedWindow(for: target, app: app) else {
+            BrowserTargetDiagnostics.record("window_mismatch"); return nil
+        }
+        let context = BrowserElementTarget.Context(documentID: request.documentID!, revision: request.pageRevision!,
+            tabID: request.tabID!, browserWindowID: request.windowID!, windowBounds: bounds,
+            primaryScreenTop: NSScreen.screens.first?.frame.maxY ?? 0, processID: app.processIdentifier,
+            screens: NSScreen.screens.map(\.frame))
+        guard target.validated(context: context) else { BrowserTargetDiagnostics.record("stale_or_invalid_geometry"); return nil }
+        guard let resolved = target.resolve(context: context) else { BrowserTargetDiagnostics.record("viewport_unavailable"); return nil }
+        BrowserTargetDiagnostics.record(resolved.basis.rawValue)
+        return (resolved, app, bounds)
+    }
+
+    private func handleSafetyRequest(_ request: BrowserRequest) async -> BrowserResponse? {
+        if request.type == "cancel", let id = request.assessmentID, let task = downloadTasks[id] {
+            task.cancel()
+            return BrowserResponse(id: request.id, ok: true, decision: "review", riskLevel: "unknown",
+                summary: "Download inspection cancelled.", guidance: "No file was marked safe or opened.")
+        }
+        if request.type == "target-update" {
+            let renewed: Bool
+            if !monitoringPaused, petViewModel.acknowledgment != nil, let target = request.target,
+               let precise = resolveBrowserTarget(request) {
+                renewed = pointing.renew(target: target, resolved: precise.resolved, app: precise.app, bounds: precise.bounds)
+            } else { renewed = false }
+            return BrowserResponse(id: request.id, ok: renewed, decision: "review", riskLevel: "unknown", summary: renewed ? "Pointer renewed." : "Pointer expired.", guidance: "No warning or browser action was created.")
+        }
+        if request.type == "target-invalidated" {
+            pointing.invalidate(documentID: request.documentID, tabID: request.tabID, windowID: request.windowID)
+            return BrowserResponse(id: request.id, ok: true, decision: "review", riskLevel: "unknown", summary: "Pointer cleared.", guidance: "The warning is still waiting for acknowledgement.")
+        }
+        if request.type == "download-command-result", let result = request.downloadCommand {
+            let matched = downloadCommands.complete(result)
+            if matched, let actionID = pendingDownloadActions.removeValue(forKey: result.commandID) {
+                petViewModel.finishWarningAction(id: actionID, message: result.ok ? "Download action completed." : "Chrome could not complete that download action. Check Chrome’s Downloads.")
+            }
+            return BrowserResponse(id: request.id, ok: matched, decision: "review", riskLevel: "unknown", summary: matched ? "Download action received." : "Download action expired.", guidance: "No other download was changed.")
+        }
+        guard ["secret-paste", "download-inspect"].contains(request.type) else { return nil }
+        guard !monitoringPaused else { return .failure(id: request.id, message: "All monitoring is paused.") }
+        if request.type == "secret-paste", let secret = request.secret,
+           let category = SecretCategory(rawValue: secret.category) {
+            guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.google.Chrome" else {
+                return .failure(id: request.id, message: "Chrome is no longer foreground. The secret was not replayed.")
+            }
+            let verdict = RiskVerdict(riskLevel: .high, summary: "I stopped a \(category.label) from being \(secret.phase == "submit" ? "submitted" : "pasted") into this page.",
+                guidance: "Keep this secret private. If you intended to enter it here, first verify the destination and pause monitoring. Got it dismisses this warning and never pastes or submits the value.", categories: secret.categories)
+            let precise = resolveBrowserTarget(request)
+            let landing = precise.map { BrowserPointingController.landingPoint(for: $0.resolved.elementRect) }
+            let delivered = presentSafety(verdict, context: "secret:\(request.documentID ?? ""):\(secret.category)", target: landing)
+            if delivered, let precise, let landing, let target = request.target {
+                pointing.show(target: target, resolved: precise.resolved, app: precise.app, bounds: precise.bounds, landing: petViewModel.interventionAnchor ?? landing)
+            }
+            logSafety(verdict, source: .secretPaste, app: "Google Chrome")
+            return BrowserResponse(id: request.id, ok: delivered, decision: delivered ? "block" : "review", riskLevel: "high", summary: verdict.summary, guidance: verdict.guidance, categories: verdict.categories)
+        }
+        guard let download = request.download, let phase = DownloadInspectionPhase(rawValue: download.phase) else { return .failure(id: request.id, message: "Download metadata was missing.") }
+        if phase == .metadata { metadataDownloadChecks += 1 } else { receivedDownloadFiles += 1 }
+        guard downloadTasks[request.id] == nil else { return .failure(id: request.id, message: "This inspection is already running.") }
+        guard downloadTasks.count < 8 else { return .failure(id: request.id, message: "The local download inspection queue is full. This file has not been scanned.") }
+        let input = DownloadInspectionInput(downloadID: download.downloadID, phase: phase, url: download.url,
+            finalURL: download.finalURL, filename: download.filename, mime: download.mime, state: download.state,
+            danger: download.danger, fileSize: download.fileSize, totalBytes: download.totalBytes)
+        let task = Task { try await downloadInspector.inspect(input) }
+        downloadTasks[request.id] = task
+        defer { downloadTasks.removeValue(forKey: request.id) }
+        do {
+            let inspection = try await withTaskCancellationHandler(operation: { try await task.value }, onCancel: { task.cancel() })
+            try Task.checkCancellation()
+            guard !monitoringPaused else { throw CancellationError() }
+            let verdict = RiskVerdict(riskLevel: inspection.riskLevel, summary: inspection.summary, guidance: inspection.guidance, categories: inspection.categories)
+            downloadStatus = inspection.details.scanStatus == "clean" ? "Last download: no known threats detected" : inspection.summary
+            logSafety(verdict, source: .downloadInspection, app: "Google Chrome", engine: inspection.details.scanner == "clamav" ? "Local static inspection · ClamAV" : "Local static inspection · antivirus unavailable")
+            if verdict.riskLevel == .high {
+                let actions = downloadWarningActions(download)
+                _ = presentSafety(verdict, context: "download:\(download.downloadID)", actions: actions)
+            }
+            var response = BrowserResponse(id: request.id, ok: true, decision: verdict.riskLevel == .high ? "block" : "review", riskLevel: verdict.riskLevel.rawValue,
+                summary: verdict.summary, guidance: verdict.guidance, categories: verdict.categories)
+            let details = inspection.details
+            if phase == .complete {
+                completedDownloadInspections += 1
+                lastDownloadMonitoring = .init(completed: completedDownloadInspections, lastStatus: details.status, lastScanStatus: details.scanStatus, scanner: details.scanner)
+            }
+            response.downloadInspection = BrowserDownloadStatus(downloadID: details.downloadID, status: details.status, sha256: details.sha256,
+                scanner: details.scanner, scanStatus: details.scanStatus, findings: details.findings, signatureStatus: details.signatureStatus)
+            return response
+        } catch {
+            failedDownloadInspections += 1
+            return .failure(id: request.id, message: "This download was not fully inspected. \(error is CancellationError ? "Inspection was cancelled." : error.localizedDescription)")
+        }
+    }
+
+    private func downloadWarningActions(_ download: BrowserDownloadRequest) -> [GuardianWarningAction] {
+        guard let hold = download.holdID, !hold.isEmpty else { return [] }
+        let kinds: [(String, String)] = download.state == "complete" ? [("show", "Show download in Finder")] :
+            (download.ownedPause == true ? [("cancel", "Cancel this download"), ("resume", "Keep downloading anyway")] : [("cancel", "Cancel this download")])
+        let rawName = download.filename.map { URL(fileURLWithPath: $0).lastPathComponent } ?? "download"
+        let printable = String(rawName.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) && !(0x202A...0x202E).contains($0.value) && !(0x2066...0x2069).contains($0.value) })
+        let name = printable.count > 44 ? String(printable.prefix(22)) + "…" + String(printable.suffix(20)) : printable
+        return kinds.map { kind, label in
+            let id = UUID().uuidString
+            warningDownloadActions[id] = (download.downloadID, hold, kind)
+            if warningDownloadActions.count > 64 { warningDownloadActions = [:] }
+            return GuardianWarningAction(id: id, title: label + " · " + name)
+        }
+    }
+    func performWarningAction(id: String) {
+        guard !monitoringPaused, petViewModel.acknowledgment != nil,
+              petViewModel.warningActions.contains(where: { $0.id == id }), let action = warningDownloadActions.removeValue(forKey: id) else { return }
+        let command = downloadCommands.enqueue(downloadID: action.downloadID, holdID: action.holdID, action: action.action)
+        pendingDownloadActions[command.commandID] = id
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 31_000_000_000)
+            guard let self, self.pendingDownloadActions.removeValue(forKey: command.commandID) != nil else { return }
+            self.petViewModel.finishWarningAction(id: id, message: "Chrome did not confirm that action. Check Chrome’s Downloads; Muse did not assume it succeeded.")
+        }
+        petViewModel.finishWarningAction(id: id, message: "Waiting for Chrome…")
+        // Remove mutually exclusive buttons for the same hold immediately.
+        let obsolete = warningDownloadActions.filter { $0.value.downloadID == action.downloadID && $0.value.holdID == action.holdID }
+        for (otherID, _) in obsolete {
+            warningDownloadActions.removeValue(forKey: otherID)
+            petViewModel.finishWarningAction(id: otherID, message: "Waiting for Chrome…")
+        }
+    }
+    @discardableResult
+    private func presentSafety(_ verdict: RiskVerdict, context: String, target: CGPoint? = nil, actions: [GuardianWarningAction] = []) -> Bool {
+        if petViewModel.acknowledgment != nil {
+            cancelChat(); petViewModel.returnToWarning()
+            petViewModel.addSafetyNotice(summary: verdict.summary, guidance: verdict.guidance, actions: actions)
+            if let details = petViewModel.warningDetails {
+                latestChatContext = RiskReportChatContext(sourceLabel: "Local protection", appName: "Muse Guard", windowTitle: nil,
+                    riskLevel: .high, summary: details.summary, guidance: details.guidance, categories: verdict.categories)
+            }
+            if let target { petViewModel.intervene(at: target); acknowledgmentTarget = target }
+            return true
+        }
+        let snapshot = ScreenSnapshot(appName: "Muse Guard", windowTitle: nil, text: "")
+        latestChatContext = RiskReportChatContext(sourceLabel: "Local protection", appName: "Muse Guard", windowTitle: nil,
+            riskLevel: .high, summary: verdict.summary, guidance: verdict.guidance, categories: verdict.categories)
+        let delivered = presentVerdict(verdict, snapshot: snapshot, target: target, acknowledgmentContext: context)
+        if delivered { petViewModel.setWarningActions(actions) }
+        return delivered
+    }
+    private func logSafety(_ verdict: RiskVerdict, source: AnalysisLogSource, app: String, engine: String = "Local secret format detector") {
+        appendLog(AnalysisLogEntry(timestamp: Date(), source: source, appName: app, windowTitle: nil,
+            model: engine, includesScreenshot: false, verdict: verdict, errorMessage: nil))
+    }
+
     private func logVerdict(_ verdict: RiskVerdict, source: AnalysisLogSource, snapshot: ScreenSnapshot, includesScreenshot: Bool, updatesChatContext: Bool = true) {
         if updatesChatContext { updateChatReport(verdict, source: source, snapshot: snapshot) }
         appendLog(AnalysisLogEntry(timestamp: Date(), source: source, appName: snapshot.appName, windowTitle: snapshot.windowTitle, model: LocalModelConfiguration.model, includesScreenshot: includesScreenshot, verdict: verdict, errorMessage: nil))

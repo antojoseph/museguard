@@ -86,6 +86,9 @@ struct PetMessageView: View {
                     isDismissible: viewModel.bubbleIsDismissible,
                     acknowledgment: viewModel.acknowledgment,
                     warningDetails: viewModel.warningDetails,
+                    warningActions: viewModel.warningActions,
+                    warningActionStatus: viewModel.warningActionStatus,
+                    onWarningAction: { SentinelPetRuntime.shared.performWarningAction(id: $0) },
                     warningAvailableSize: warningAvailableSize,
                     onOpen: { SentinelPetRuntime.shared.openPetChat() },
                     onDismiss: {

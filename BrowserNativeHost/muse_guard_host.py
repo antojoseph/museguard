@@ -19,6 +19,14 @@ import threading
 MAX_REQUEST = 2_100_000
 MAX_RESPONSE = 1_048_576
 _ORIGIN = re.compile(r'chrome-extension://[a-p]{32}/?\Z')
+# Long file scans and inference may wait for seconds. Metadata, warning
+# delivery and Pause must always have their own bounded route to the app.
+CONTROL_REQUESTS = frozenset({'status', 'present-block', 'cancel', 'protection-state',
+    'chat-context-poll', 'chat-context-result', 'monitoring-state', 'monitoring-control',
+    'secret-paste', 'target-update', 'target-invalidated', 'download-command-result'})
+ANALYSIS_WORKERS, ANALYSIS_CAPACITY = 4, 8
+CONTROL_WORKERS, CONTROL_CAPACITY = 2, 16
+DOWNLOAD_WORKERS, DOWNLOAD_CAPACITY = 2, 4
 
 
 class ProtocolError(Exception):
@@ -63,11 +71,42 @@ def encode_frame(value, maximum=MAX_RESPONSE):
 
 def failure(request, message):
     request_id = request.get('id', '') if isinstance(request, dict) else ''
-    if not isinstance(request_id, str) or len(request_id.encode('utf-8')) > 128:
+    if not valid_request_id(request):
         request_id = ''
     return dict(version=1, id=request_id, ok=False, decision='review', risk_level='unknown',
                 summary='Muse could not check this action.', guidance=message, categories=[],
                 mode='vision' if request.get('mode') == 'vision' else 'text', duration_ms=0, error=message)
+
+
+def valid_request_id(request):
+    value = request.get('id')
+    if not isinstance(value, str):
+        return False
+    try:
+        return (0 < len(value.encode('utf-8')) <= 128 and
+                not any(ord(character) < 32 or ord(character) == 127 for character in value))
+    except UnicodeEncodeError:
+        return False
+
+
+def control_request(request):
+    # Framing and UTF-8/object bounds are validated by read_frame first; native
+    # Swift validates each complete schema. Unknown/malformed types cannot
+    # claim the reserved control lane or crash its membership check.
+    kind = request.get('type')
+    if request.get('version') != 1 or request.get('mode', 'text') != 'text' or not isinstance(kind, str):
+        return False
+    if kind == 'download-inspect':
+        download = request.get('download')
+        return isinstance(download, dict) and download.get('phase') == 'metadata'
+    return kind in CONTROL_REQUESTS
+
+
+def complete_download_request(request):
+    download = request.get('download')
+    return (request.get('version') == 1 and request.get('mode', 'text') == 'text' and
+            request.get('type') == 'download-inspect' and isinstance(download, dict) and
+            download.get('phase') == 'complete')
 
 
 def load_config(path: Path, origin: str):
@@ -89,7 +128,7 @@ def load_config(path: Path, origin: str):
 
 
 def forward(request, socket_path, active, active_lock, stopping=None):
-    if not isinstance(request.get('id'), str) or not 0 < len(request['id'].encode('utf-8')) <= 128:
+    if not valid_request_id(request):
         return failure(request, 'The browser request identifier was not valid.')
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client.settimeout(120)
@@ -125,8 +164,12 @@ def run(input_stream, output_stream, socket_path, *, one_shot=False):
     output_lock = threading.Lock()
     active_lock = threading.Lock()
     active = set()
-    slots = threading.BoundedSemaphore(8)
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix='muse-native')
+    analysis_slots = threading.BoundedSemaphore(ANALYSIS_CAPACITY)
+    control_slots = threading.BoundedSemaphore(CONTROL_CAPACITY)
+    download_slots = threading.BoundedSemaphore(DOWNLOAD_CAPACITY)
+    analysis_pool = concurrent.futures.ThreadPoolExecutor(max_workers=ANALYSIS_WORKERS, thread_name_prefix='muse-analysis')
+    control_pool = concurrent.futures.ThreadPoolExecutor(max_workers=CONTROL_WORKERS, thread_name_prefix='muse-control')
+    download_pool = concurrent.futures.ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS, thread_name_prefix='muse-download')
     stopping = threading.Event()
     clean_eof = False
 
@@ -141,7 +184,7 @@ def run(input_stream, output_stream, socket_path, *, one_shot=False):
         except (OSError, ValueError, ProtocolError):
             stopping.set()
 
-    def complete(request):
+    def complete(request, slots):
         try:
             send(forward(request, socket_path, active, active_lock, stopping))
         finally:
@@ -158,8 +201,17 @@ def run(input_stream, output_stream, socket_path, *, one_shot=False):
             if request is None:
                 clean_eof = True
                 break
+            if not valid_request_id(request):
+                send(failure(request, 'The browser request identifier was not valid.'))
+                continue
+            if control_request(request):
+                pool, slots = control_pool, control_slots
+            elif complete_download_request(request):
+                pool, slots = download_pool, download_slots
+            else:
+                pool, slots = analysis_pool, analysis_slots
             if slots.acquire(blocking=False):
-                pool.submit(complete, request)
+                pool.submit(complete, request, slots)
             else:
                 send(failure(request, 'Muse is busy. Wait for the current check, then retry.'))
     finally:
@@ -175,7 +227,9 @@ def run(input_stream, output_stream, socket_path, *, one_shot=False):
                     client.close()
         # Chrome closing stdin revokes outstanding browser work. Only explicit
         # one-shot diagnostics may await a final reply after their input EOF.
-        pool.shutdown(wait=True, cancel_futures=not drain_final_request)
+        control_pool.shutdown(wait=True, cancel_futures=not drain_final_request)
+        analysis_pool.shutdown(wait=True, cancel_futures=not drain_final_request)
+        download_pool.shutdown(wait=True, cancel_futures=not drain_final_request)
         stopping.set()
 
 

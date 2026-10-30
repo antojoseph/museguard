@@ -20,7 +20,6 @@ final class PetOverlayController {
     private var outwardScene: GuardianDesktopScene?
     private var pendingReturn = false
     private var messagePanel: PetPanel?
-    private var focusedAcknowledgmentID: String?
     private var messageSize = CGSize(width:240,height:80)
     private var placementTask: Task<Void,Never>?
     private var lastAutoMove = Date()
@@ -61,7 +60,7 @@ final class PetOverlayController {
             saved = CGPoint(x: old.x + 118, y: old.y + 118)
         } else { saved = CGPoint(x: visible.minX + 134, y: visible.minY + 134) }
         applyHomeAnchor(saved)
-        let message = PetPanel(contentRect: CGRect(origin:.zero,size:messageSize))
+        let message = PetPanel(contentRect: CGRect(origin:.zero,size:messageSize), acceptsKeyboard: true)
         let messageHost = NSHostingView(rootView: GuardianMessageView(viewModel:viewModel, onSize: { [weak self] size in
             guard let self, size.width > 20, size.height > 20 else { return }
             let rounded = CGSize(width:ceil(size.width),height:ceil(size.height))
@@ -176,6 +175,7 @@ final class PetOverlayController {
                                   y: min(max(target.y, visible.minY + 190), visible.maxY - 220))
         let scene = GuardianDesktopScene(viewport: viewport, from: homeAnchor, to: destination, fromScale: 1, toScale: 1)
         outwardScene = scene
+        viewModel.interventionAnchor = scene.to
         let wakeDelay = UnrealCharacterRenderer.shared.wakeForInteraction()
         motion = Task { [weak self] in
             guard let self else { return }
@@ -256,6 +256,7 @@ final class PetOverlayController {
         return false
     }
     private func finishAtHome() {
+        viewModel.interventionAnchor = nil
         if holdAcknowledgmentInFront() { return }
         UnrealCharacterRenderer.shared.desktopScene = nil
         UnrealCharacterRenderer.shared.state = "idle"
@@ -291,10 +292,10 @@ final class PetOverlayController {
     }
     private func setHidden(_ hidden: Bool) {
         if hidden {
-            focusedAcknowledgmentID = nil
             cancelBedtime()
             placementTask?.cancel(); placementTask = nil; panel?.alphaValue = 1
             motion?.cancel(); motion = nil
+            viewModel.interventionAnchor = nil
             away = false; moving = false; returning = false; pendingReturn = false; queuedTarget = nil
             dragStartAnchor = nil
             desktopPresentation.showsMessage = false
@@ -368,7 +369,6 @@ final class PetOverlayController {
     }
     private func updateMessagePanel() {
         guard let messagePanel else { return }
-        if viewModel.acknowledgment == nil { focusedAcknowledgmentID = nil }
         guard !viewModel.isAvatarHidden, !moving, dragStartAnchor == nil, placementTask == nil,
               (viewModel.isChatOpen || viewModel.bubbleText != nil), (!away || desktopPresentation.showsMessage) else {
             messagePanel.orderOut(nil); return
@@ -380,7 +380,6 @@ final class PetOverlayController {
         let desiredSize=viewModel.isChatOpen ? MuseLayout.chatPanelSize : messageSize
         if messagePanel.isVisible, messageDesiredSize == desiredSize,
            messagePoseRect == pose, messageScreenRect == screen, screen.contains(messagePanel.frame) {
-            focusAcknowledgmentIfNeeded()
             return
         }
         let body = messageBodyRect
@@ -399,15 +398,6 @@ final class PetOverlayController {
         messageScreenRect = screen
         messageDesiredSize = desiredSize
         if !messagePanel.isVisible { messagePanel.orderFrontRegardless() }
-        focusAcknowledgmentIfNeeded()
-    }
-    private func focusAcknowledgmentIfNeeded() {
-        guard let messagePanel, messagePanel.isVisible,
-              let id = viewModel.acknowledgment?.id, focusedAcknowledgmentID != id else { return }
-        focusedAcknowledgmentID = id
-        // Focus the explicit acknowledgement once after landing. The timer
-        // must not repeatedly take keyboard focus back from the user's work.
-        messagePanel.makeKey()
     }
     private func considerAutomaticPlacement() {
         let now = Date()

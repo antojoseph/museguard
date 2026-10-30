@@ -667,6 +667,8 @@ void AMuseGuardian::ReadCommand() {
             J->TryGetBoolField(TEXT("debugMotion"),DebugMotion);
             // Activity is independent of the pose. Older command writers that
             // omit the optional flag always leave the approved idle unchanged.
+            J->TryGetBoolField(TEXT("precisePointing"),PrecisePointing);
+            double PointDirection=0;J->TryGetNumberField(TEXT("pointingDirection"),PointDirection);PointingDirection=FMath::Clamp(float(PointDirection),-1.f,1.f);
             bool NextWorking=false;J->TryGetBoolField(TEXT("working"),NextWorking);Working=NextWorking;
             bool NextProtection=false;J->TryGetBoolField(TEXT("protectionActive"),NextProtection);ProtectionActive=NextProtection;
             double Inspection=0;J->TryGetNumberField(TEXT("inspectionYaw"),Inspection);
@@ -1006,9 +1008,15 @@ void AMuseGuardian::Tick(float DeltaTime) {
             ArmTarget=FQuat::Slerp(ArmTarget,SpyArm,SpyHandWeight);
             BoneOffsets[2]=FMath::Lerp(BoneOffsets[2],Shift,SpyHandWeight);
         }
+        const bool PointsHere=PrecisePointing&&(Stop||Talk)&&((PointingDirection<0&&I==1)||(PointingDirection>=0&&I==0));
+        if(PointsHere) {
+            const FVector Aim(5,Side*65,5);
+            ArmTarget=FQuat::FindBetweenNormals((Pivots[6+I]-Pivots[2+I]).GetSafeNormal(),Aim.GetSafeNormal());
+        }
         BoneRotations[2+I]=FQuat::Slerp(BoneRotations[2+I],ArmTarget,1-FMath::Exp(-DeltaTime*11.f));
         const FQuat PalmFacing=FRotator(155.f,0,Side*5.f).Quaternion();
         BoneRotations[6+I]=FQuat::Slerp(BoneRotations[2+I],PalmFacing,Pose);
+        if(PointsHere) BoneRotations[6+I]=BoneRotations[2+I];
         if(I==0&&SpyHandWeight>.001f) BoneRotations[6]=FQuat::Slerp(BoneRotations[6],SpyPalmRotation,SpyHandWeight);
         BoneOffsets[6+I]=Pivots[2+I]+BoneOffsets[2+I]+BoneRotations[2+I].RotateVector(Pivots[6+I]-Pivots[2+I])-Pivots[6+I];
         // Fold the soft mittens below the cheek, clear of the closed eyes.

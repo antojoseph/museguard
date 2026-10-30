@@ -87,6 +87,8 @@ private:
     float InspectionYaw = 0;
     bool ReduceMotion = false;
     bool Working = false;
+    bool PrecisePointing = false;
+    float PointingDirection = 0;
     bool ProtectionActive = false, WasWorking = false;
     float SpyCheckAge = 99;
     float WorkingBlend = 0, WorkingVelocity = 0;

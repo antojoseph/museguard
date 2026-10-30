@@ -62,9 +62,9 @@ After loading, open a normal website and the extension's toolbar popup. It shoul
 
 ## Scope
 
-This version operates in the main frame. It cannot guarantee interception of hostile page JavaScript, programmatic `form.submit()` or fetch requests, redirects, iframe actions, browser UI actions, context-menu navigation or independent downloads. Browser-native protections remain in place. Model judgments can be wrong, and automatic analysis can arrive after a user action. Unknown, incomplete and unavailable assessments are not safe verdicts, even though this quiet policy lets normal browsing continue.
+This version operates in the main frame. It cannot guarantee interception of hostile page JavaScript, programmatic `form.submit()` or fetch requests, redirects, iframe actions, browser UI actions, context-menu navigation or execution/automatic opening of downloaded files. Browser-native protections remain in place. Model judgments can be wrong, and automatic analysis can arrive after a user action. Unknown, incomplete and unavailable assessments are not safe verdicts, even though this quiet policy lets normal browsing continue.
 
-The implementation uses an [isolated content script](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts), a service worker and the toolbar popup. HTTP/HTTPS host access enables injection. It uses `nativeMessaging`, `storage`, `alarms` and [`scripting`](https://developer.chrome.com/docs/extensions/reference/api/scripting) to attach the bundled scripts to already-open tabs; it requests no cookies, browsing-history, debugger or web-request permission. Chrome internal pages and other extension-restricted pages are excluded. Incognito requires Chrome's separate user-controlled allowance. Executable code is bundled locally.
+The implementation uses an [isolated content script](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts), a service worker and the toolbar popup. HTTP/HTTPS host access enables injection. It uses `downloads` for transfer metadata, Muse-owned pause/resume/cancel controls and completed-file inspection; it never overrides Chrome’s own danger decisions. It also uses `nativeMessaging`, `storage`, `alarms` and [`scripting`](https://developer.chrome.com/docs/extensions/reference/api/scripting) to attach the bundled scripts to already-open tabs; it requests no cookies, browsing-history, debugger or web-request permission. Chrome internal pages and other extension-restricted pages are excluded. Incognito requires Chrome's separate user-controlled allowance. Executable code is bundled locally.
 
 ## Checks
 
@@ -74,3 +74,13 @@ npm test
 ```
 
 Virtual-DOM and worker checks exercise real extraction and protection code, no-warning-DOM/popup guarantees, private-field filtering, exact page/action signatures, raw local URL changes, fresh high-risk blocking, immediate passage for unknown or incomplete checks, unchanged-evidence reuse without recurring inference, viewport invalidation, sensitive-intent promotion, cancellation of obsolete native work, global queue bounds, pause-generation races, cache expiry without renewal, global protection defaults and persisted pause controls. Native app/protocol tests and real-model probes are separate. These tests do not install or enable the extension in a Chrome profile.
+
+## Download, secret and pointer protections
+
+Downloads are inspected locally through `downloads.js`; see [scanner setup, automatic definitions and coverage limits](../docs/download-inspection.md). The companion now reserves native-host capacity for Pause and warnings so concurrent file scans cannot consume all interactive workers.
+
+`secrets.js` detects recognized secret formats before trusted, cancelable paste/submit events on supported main-frame pages. Its output contains only a bounded category/count list and phase. Raw clipboard/field values, fragments and hashes are never sent to the companion, saved in activity or passed to inference. A fresh 4.5-second native availability lease is required; missing or failed delivery revokes the lease and never automatically replays a stopped secret. Global Pause disables these checks. The detector does not guess ordinary passwords or OTPs and does not claim coverage for drag/drop, script writes, iframe fields or browser menus.
+
+`targets.js` measures one visible element without reading its values or text. The worker enriches geometry using trusted Chrome tab/window and zoom metadata. The native app checks window bounds, document/revision/tab identity, viewport calibration and timestamp. A matching active marker can renew every second for up to twelve seconds; each measurement expires after 2.5 seconds. Changes of layout, scroll, source, pause or native connection invalidate the marker without acknowledging its warning.
+
+For harmless live fixtures, run `python3 Development/protection-demo.py` from the repository root and open `http://127.0.0.1:8767/`. Use the public test phrase shown there, never a real credential or wallet phrase. The demo does not retain submitted bodies and never executes downloaded files.

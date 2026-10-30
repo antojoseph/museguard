@@ -16,11 +16,12 @@ struct SettingsView: View {
                 GroupBox("Monitoring") {
                     VStack(alignment: .leading, spacing: 10) {
                         Label(runtime.monitoringStatus, systemImage: runtime.monitoringPaused ? "pause.circle" : "shield.lefthalf.filled")
-                        Text("Pause monitoring stops automatic browser and desktop checks together. You can still ask Muse a question.")
+                        Text("Pause monitoring stops browser, desktop, download and secret-paste checks together. You can still ask Muse a question.")
                             .font(.callout).foregroundStyle(.secondary)
                         Text("Chrome uses the extension. Other apps are watched automatically when screen access is available. Accessibility text is checked first; Screen Recording adds a closer look when needed.")
                             .font(.callout).foregroundStyle(.secondary)
                         Text(desktopStatus).font(.callout).foregroundStyle(.secondary)
+                        Label(runtime.downloadStatus, systemImage: "arrow.down.doc").font(.callout).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
                 }
                 GroupBox("Appearance") {

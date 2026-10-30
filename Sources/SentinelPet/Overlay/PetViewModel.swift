@@ -34,6 +34,11 @@ struct GuardianWarningDetails: Equatable {
     let guidance: String
 }
 
+struct GuardianWarningAction: Identifiable, Equatable {
+    let id: String
+    let title: String
+}
+
 /// Observable state shared between Muse and its speech bubble.
 @MainActor
 final class PetViewModel: ObservableObject {
@@ -52,6 +57,7 @@ final class PetViewModel: ObservableObject {
     @Published var automaticallyPositions: Bool {
         didSet { defaults.set(automaticallyPositions, forKey:"museAutoPlacement") }
     }
+    var interventionAnchor: CGPoint?
     @Published var intervention: GuardianIntervention?
     @Published var mood: PetMood = .idle
     @Published var message: String?
@@ -61,6 +67,8 @@ final class PetViewModel: ObservableObject {
     @Published var chatMessages: [PetChatMessage] = []
     @Published var chatContextLabel: String?
     @Published private(set) var acknowledgment: GuardianAcknowledgment?
+    @Published private(set) var warningActions: [GuardianWarningAction] = []
+    @Published private(set) var warningActionStatus: String?
     @Published private(set) var warningDetails: GuardianWarningDetails?
 
     private var clearTask: Task<Void, Never>?
@@ -143,6 +151,7 @@ final class PetViewModel: ObservableObject {
         clearTask?.cancel(); clearTask = nil
         acknowledgment = GuardianAcknowledgment(id: id)
         warningDetails = details
+        warningActions = []; warningActionStatus = nil
         message = text
         mood = .alert
         isChatOpen = false
@@ -150,6 +159,21 @@ final class PetViewModel: ObservableObject {
         chatMessages.removeAll()
         chatContextLabel = nil
         return true
+    }
+
+    func addSafetyNotice(summary: String, guidance: String, actions: [GuardianWarningAction] = []) {
+        guard acknowledgment != nil else { return }
+        let previous = warningDetails
+        let alreadyIncluded = previous?.summary.contains(summary) == true
+        warningDetails = GuardianWarningDetails(summary: alreadyIncluded ? previous!.summary : String(((previous?.summary ?? "") + "\n\n" + summary).suffix(4000)),
+            guidance: alreadyIncluded ? (previous?.guidance ?? guidance) : String(((previous?.guidance ?? "") + "\n\n" + guidance).suffix(4000)))
+        for action in actions where !warningActions.contains(where: { $0.id == action.id }) { warningActions.append(action) }
+        warningActions = Array(warningActions.suffix(12))
+        revealForWarning()
+    }
+    func setWarningActions(_ actions: [GuardianWarningAction]) { warningActions = actions; warningActionStatus = nil }
+    func finishWarningAction(id: String, message: String) {
+        warningActions.removeAll { $0.id == id }; warningActionStatus = message
     }
 
     /// Only an explicit, matching Got it can release the warning and guardian.
@@ -184,6 +208,7 @@ final class PetViewModel: ObservableObject {
     func dismissBubble() {
         guard acknowledgment == nil else { return }
         warningDetails = nil
+        warningActions = []; warningActionStatus = nil
         intervention = nil
         clearTask?.cancel()
         message = nil

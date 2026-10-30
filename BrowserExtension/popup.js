@@ -20,6 +20,13 @@ function showState(value) {
     el('protection-detail').textContent = minutes ? `All monitoring is paused for ${minutes} more ${minutes === 1 ? 'minute' : 'minutes'}. It resumes automatically.` : 'All monitoring is paused until you resume.';
   } else el('protection-detail').textContent = ready && confirmed ? 'Muse checks your Chrome tabs automatically. Serious warnings come from Muse, even when she is hidden.' : 'Monitoring is enabled, but Muse cannot check pages until the local connection is ready.';
   el('tab-detail').textContent = value.supported && value.readable ? 'This tab is connected to Muse.' : 'Chrome does not allow Muse to read this tab.';
+  const downloads = value.downloads;
+  el('downloads-status').textContent = downloads?.available !== true ? 'Downloads unavailable. Reload Muse Guard in Chrome.' :
+    downloads.started !== true ? 'Downloads are not connected. Reload Muse Guard in Chrome.' :
+    downloads.paused || value.paused ? 'Download checks paused.' :
+    !ready || !confirmed ? 'Download checks are waiting for Muse.' :
+    downloads.processing > 0 ? `Checking ${downloads.processing === 1 ? 'a download' : `${downloads.processing} downloads`}…` :
+    downloads.pending > 0 ? `${downloads.pending === 1 ? 'A download is' : `${downloads.pending} downloads are`} waiting.` : 'Downloads connected to Muse.';
   controls();
 }
 async function refresh() {
@@ -38,6 +45,7 @@ async function refresh() {
     el('connection-detail').textContent = error.message || 'Open Muse Guard and reopen this popup.';
     el('protection-status').textContent = 'Unavailable';
     el('protection-status').className = 'protection-status';
+    el('downloads-status').textContent = 'Download connection unavailable.';
     controls();
   }
 }

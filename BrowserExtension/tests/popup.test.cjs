@@ -101,3 +101,15 @@ test('a partial Chrome-only pause is never labelled all monitoring paused and ca
     assert.ok(!h.w.document.getElementById('protection-detail').textContent.includes('All monitoring is paused'));
   } finally { h.close(); }
 });
+
+test('read-only download health distinguishes wiring, work, waiting and Pause', async () => {
+  const h = await harness({ downloads: { available: true, started: true, paused: false, processing: 0, pending: 0 } }); try {
+    const line = () => h.w.document.getElementById('downloads-status').textContent;
+    assert.equal(line(), 'Downloads connected to Muse.');
+    h.state.downloads.processing = 1; await h.tick(); assert.equal(line(), 'Checking a download…');
+    h.state.downloads.processing = 0; h.state.downloads.pending = 1; await h.tick(); assert.equal(line(), 'A download is waiting.');
+    h.state.downloads.paused = true; await h.tick(); assert.equal(line(), 'Download checks paused.');
+    h.state.downloads.available = false; await h.tick(); assert.match(line(), /Reload Muse Guard/);
+    assert.ok(h.messages.every(message => ['popup-state','status'].includes(message.type)));
+  } finally { h.close(); }
+});

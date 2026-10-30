@@ -116,6 +116,19 @@ import SwiftUI
         model.restoreVisibilityAfterWarning()
         assert(model.isAvatarHidden && defaults.bool(forKey: "museAvatarHidden"),
             "An explicit Hide must remain in force.")
+        model.setAvatarHidden(false)
+        assert(model.showAcknowledgment(id: "first-risk", text: "Existing warning", details: .init(summary: "First risk", guidance: "First guidance")))
+        model.openChat()
+        model.returnToWarning()
+        let action = GuardianWarningAction(id: "cancel-download", title: "Cancel this download")
+        model.addSafetyNotice(summary: "Private-key paste stopped", guidance: "Secret stayed out of the page", actions: [action])
+        assert(model.acknowledgment?.id == "first-risk")
+        assert(model.warningDetails?.summary.contains("Private-key paste stopped") == true)
+        assert(model.warningActions == [action] && !model.isChatOpen)
+        model.finishWarningAction(id: action.id, message: "Waiting for Chrome")
+        assert(model.warningActions.isEmpty && model.warningActionStatus == "Waiting for Chrome")
+        assert(model.acknowledge(id: "first-risk"))
+        assert(model.warningActionStatus == nil && model.warningActions.isEmpty)
         print("PASS: warnings require matching acknowledgement; Back, preserved conversations, routine notices and explicit New chat remain independent")
     }
 }
