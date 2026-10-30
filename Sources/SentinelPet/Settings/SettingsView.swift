@@ -11,21 +11,16 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 Text("Muse Guard Settings").font(.title2.bold())
-                Text("Muse checks your browser automatically and speaks up for serious concerns. Everything is analyzed on this Mac.")
+                Text("Muse watches the app you’re using and speaks up for serious risks. Everything is analyzed on this Mac.")
                     .foregroundStyle(.secondary)
                 GroupBox("Monitoring") {
                     VStack(alignment: .leading, spacing: 10) {
                         Label(runtime.monitoringStatus, systemImage: runtime.monitoringPaused ? "pause.circle" : "shield.lefthalf.filled")
                         Text("Pause monitoring stops automatic browser and desktop checks together. You can still ask Muse a question.")
                             .font(.callout).foregroundStyle(.secondary)
-                        Toggle("Also check my desktop screen", isOn: Binding(
-                            get: { runtime.settings.monitoringConsentGranted },
-                            set: { runtime.setDesktopMonitoringEnabled($0) }))
-                        Text("Accessibility text is checked first. Screen Recording adds a closer look at the current window when needed. Turning this off stops desktop checks immediately.")
+                        Text("Chrome uses the extension. Other apps are watched automatically when screen access is available. Accessibility text is checked first; Screen Recording adds a closer look when needed.")
                             .font(.callout).foregroundStyle(.secondary)
-                        if runtime.settings.monitoringConsentGranted {
-                            Text(desktopStatus).font(.callout).foregroundStyle(.secondary)
-                        }
+                        Text(desktopStatus).font(.callout).foregroundStyle(.secondary)
                     }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
                 }
                 GroupBox("Appearance") {

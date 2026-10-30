@@ -3,6 +3,29 @@ import AppKit
 @main
 struct CharacterChecks {
     static func main() throws {
+        func targetWindow(_ id: UInt32, pid: Int32 = 7, bounds: CGRect, layer: Int = 0) -> [String: Any] {
+            [kCGWindowNumber as String: NSNumber(value: id),
+             kCGWindowOwnerPID as String: NSNumber(value: pid),
+             kCGWindowLayer as String: NSNumber(value: layer),
+             kCGWindowBounds as String: bounds.dictionaryRepresentation]
+        }
+        let verifiedBounds = CGRect(x: -1500, y: 200, width: 600, height: 400)
+        let targetCandidates = [
+            targetWindow(102, bounds: CGRect(x: 20, y: 20, width: 800, height: 600)),
+            targetWindow(101, pid: 8, bounds: CGRect(x: 0, y: 0, width: 900, height: 700)),
+            targetWindow(101, bounds: verifiedBounds)
+        ]
+        assert(GuardianTarget.windowCenter(windowID: 101, processID: 7, windows: targetCandidates,
+            primaryScreenTop: 1080) == CGPoint(x: -1200, y: 680),
+            "Warnings target the verified capture window, not another window from the same app.")
+        assert(GuardianTarget.windowCenter(windowID: 101, processID: 9, windows: targetCandidates,
+            primaryScreenTop: 1080) == nil)
+        assert(GuardianTarget.windowCenter(windowID: 0, processID: 7, windows: targetCandidates,
+            primaryScreenTop: 1080) == nil)
+        let upperDisplayWindows = [targetWindow(103, bounds: CGRect(x: 200, y: -500, width: 400, height: 400))]
+        assert(GuardianTarget.windowCenter(windowID: 103, processID: 7, windows: upperDisplayWindows,
+            primaryScreenTop: 1080) == CGPoint(x: 400, y: 1380),
+            "Core Graphics top-down Y is converted using the primary display, including displays above it.")
         let from = CGPoint(x: -1200, y: 20), to = CGPoint(x: 500, y: 300)
         let scene = GuardianDesktopScene(viewport: CGRect(x: -1728, y: -100, width: 3456, height: 1180), from: from, to: to, fromScale: 1, toScale: 2.15)
         assert(scene.command["fromX"] as? CGFloat == 528)

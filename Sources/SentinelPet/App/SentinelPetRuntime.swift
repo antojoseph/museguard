@@ -9,7 +9,6 @@ final class SentinelPetRuntime: ObservableObject {
     let petViewModel = PetViewModel()
     @Published private(set) var accessibilityTrusted = AccessibilityPermissionController.isTrusted
     @Published private(set) var screenCaptureTrusted = ScreenCapturePermissionController.isTrusted
-    @Published private(set) var settings = AppSettingsStore.load()
     @Published private(set) var isMonitoring = false
     @Published private(set) var monitorStatus = "Monitoring paused"
     @Published private(set) var monitoringPaused = MonitoringControl.shared.isPaused
@@ -97,7 +96,7 @@ final class SentinelPetRuntime: ObservableObject {
     private var lastExternalApplication: NSRunningApplication?
     private var chatRequestID: UUID?
     private var screenChatHistory = ScreenChatHistory()
-    private lazy var browserProtection = GuardianProtectionActivity { UnrealCharacterRenderer.shared.setBrowserProtectionActive($0) }
+    private lazy var browserProtection = GuardianProtectionActivity { [weak self] _ in self?.refreshOnDutyAppearance() }
     private init() {
         rememberChatApplication()
         NSWorkspace.shared.notificationCenter.publisher(for:NSWorkspace.didActivateApplicationNotification)
@@ -236,35 +235,28 @@ final class SentinelPetRuntime: ObservableObject {
     }
 
     private func reconcileDesktopMonitoring() {
-        guard settings.monitoringConsentGranted, !monitoringPaused,
+        guard !monitoringPaused,
               (AccessibilityPermissionController.isTrusted || ScreenCapturePermissionController.isTrusted),
               LocalModelService.shared.isReady else { return }
         if !isMonitoring { startMonitoring() }
     }
 
-    func setDesktopMonitoringEnabled(_ enabled: Bool) {
-        settings = AppSettings(monitoringConsentGranted: enabled)
-        AppSettingsStore.save(settings)
-        if enabled { reconcileDesktopMonitoring() }
-        else { stopMonitoring() }
-    }
-
     func startMonitoring() {
         accessibilityTrusted = AccessibilityPermissionController.isTrusted
         screenCaptureTrusted = ScreenCapturePermissionController.isTrusted
-        guard !isMonitoring, !monitoringPaused, settings.monitoringConsentGranted,
+        guard !isMonitoring, !monitoringPaused,
               (accessibilityTrusted || screenCaptureTrusted), LocalModelService.shared.isReady else { return }
         lastMonitorErrorMessage = nil
         monitorLoop.start(model: LocalModelConfiguration.model,
             onStatus: { [weak self] status in self?.monitorStatus = status.label },
             onVerdict: { [weak self] verdict, snapshot, screenshot in
-                guard let self else { return }
-                guard !self.monitoringPaused, self.settings.monitoringConsentGranted else { return }
+                guard let self, !self.monitoringPaused else { return false }
                 self.lastMonitorErrorMessage = nil
                 let interrupt = verdict.riskLevel == .high
                 self.monitorStatus = "Last local check: \(verdict.riskLevel.rawValue)"
                 self.logVerdict(verdict, source: screenshot ? .monitorScreenshot : .monitorText, snapshot: snapshot, includesScreenshot: screenshot, updatesChatContext: interrupt)
-                if interrupt { self.presentVerdict(verdict, snapshot: snapshot) }
+                if interrupt { return self.presentVerdict(verdict, snapshot: snapshot) }
+                return true
             },
             onError: { [weak self] error, snapshot in
                 guard let self else { return }
@@ -276,11 +268,19 @@ final class SentinelPetRuntime: ObservableObject {
                 self.logError(error, source: self.monitorLoop.diagnostics.lastMode == "vision" ? .monitorScreenshot : .monitorText, snapshot: snapshot)
             })
         isMonitoring = true
+        refreshOnDutyAppearance()
         refreshMonitoringStatus()
     }
     private func stopMonitoring() {
         monitorLoop.stop(); isMonitoring = false; monitorStatus = "Monitoring paused"
+        refreshOnDutyAppearance()
         refreshMonitoringStatus()
+    }
+    private func refreshOnDutyAppearance() {
+        // The browser lease still describes Chrome coverage independently;
+        // the avatar is on duty while either automatic monitoring path runs.
+        UnrealCharacterRenderer.shared.setBrowserProtectionActive(!monitoringPaused &&
+            (isMonitoring || browserProtection.isActive))
     }
     func openPetChat() {
         rememberChatApplication()
@@ -556,9 +556,26 @@ final class SentinelPetRuntime: ObservableObject {
     @discardableResult
     private func presentVerdict(_ verdict: RiskVerdict, snapshot: ScreenSnapshot, target: CGPoint? = nil,
         acknowledgmentID: String? = nil, acknowledgmentContext context: String? = nil) -> Bool {
-        let key = context ?? (snapshot.appName + ":" + (snapshot.windowTitle ?? ""))
+        let key: String
+        if let context { key = context }
+        else {
+            // Different windows and new high-risk evidence must not be marked
+            // delivered merely because an older warning is still on screen.
+            var identity = Hasher()
+            identity.combine(snapshot.source)
+            identity.combine(snapshot.appName)
+            identity.combine(snapshot.windowTitle)
+            identity.combine(ContextEvidence.normalizedText(snapshot.text))
+            identity.combine(verdict.categories.sorted())
+            identity.combine(ContextEvidence.normalizedText(verdict.summary))
+            key = "desktop:\(identity.finalize())"
+        }
         if petViewModel.acknowledgment != nil {
-            return verdict.riskLevel == .high && acknowledgmentContext == key
+            guard verdict.riskLevel == .high, acknowledgmentContext == key else { return false }
+            let wasHidden = petViewModel.isAvatarHidden
+            petViewModel.revealForWarning()
+            if wasHidden, let target = acknowledgmentTarget { petViewModel.intervene(at: target) }
+            return true
         }
         cancelDemo()
         let risky = verdict.riskLevel == .medium || verdict.riskLevel == .high
@@ -574,7 +591,10 @@ final class SentinelPetRuntime: ObservableObject {
                 details: GuardianWarningDetails(summary: verdict.summary, guidance: verdict.guidance)) else { return false }
             acknowledgmentContext = key
             let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
-            let point = target ?? GuardianTarget.activeWindowCenter(expectedAppName: snapshot.appName) ??
+            let verifiedTarget = snapshot.source.flatMap { source in
+                source.windowID.flatMap { GuardianTarget.verifiedWindowCenter(windowID: $0, processID: source.processID) }
+            }
+            let point = target ?? verifiedTarget ?? GuardianTarget.activeWindowCenter(expectedAppName: snapshot.appName) ??
                 screen.map { CGPoint(x: $0.visibleFrame.midX, y: $0.visibleFrame.midY) }
             acknowledgmentTarget = point
             if let point { petViewModel.intervene(at: point) }

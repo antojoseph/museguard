@@ -1,4 +1,6 @@
 import Foundation
+import CoreGraphics
+import ImageIO
 
 private enum FixtureError: Error { case failed }
 
@@ -13,6 +15,8 @@ private enum FixtureError: Error { case failed }
     var textReads = 0
     var image = "same-window-image"
     var fail = false
+    var risk = RiskLevel.safe
+    var acceptsWarning = true
     var analyzeGate: CheckedContinuation<Void, Never>?
     var blockAnalysis = false
     var statuses: [MonitorLoopStatus] = []
@@ -32,7 +36,7 @@ private enum FixtureError: Error { case failed }
             analyzeCount += 1; images.append(image)
             if blockAnalysis { await withCheckedContinuation { analyzeGate = $0 } }
             if fail { throw FixtureError.failed }
-            return RiskVerdict(riskLevel: .safe, summary: "Read guide", guidance: "No concern", categories: [])
+            return RiskVerdict(riskLevel: risk, summary: "Read guide", guidance: "No concern", categories: [])
         },
         chromeCoverage: { [unowned self] _ in covered },
         now: { [unowned self] in clock }))
@@ -47,13 +51,24 @@ private enum FixtureError: Error { case failed }
     }
     func sample() async {
         await loop.sampleOnce(model: "fixture", onStatus: { [unowned self] in statuses.append($0) },
-            onVerdict: { [unowned self] _, _, image in outputs.append(image) },
+            onVerdict: { [unowned self] _, _, image in outputs.append(image); return acceptsWarning },
             onError: { [unowned self] _, _ in errors += 1 })
     }
     func release() { analyzeGate?.resume(); analyzeGate = nil }
 }
 
 @main struct MonitorLoopChecks {
+    static func pixels(rect: CGRect? = nil, shade: CGFloat = 0.8) -> CapturedScreenshot {
+        let context = CGContext(data: nil, width: 960, height: 640, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue)!
+        context.setFillColor(gray: shade, alpha: 1); context.fill(CGRect(x: 0, y: 0, width: 960, height: 640))
+        if let rect { context.setFillColor(gray: 0, alpha: 1); context.fill(rect) }
+        let data = NSMutableData()
+        let destination = CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil)!
+        CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+        assert(CGImageDestinationFinalize(destination))
+        return CapturedScreenshot(dataURL: "data:image/png;base64," + (data as Data).base64EncodedString())
+    }
     @MainActor static func main() async {
         // Ordinary readable documents never capture/encode an image. Cached
         // text avoids both capture and inference on every later sample.
@@ -112,7 +127,9 @@ private enum FixtureError: Error { case failed }
         await imageFailure.sample(); imageFailure.fail = false; await imageFailure.sample()
         assert(imageFailure.captureCount == 1 && imageFailure.analyzeCount == 1 && imageFailure.outputs.isEmpty)
         assert(imageFailure.statuses.last == .visualCooldown)
-        imageFailure.clock.addTimeInterval(61); await imageFailure.sample()
+        imageFailure.clock.addTimeInterval(10); await imageFailure.sample()
+        assert(imageFailure.analyzeCount == 1)
+        imageFailure.clock.addTimeInterval(6); await imageFailure.sample()
         assert(imageFailure.captureCount == 3 && imageFailure.analyzeCount == 2 && imageFailure.outputs == [true])
 
         // Source changes during inference discard the result and never seed a
@@ -141,8 +158,42 @@ private enum FixtureError: Error { case failed }
         assert(repainted.outputs.isEmpty && repainted.loop.diagnostics.sourceChanges == 1)
         repainted.blockAnalysis = false; await repainted.sample()
         assert(repainted.analyzeCount == 1 && repainted.outputs.isEmpty && repainted.statuses.last == .visualCooldown)
-        repainted.clock.addTimeInterval(61); await repainted.sample()
+        repainted.clock.addTimeInterval(16); await repainted.sample()
         assert(repainted.analyzeCount == 2 && repainted.outputs == [true])
+
+        // Localized clock/caret-sized pixels and encoding-level noise do not
+        // discard a full assessment; a substantial scene change still does.
+        let still = pixels()
+        let clockTick = pixels(rect: CGRect(x: 900, y: 600, width: 10, height: 10))
+        assert(MonitorEvidenceCache.visuallyStable(still, clockTick))
+        assert(MonitorEvidenceCache.visuallyStable(still, pixels(shade: 0.79)))
+        assert(!MonitorEvidenceCache.visuallyStable(still, pixels(rect: CGRect(x: 100, y: 100, width: 400, height: 200))))
+        let ticking = MonitorFixture(); ticking.visual(); ticking.image = still.dataURL; ticking.blockAnalysis = true
+        let tickingTask = Task { await ticking.sample() }
+        while ticking.analyzeGate == nil { await Task.yield() }
+        ticking.image = clockTick.dataURL; ticking.release(); await tickingTask.value
+        assert(ticking.outputs == [true] && ticking.loop.diagnostics.sourceChanges == 0)
+        let payment = MonitorFixture(); payment.image = still.dataURL; payment.blockAnalysis = true
+        let paymentText = "Transfer $100.00 to account Acme before continuing this transaction."
+        payment.snapshot = ScreenSnapshot(appName: payment.source.appName, windowTitle: payment.source.windowTitle,
+            text: paymentText, evidence: ContextEvidence(semanticTextCharacters: paymentText.count,
+                semanticTextElements: 1, visualElements: 2), source: payment.source)
+        let paymentTask = Task { await payment.sample() }
+        while payment.analyzeGate == nil { await Task.yield() }
+        payment.snapshot = ScreenSnapshot(appName: payment.source.appName, windowTitle: payment.source.windowTitle,
+            text: paymentText.replacingOccurrences(of: "$100.00", with: "$1000.00"),
+            evidence: payment.snapshot!.evidence, source: payment.source)
+        payment.image = clockTick.dataURL; payment.release(); await paymentTask.value
+        assert(payment.outputs.isEmpty && payment.loop.diagnostics.sourceChanges == 1,
+            "Pixel tolerance never bypasses a critical amount/text change.")
+
+        // A high result refused by the presentation layer is not successful
+        // cached evidence. Once accepted, unchanged content must not nag again.
+        let high = MonitorFixture(); high.text(); high.risk = .high; high.acceptsWarning = false
+        await high.sample(); await high.sample()
+        assert(high.analyzeCount == 2 && high.loop.diagnostics.lastOutcome == "warning_pending")
+        high.acceptsWarning = true; await high.sample(); await high.sample()
+        assert(high.analyzeCount == 3 && high.loop.diagnostics.lastOutcome == "unchanged")
 
         // A visual cooldown does not delay fresh meaningful text in the same
         // window, even if a previous image attempt failed.
@@ -161,6 +212,27 @@ private enum FixtureError: Error { case failed }
         assert(paused.outputs.isEmpty && paused.errors == 0)
         paused.blockAnalysis = false; await paused.sample()
         assert(paused.analyzeCount == 2 && paused.outputs == [false])
+
+        // A foreground app activation preempts obsolete work and starts the
+        // latest source immediately, instead of waiting for a ten-second tick.
+        let switched = MonitorFixture(); switched.text(); switched.blockAnalysis = true
+        switched.loop.start(model: "fixture", intervalSeconds: 30,
+            onStatus: { switched.statuses.append($0) },
+            onVerdict: { _, _, image in switched.outputs.append(image); return true },
+            onError: { _, _ in switched.errors += 1 })
+        while switched.analyzeGate == nil { await Task.yield() }
+        switched.source = .init(processID: 88, bundleID: "test.latest", windowID: 99, windowTitle: "Latest", appName: "Latest app")
+        switched.text(); switched.blockAnalysis = false
+        switched.loop.applicationActivated(processID: 88)
+        for _ in 0..<1_000 {
+            if !switched.outputs.isEmpty { break }
+            await Task.yield()
+        }
+        assert(switched.analyzeCount == 2 && switched.outputs == [false], "App switching must run the newest source immediately.")
+        switched.release()
+        for _ in 0..<10 { await Task.yield() }
+        assert(switched.outputs == [false], "The cancelled source cannot deliver a late warning.")
+        switched.loop.stop()
 
         // The bounded cache preserves separate windows and evicts old sources.
         var cache = MonitorEvidenceCache(maximumSources: 2)

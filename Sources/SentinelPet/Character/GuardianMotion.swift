@@ -8,6 +8,30 @@ struct GuardianIntervention: Identifiable {
 /// Target only the active app's current window. A delayed verdict must not send
 /// the character toward an unrelated window after the user switches apps.
 enum GuardianTarget {
+    static func verifiedWindowCenter(windowID: CGWindowID, processID: pid_t) -> CGPoint? {
+        guard windowID != kCGNullWindowID,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == processID else { return nil }
+        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
+            as? [[String: Any]] ?? []
+        return windowCenter(windowID: windowID, processID: processID, windows: windows,
+            primaryScreenTop: NSScreen.screens.first?.frame.maxY ?? 0)
+    }
+
+    /// The verified capture window wins even if a sheet or another window from
+    /// the same app appears earlier in Core Graphics' front-to-back list.
+    static func windowCenter(windowID: CGWindowID, processID: pid_t, windows: [[String: Any]],
+        primaryScreenTop: CGFloat) -> CGPoint? {
+        guard windowID != kCGNullWindowID else { return nil }
+        guard let window = windows.first(where: {
+            ($0[kCGWindowNumber as String] as? NSNumber)?.uint32Value == windowID &&
+            ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == processID &&
+            ($0[kCGWindowLayer as String] as? NSNumber)?.intValue == 0
+        }), let bounds = window[kCGWindowBounds as String] as? [String: Any],
+              let rect = CGRect(dictionaryRepresentation: bounds as CFDictionary),
+              !rect.isNull, !rect.isInfinite, rect.width > 100, rect.height > 100 else { return nil }
+        return CGPoint(x: rect.midX, y: primaryScreenTop - rect.midY)
+    }
+
     static func activeWindowCenter(expectedAppName: String? = nil) -> CGPoint? {
         guard let app = NSWorkspace.shared.frontmostApplication,
               app.processIdentifier != ProcessInfo.processInfo.processIdentifier,

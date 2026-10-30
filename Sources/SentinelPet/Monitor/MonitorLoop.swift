@@ -36,6 +36,7 @@ final class MonitorLoop {
         var analyze: (ScreenSnapshot, String?, String) async throws -> RiskVerdict
         var chromeCoverage: (ScreenSourceIdentity) async -> Bool
         var now: () -> Date = Date.init
+        var ignoredProcess: (Int32) -> Bool = { _ in false }
     }
     /// Content-free session counters. Reset when monitoring starts again.
     struct Diagnostics {
@@ -51,6 +52,12 @@ final class MonitorLoop {
     private(set) var diagnostics = Diagnostics()
     private let dependencies: Dependencies
     private var task: Task<Void, Never>?
+    private var sampleTask: Task<Void, Never>?
+    private var sampleID: UUID?
+    private var activationObserver: NSObjectProtocol?
+    private var activationHandler: ((Int32) -> Void)?
+    private let activationCenter = NSWorkspace.shared.notificationCenter
+    private var activeSource: ScreenSourceIdentity?
     private var analysisTask: Task<RiskVerdict, Error>?
     private var generation = 0
     private var sampling = false
@@ -86,51 +93,92 @@ final class MonitorLoop {
             },
             analyze: { snapshot, image, model in
                 if let image {
-                    return try await riskAnalyzer.analyze(snapshot: snapshot, screenshotDataURL: image, model: model, priority: .background)
+                    return try await riskAnalyzer.analyze(snapshot: snapshot, screenshotDataURL: image, model: model, priority: .background, scope: .desktop)
                 }
-                return try await riskAnalyzer.analyze(snapshot: snapshot, model: model, priority: .background, directAnswer: true)
-            }, chromeCoverage: chromeCoverage)
+                return try await riskAnalyzer.analyze(snapshot: snapshot, model: model, priority: .background, directAnswer: true, scope: .desktop)
+            }, chromeCoverage: chromeCoverage, ignoredProcess: ignoredProcess)
     }
     init(dependencies: Dependencies) { self.dependencies = dependencies }
 
-    func start(model: String, intervalSeconds: Double = 10,
+    func start(model: String, intervalSeconds: Double = 3,
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
-        onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Void,
+        onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Bool,
         onError: @escaping @MainActor (Error, ScreenSnapshot?) -> Void) {
         stop(); diagnostics = Diagnostics()
+        activationHandler = { [weak self] processID in
+            guard let self else { return }
+            if self.activeSource?.processID != processID { self.cancelCurrentSample() }
+            self.requestSample(model: model, onStatus: onStatus, onVerdict: onVerdict, onError: onError)
+        }
+        activationObserver = activationCenter.addObserver(forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: .main) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    guard let self else { return }
+                    if let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication {
+                        self.applicationActivated(processID: app.processIdentifier)
+                    }
+                }
+            }
         task = Task { [weak self] in
             while !Task.isCancelled {
                 guard self != nil else { return }
-                await self?.sampleOnce(model: model, onStatus: onStatus, onVerdict: onVerdict, onError: onError)
+                self?.requestSample(model: model, onStatus: onStatus, onVerdict: onVerdict, onError: onError)
                 guard !Task.isCancelled else { return }
                 try? await Task.sleep(nanoseconds: UInt64(max(0.01, intervalSeconds) * 1_000_000_000))
             }
         }
     }
     func stop() {
-        generation += 1
+        if let activationObserver { activationCenter.removeObserver(activationObserver) }
+        activationObserver = nil
+        activationHandler = nil
         task?.cancel(); task = nil
-        analysisTask?.cancel(); analysisTask = nil
-        sampling = false; cache.removeAll()
+        cancelCurrentSample()
+        cache.removeAll()
         diagnostics.lastOutcome = "stopped"
+    }
+    /// The actual workspace notification and deterministic tests share this
+    /// ingress. Muse/renderer activation cannot invalidate a delivered warning.
+    func applicationActivated(processID: Int32) {
+        guard processID != ProcessInfo.processInfo.processIdentifier,
+              !dependencies.ignoredProcess(processID) else { return }
+        activationHandler?(processID)
+    }
+    private func cancelCurrentSample() {
+        generation += 1
+        sampleTask?.cancel(); sampleTask = nil; sampleID = nil
+        analysisTask?.cancel(); analysisTask = nil
+        sampling = false; activeSource = nil
+    }
+    private func requestSample(model: String, onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
+        onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Bool,
+        onError: @escaping @MainActor (Error, ScreenSnapshot?) -> Void) {
+        guard sampleTask == nil else { return }
+        let id = UUID(); sampleID = id
+        sampleTask = Task { [weak self] in
+            await self?.sampleOnce(model: model, onStatus: onStatus, onVerdict: onVerdict, onError: onError)
+            guard let self, self.sampleID == id else { return }
+            self.sampleTask = nil; self.sampleID = nil
+        }
     }
 
     /// Deterministic dependencies exercise this same routing without screen
     /// permission, UI automation, real user content or a live model.
     func sampleOnce(model: String,
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
-        onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Void,
+        onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Bool,
         onError: @escaping @MainActor (Error, ScreenSnapshot?) -> Void) async {
         guard !sampling else { return }
         sampling = true
         let stamp = generation
-        defer { if generation == stamp { sampling = false; analysisTask = nil } }
+        defer { if generation == stamp { sampling = false; analysisTask = nil; activeSource = nil } }
         var snapshot: ScreenSnapshot?
         var attemptedSource: ScreenSourceIdentity?
         do {
             try Task.checkCancellation()
             emit(.sampling, stamp: stamp, callback: onStatus)
             let source = try dependencies.focusedSource()
+            activeSource = source
             attemptedSource = source
             if source.bundleID?.hasPrefix("com.google.Chrome") == true,
                await dependencies.chromeCoverage(source) {
@@ -192,17 +240,20 @@ final class MonitorLoop {
                 let latestImage = try await dependencies.captureWindow(source)
                 if generation == stamp { diagnostics.windowCaptures += 1 }
                 guard valid(source, stamp: stamp),
-                      MonitorEvidenceCache.imageFingerprint(latestImage) == MonitorEvidenceCache.imageFingerprint(image) else {
+                      MonitorEvidenceCache.visuallyStable(image, latestImage) else {
                     emit(.sourceChanged, stamp: stamp, callback: onStatus); return
                 }
             }
             guard valid(source, stamp: stamp) else { return }
-            if let image {
-                cache.rememberImage(MonitorEvidenceCache.imageFingerprint(image), text: textFingerprint,
-                    source: source, now: dependencies.now())
-            } else { cache.rememberText(textFingerprint, source: source, now: dependencies.now()) }
-            diagnostics.lastOutcome = "completed"
-            onVerdict(verdict, evidence, image != nil)
+            let accepted = onVerdict(verdict, evidence, image != nil)
+            guard generation == stamp, !Task.isCancelled else { return }
+            if verdict.riskLevel != .high || accepted {
+                if let image {
+                    cache.rememberImage(MonitorEvidenceCache.imageFingerprint(image), text: textFingerprint,
+                        source: source, now: dependencies.now())
+                } else { cache.rememberText(textFingerprint, source: source, now: dependencies.now()) }
+                diagnostics.lastOutcome = "completed"
+            } else { diagnostics.lastOutcome = "warning_pending" }
         } catch ScreenReaderError.ownAppIsFocused {
             emit(.skippedOwnApp, stamp: stamp, callback: onStatus)
         } catch {
@@ -232,5 +283,8 @@ final class MonitorLoop {
         }
         callback(status)
     }
-    deinit { task?.cancel(); analysisTask?.cancel() }
+    deinit {
+        if let activationObserver { activationCenter.removeObserver(activationObserver) }
+        task?.cancel(); sampleTask?.cancel(); analysisTask?.cancel()
+    }
 }

@@ -53,4 +53,6 @@ python3 -m unittest discover -s BrowserNativeHost -p 'test_*.py'
 if [[ "${1:-}" == "--local-model" ]]; then
     xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/local-model-checks Tests/LocalModelChecks.swift Development/MockScenario.swift "${shared[@]}"
     ./build/local-model-checks
+    xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/desktop-risk-model-checks Tests/DesktopRiskModelChecks.swift "${shared[@]}"
+    ./build/desktop-risk-model-checks
 fi
