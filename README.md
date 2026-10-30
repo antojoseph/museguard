@@ -86,3 +86,9 @@ Quit an already running Muse instance before launching a rebuilt one. `run-dev.s
 [Unreal/AVATAR_SOURCE.md](Unreal/AVATAR_SOURCE.md) pins the bundled approved model and animations. `MUSE_AVATAR_SOURCE` can explicitly select another Unreal project; a sibling checkout is never selected implicitly. Builds stage derived/generated files outside the tracked source tree.
 
 The community **Meta Muse – Jolly** mesh is by [MadDog2125](https://makerworld.com/en/models/3441016-meta-muse-jolly), rather than an official Meta asset. Original STLs are retained under `Assets/Source/MuseJolly`. The source and mesh derivatives retain **CC BY-NC-SA 4.0** attribution and licensing; see `Unreal/MuseGuard/Content/Muse/ATTRIBUTION.txt` and `Jolly.json`. Required runtime materials, geometry inputs, and preparation scripts are retained for reproducibility.
+
+### Round glasses
+
+Muse wears fitted round black-metal frames with clear lenses, derived from [Coco Jinjo’s free glasses](https://sketchfab.com/3d-models/glasses-45bd43443daa4b65b5511aed74422338). The source and glasses derivatives are CC BY-NC 4.0; see `Assets/Source/CocoJinjoGlasses/ATTRIBUTION.txt`. Put-on, removal and temple-adjustment animations use the existing attachment.
+
+Regenerate the fitted mesh with `uv run --with trimesh --with numpy --with scipy --with fast-simplification python scripts/prepare-round-glasses.py`. The renderer build prepares missing glasses materials using `Unreal/MuseGuard/Scripts/prepare_glasses_materials.py`.

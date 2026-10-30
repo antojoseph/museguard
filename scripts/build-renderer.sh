@@ -33,6 +33,13 @@ if [[ "${MUSE_REBUILD_ASSETS:-0}" == "1" || ! -f "$MUSE_STAGE/Content/Muse/M_Mus
     rsync -a "$MUSE_STAGE/Content/" "$MUSE_ROOT/Unreal/MuseGuard/Content/"
   fi
 fi
+if [[ "${MUSE_REBUILD_ASSETS:-0}" == "1" || ! -f "$MUSE_STAGE/Content/Muse/M_RoundFrame.uasset" || ! -f "$MUSE_STAGE/Content/Muse/M_RoundLens.uasset" ]]; then
+  "$MUSE_ENGINE/Engine/Binaries/Mac/UnrealEditor-Cmd" "$MUSE_PROJECT" -run=pythonscript -script="$MUSE_STAGE/Scripts/prepare_glasses_materials.py" -unattended -nosound -nullrhi > "$MUSE_ROOT/build/round-glasses-materials.log" 2>&1
+  if [[ "${MUSE_REBUILD_ASSETS:-0}" == "1" ]]; then
+    cp "$MUSE_STAGE/Content/Muse/M_RoundFrame.uasset" "$MUSE_ROOT/Unreal/MuseGuard/Content/Muse/"
+    cp "$MUSE_STAGE/Content/Muse/M_RoundLens.uasset" "$MUSE_ROOT/Unreal/MuseGuard/Content/Muse/"
+  fi
+fi
 MUSE_RESOURCES="${MUSE_APP_RESOURCES:-$MUSE_ROOT/build/Run/SentinelPet.app/Contents/Resources}"
 mkdir -p "$MUSE_RESOURCES"
 python3 - "$MUSE_ENGINE" "$MUSE_PROJECT" "$MUSE_RESOURCES" <<'PY'
