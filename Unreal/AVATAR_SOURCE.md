@@ -4,7 +4,7 @@
 
 This snapshot includes fitted 3D spy glasses that stay on while browser protection is active, with a paw-driven put-on/removal gesture and a small temple adjustment when inference starts. The source is mirrored in the sibling avatar project; the approved body geometry, materials and other poses are unchanged.
 
-The companion build prefers a sibling `../museguard/Unreal/MuseGuard` checkout when present. Without that checkout, it uses this bundled snapshot. `MUSE_AVATAR_SOURCE` can select another project explicitly. Generated Unreal build products are excluded.
+The companion builds this bundled snapshot by default, so a clean checkout uses the approved model without needing access to another repository. `MUSE_AVATAR_SOURCE` can select another project explicitly. Generated Unreal build products are excluded.
 
 The original source STLs and attribution remain in `../Assets/Source/MuseJolly`. The mesh and accessory preparation scripts and their geometry checks in `../scripts` match this avatar revision. Companion preview scripts retain this app’s bundle paths and demonstration context.
 

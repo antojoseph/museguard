@@ -25,7 +25,7 @@ struct SettingsView: View {
             TextEditor(text: $denied).font(.system(.body, design: .monospaced)).frame(height: 130)
             HStack {
                 Button("Save") {
-                    runtime.saveSettings(model: AppSettings.defaultModel, monitoringConsentGranted: consent, alertSensitivity: sensitivity,
+                    runtime.saveSettings(monitoringConsentGranted: consent, alertSensitivity: sensitivity,
                                          deniedAppNames: denied.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty })
                     saved = true
                 }.keyboardShortcut(.defaultAction)

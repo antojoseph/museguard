@@ -2,13 +2,7 @@
 set -euo pipefail
 MUSE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 MUSE_ENGINE="${MUSE_UNREAL_ROOT:-/Users/Shared/Epic Games/UE_5.8}"
-if [[ -z "${MUSE_AVATAR_SOURCE:-}" ]]; then
-  if [[ -f "$MUSE_ROOT/../museguard/Unreal/MuseGuard/MuseGuard.uproject" ]]; then
-    MUSE_AVATAR_SOURCE="$MUSE_ROOT/../museguard/Unreal/MuseGuard"
-  else
-    MUSE_AVATAR_SOURCE="$MUSE_ROOT/Unreal/MuseGuard"
-  fi
-fi
+MUSE_AVATAR_SOURCE="${MUSE_AVATAR_SOURCE:-$MUSE_ROOT/Unreal/MuseGuard}"
 if [[ ! -f "$MUSE_AVATAR_SOURCE/MuseGuard.uproject" ]]; then
   echo 'Muse avatar source is missing. Set MUSE_AVATAR_SOURCE to the approved Unreal/MuseGuard project directory.' >&2
   exit 1
@@ -39,7 +33,7 @@ if [[ "${MUSE_REBUILD_ASSETS:-0}" == "1" || ! -f "$MUSE_STAGE/Content/Muse/M_Mus
     rsync -a "$MUSE_STAGE/Content/" "$MUSE_ROOT/Unreal/MuseGuard/Content/"
   fi
 fi
-MUSE_RESOURCES="$MUSE_ROOT/build/Run/SentinelPet.app/Contents/Resources"
+MUSE_RESOURCES="${MUSE_APP_RESOURCES:-$MUSE_ROOT/build/Run/SentinelPet.app/Contents/Resources}"
 mkdir -p "$MUSE_RESOURCES"
 python3 - "$MUSE_ENGINE" "$MUSE_PROJECT" "$MUSE_RESOURCES" <<'PY'
 import json,sys,pathlib

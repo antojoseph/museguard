@@ -15,9 +15,11 @@ struct MenuBarContent: View {
         Label(renderer.status, systemImage: "cube.transparent")
         Button(pet.isAvatarHidden ? "Show Muse" : "Hide Muse") { runtime.toggleAvatarVisibility() }
         Toggle("Stay out of my way", isOn:$pet.automaticallyPositions)
+        #if MUSE_DEVELOPMENT
         Button("Open Muse Studio…") { GuardianStudio.shared.show() }
         Button("Preview guard intervention") { runtime.previewGuardianIntervention() }
             .disabled(!renderer.isReady || pet.isAvatarHidden || pet.acknowledgment != nil)
+        #endif
         Picker("Accessory", selection: $renderer.accessory) {
             Text("Guard · cap & badge").tag("guard")
             Text("Focus · headphones").tag("focus")
@@ -90,7 +92,9 @@ struct MenuBarContent: View {
             runtime.showAnalysisLogs()
         }
 
+        #if MUSE_DEVELOPMENT
         Button("Open mock lab…") { MockLab.shared.show() }
+        #endif
 
         Button("Settings…") {
             runtime.showSettings()

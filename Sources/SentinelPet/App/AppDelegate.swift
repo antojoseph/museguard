@@ -19,9 +19,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let overlay = PetOverlayController(viewModel: runtime.petViewModel)
         overlay.show()
         self.overlay = overlay
+        #if MUSE_DEVELOPMENT
         if ProcessInfo.processInfo.arguments.contains("--chat-corner-check") { overlay.showChatCornerCheck() }
         if ProcessInfo.processInfo.arguments.contains("--mock-lab") { MockLab.shared.show() }
         if ProcessInfo.processInfo.arguments.contains("--studio") { GuardianStudio.shared.show() }
+        #endif
     }
 
     func applicationWillTerminate(_ notification: Notification) {

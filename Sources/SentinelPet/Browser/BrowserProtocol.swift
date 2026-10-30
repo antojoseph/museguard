@@ -70,7 +70,7 @@ struct BrowserRequest: Codable {
     func validated() throws -> BrowserRequest {
         guard version == 1, !id.isEmpty, id.utf8.count <= 128,
               !id.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
-              ["status", "assess", "present", "present-block", "decision", "cancel", "notice", "finish-checking", "protection-state", "chat-context-poll", "chat-context-result"].contains(type), ["text", "vision"].contains(mode) else {
+              ["status", "assess", "present", "present-block", "cancel", "notice", "protection-state", "chat-context-poll", "chat-context-result"].contains(type), ["text", "vision"].contains(mode) else {
             throw BrowserProtocolError.invalidRequest
         }
         if type == "chat-context-result" {
@@ -100,7 +100,7 @@ struct BrowserRequest: Codable {
             return self
         }
         guard protectionEnabled == nil else { throw BrowserProtocolError.invalidRequest }
-        if ["status", "present", "present-block", "decision", "cancel", "finish-checking"].contains(type) {
+        if ["status", "present", "present-block", "cancel"].contains(type) {
             guard page == nil, action == nil, screenshot == nil, reason == nil, purpose == nil else { throw BrowserProtocolError.invalidRequest }
             if type != "status" {
                 guard let assessmentID, !assessmentID.isEmpty, assessmentID.utf8.count <= 128,
@@ -114,8 +114,11 @@ struct BrowserRequest: Codable {
         }
         if type == "notice" {
             guard mode == "text", screenshot == nil, let reason,
-                  ["unavailable", "changed", "unsupported", "open_failed", "checking"].contains(reason) else { throw BrowserProtocolError.invalidRequest }
+                  ["unavailable", "changed"].contains(reason) else { throw BrowserProtocolError.invalidRequest }
         } else if reason != nil { throw BrowserProtocolError.invalidRequest }
+        // Explicit popup checks concern the visible page. Link/form evidence
+        // belongs to the proactive/intent path and never creates a held action.
+        if purpose == nil, let action, action.kind != "page" { throw BrowserProtocolError.invalidRequest }
         guard let page else { throw BrowserProtocolError.invalidRequest }
         let cleanPage = try Self.validatedPage(page)
         var cleanAction: Action?
@@ -191,26 +194,25 @@ struct BrowserResponse: Codable {
     let durationMS: Int
     let error: String?
     let modelReady: Bool?
-    let actionState: String?
     let lastAssessment: AssessmentMetadata?
     let completedAssessments: Int?
     let contextRequestID: String?
     let contextExpiresAt: Int64?
     enum CodingKeys: String, CodingKey {
         case version, id, ok, decision, summary, guidance, categories, mode, error
-        case riskLevel = "risk_level", durationMS = "duration_ms", modelReady = "model_ready", actionState = "action_state"
+        case riskLevel = "risk_level", durationMS = "duration_ms", modelReady = "model_ready"
         case lastAssessment = "last_assessment", completedAssessments = "completed_assessments"
         case contextRequestID = "context_request_id", contextExpiresAt = "context_expires_at"
     }
-    init(id: String, ok: Bool, decision: String, riskLevel: String, summary: String, guidance: String, categories: [String] = [], mode: String = "text", durationMS: Int = 0, error: String? = nil, modelReady: Bool? = nil, actionState: String? = nil, lastAssessment: AssessmentMetadata? = nil, completedAssessments: Int? = nil, contextRequestID: String? = nil, contextExpiresAt: Int64? = nil) {
+    init(id: String, ok: Bool, decision: String, riskLevel: String, summary: String, guidance: String, categories: [String] = [], mode: String = "text", durationMS: Int = 0, error: String? = nil, modelReady: Bool? = nil, lastAssessment: AssessmentMetadata? = nil, completedAssessments: Int? = nil, contextRequestID: String? = nil, contextExpiresAt: Int64? = nil) {
         self.id = id; self.ok = ok; self.decision = decision; self.riskLevel = riskLevel
         self.summary = summary; self.guidance = guidance; self.categories = categories; self.mode = mode
-        self.durationMS = durationMS; self.error = error; self.modelReady = modelReady; self.actionState = actionState
+        self.durationMS = durationMS; self.error = error; self.modelReady = modelReady
         self.lastAssessment = lastAssessment; self.completedAssessments = completedAssessments
         self.contextRequestID = contextRequestID; self.contextExpiresAt = contextExpiresAt
     }
-    static func failure(id: String, mode: String = "text", message: String, actionState: String? = nil) -> BrowserResponse {
-        BrowserResponse(id: id, ok: false, decision: "review", riskLevel: "unknown", summary: "Muse could not check this action.", guidance: message, mode: mode, error: message, actionState: actionState)
+    static func failure(id: String, mode: String = "text", message: String) -> BrowserResponse {
+        BrowserResponse(id: id, ok: false, decision: "review", riskLevel: "unknown", summary: "Muse could not complete this check.", guidance: message, mode: mode, error: message)
     }
 }
 

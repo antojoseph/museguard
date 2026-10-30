@@ -2,7 +2,6 @@ import SwiftUI
 
 /// Real-time transparent frames from the local Unreal 3D scene, not a sprite sheet.
 struct PetView: View {
-    var mood: PetMood
     @ObservedObject private var renderer = UnrealCharacterRenderer.shared
     @State private var homeImage: CGImage?
     var body: some View {

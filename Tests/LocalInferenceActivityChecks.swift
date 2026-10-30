@@ -6,6 +6,12 @@ private actor ActivityRecorder {
     func snapshot() -> [Bool] { values }
 }
 
+private actor OrderRecorder {
+    private var values: [String] = []
+    func append(_ value: String) { values.append(value) }
+    func snapshot() -> [String] { values }
+}
+
 private actor OperationGate {
     private(set) var started = false
     private(set) var cancelled = false
@@ -114,6 +120,47 @@ private enum SyntheticFailure: Error { case model }
         try await eventually { await handoffStates.snapshot() == [false,true,false] }
         handoffObserver.cancel(); await handoffObserver.value
 
+        // New interactive work must not cancel a current chat. Once that chat
+        // finishes, queued interactive work runs FIFO ahead of background work.
+        let priorityScheduler = LocalInferenceScheduler(), order = OrderRecorder()
+        let currentGate = OperationGate()
+        let current = Task {
+            try await priorityScheduler.run(priority:.interactive) {
+                await order.append("current")
+                await withTaskCancellationHandler(operation: { await currentGate.wait() },
+                    onCancel: { Task { await currentGate.noteCancellation() } })
+                return "current"
+            }
+        }
+        try await eventually { await currentGate.started }
+        let lower = Task {
+            try await priorityScheduler.run(priority:.background) {
+                await order.append("background"); return "background"
+            }
+        }
+        try await eventually { await priorityScheduler.pendingOperationCount() == 1 }
+        let firstInteractive = Task {
+            try await priorityScheduler.run(priority:.interactive) {
+                await order.append("first-interactive"); return "first"
+            }
+        }
+        try await eventually { await priorityScheduler.pendingOperationCount() == 2 }
+        let secondInteractive = Task {
+            try await priorityScheduler.run(priority:.interactive) {
+                await order.append("second-interactive"); return "second"
+            }
+        }
+        try await eventually { await priorityScheduler.pendingOperationCount() == 3 }
+        let currentWasCancelled = await currentGate.cancelled, beforeRelease = await order.snapshot()
+        assert(!currentWasCancelled && beforeRelease == ["current"])
+        await currentGate.release()
+        _ = try await current.value
+        _ = try await firstInteractive.value
+        _ = try await secondInteractive.value
+        _ = try await lower.value
+        let completionOrder = await order.snapshot()
+        assert(completionOrder == ["current","first-interactive","second-interactive","background"])
+
         let failureScheduler = LocalInferenceScheduler()
         let (failureObserver,failureStates) = await observe(failureScheduler)
         try await eventually { await failureStates.snapshot() == [false] }
@@ -174,6 +221,6 @@ private enum SyntheticFailure: Error { case model }
         var iterator = unconsumed.makeAsyncIterator()
         let latest = await iterator.next()
         assert(latest == false)
-        print("PASS: actual inference activity, idle/late replay, multiple observers, queued cancellation, continuous priority handoff, error/cancellation cleanup and newest-state buffering")
+        print("PASS: actual inference activity, idle/late replay, queued cancellation, continuous priority handoff, interactive FIFO before background work, error cleanup and newest-state buffering")
     }
 }

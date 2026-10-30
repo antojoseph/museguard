@@ -6,14 +6,11 @@ import Foundation
 @MainActor
 final class UnrealCharacterRenderer: ObservableObject {
     static let shared = UnrealCharacterRenderer()
-    @Published private(set) var image: CGImage?
     /// Pixels, scene flags and crop coordinates from one decoded frame.
     @Published private(set) var latestFrame: CharacterFrame?
     @Published private(set) var status = "Starting Muse’s 3D renderer…"
     @Published private(set) var isReady = false
-    @Published private(set) var frameIsDesktopScene = false
     @Published private(set) var frameIsSleeping = false
-    @Published private(set) var frameRect: CGRect?
     var desktopScene: GuardianDesktopScene? { didSet { writeCommand() } }
     func configureDesktop(_ scene: GuardianDesktopScene?, state nextState: String) {
         batchingCommand = true
@@ -95,7 +92,7 @@ final class UnrealCharacterRenderer: ObservableObject {
               let config = try? JSONDecoder().decode(Configuration.self, from: data),
               FileManager.default.isExecutableFile(atPath: config.executable),
               FileManager.default.fileExists(atPath: config.project) else {
-            status = "3D renderer missing. Run ./run-dev.sh to build Muse Guard."
+            status = "Muse’s 3D renderer is missing. Rebuild the app using the source setup guide."
             return
         }
         do {
@@ -134,7 +131,7 @@ final class UnrealCharacterRenderer: ObservableObject {
         }
     }
 
-    func restart() { stop(); image = nil; latestFrame = nil; isReady = false; status = "Starting Muse’s 3D renderer…"; start() }
+    func restart() { stop(); latestFrame = nil; isReady = false; status = "Starting Muse’s 3D renderer…"; start() }
     func stop() {
         timer?.invalidate(); timer = nil
         let ownedProcess = process
@@ -160,7 +157,7 @@ final class UnrealCharacterRenderer: ObservableObject {
             }
         }
         lastSubmittedPose = pose
-        var payload: [String: Any] = ["state": pose, "accessory": accessory, "gaze": gaze, "reduceMotion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "debugMotion": ProcessInfo.processInfo.arguments.contains("--visual-test"), "phaseStart": phaseStartedAt.timeIntervalSince1970, "phaseDuration": phaseDuration, "travelDirection": travelDirection, "heartbeat": Date().timeIntervalSince1970]
+        var payload: [String: Any] = ["state": pose, "accessory": accessory, "gaze": gaze, "reduceMotion": NSWorkspace.shared.accessibilityDisplayShouldReduceMotion, "debugMotion": BuildConfiguration.visualTestingEnabled, "phaseStart": phaseStartedAt.timeIntervalSince1970, "phaseDuration": phaseDuration, "travelDirection": travelDirection, "heartbeat": Date().timeIntervalSince1970]
         // Only an activity bit enters the renderer; source evidence stays in
         // the native analyzer. Explicit previews retain complete pose control.
         payload["working"] = previewState == "live" && inferenceActivity.isActive
@@ -182,9 +179,6 @@ final class UnrealCharacterRenderer: ObservableObject {
         }
         lastSequence = frame.sequence
         lastFrameAt = Date()
-        frameRect = frame.desktopRect
-        image = frame.image
-        frameIsDesktopScene = frame.isDesktopScene
         frameIsSleeping = frame.isSleeping
         isReady = true
         status = "Live Unreal 3D"

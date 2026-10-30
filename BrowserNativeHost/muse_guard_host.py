@@ -6,7 +6,6 @@ No page content is logged. The model key never passes through this process.
 from __future__ import annotations
 import argparse
 import concurrent.futures
-import io
 import json
 import os
 from pathlib import Path
@@ -78,6 +77,8 @@ def load_config(path: Path, origin: str):
     if not stat.S_ISREG(attributes.st_mode) or attributes.st_uid != os.getuid() or attributes.st_mode & 0o077:
         raise ProtocolError('Native bridge configuration must be private to this user.')
     configuration = json.loads(path.read_text())
+    if not isinstance(configuration, dict):
+        raise ProtocolError('Native bridge configuration must be an object.')
     allowed = configuration.get('allowed_origins')
     if not isinstance(allowed, list) or origin.rstrip('/') + '/' not in allowed:
         raise ProtocolError('This extension is not authorized for Muse Guard.')
@@ -87,12 +88,15 @@ def load_config(path: Path, origin: str):
     return socket_path
 
 
-def forward(request, socket_path, active, active_lock):
+def forward(request, socket_path, active, active_lock, stopping=None):
     if not isinstance(request.get('id'), str) or not 0 < len(request['id'].encode('utf-8')) <= 128:
         return failure(request, 'The browser request identifier was not valid.')
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client.settimeout(120)
     with active_lock:
+        if stopping is not None and stopping.is_set():
+            client.close()
+            return failure(request, 'The browser connection closed before this check started.')
         active.add(client)
     try:
         # Socket permissions and ownership are checked in addition to the
@@ -101,6 +105,8 @@ def forward(request, socket_path, active, active_lock):
         if not stat.S_ISSOCK(attributes.st_mode) or attributes.st_uid != os.getuid() or attributes.st_mode & 0o077:
             raise ProtocolError('Muse Guard socket is not private to this user.')
         client.connect(socket_path)
+        if stopping is not None and stopping.is_set():
+            raise ProtocolError('The browser connection closed.')
         client.sendall(encode_frame(request, MAX_REQUEST))
         with client.makefile('rb') as stream:
             response = read_frame(stream, MAX_RESPONSE)
@@ -115,7 +121,7 @@ def forward(request, socket_path, active, active_lock):
         client.close()
 
 
-def run(input_stream, output_stream, socket_path):
+def run(input_stream, output_stream, socket_path, *, one_shot=False):
     output_lock = threading.Lock()
     active_lock = threading.Lock()
     active = set()
@@ -137,7 +143,7 @@ def run(input_stream, output_stream, socket_path):
 
     def complete(request):
         try:
-            send(forward(request, socket_path, active, active_lock))
+            send(forward(request, socket_path, active, active_lock, stopping))
         finally:
             slots.release()
 
@@ -157,7 +163,8 @@ def run(input_stream, output_stream, socket_path):
             else:
                 send(failure(request, 'Muse is busy. Wait for the current check, then retry.'))
     finally:
-        if not clean_eof:
+        drain_final_request = clean_eof and one_shot
+        if not drain_final_request:
             stopping.set()
             with active_lock:
                 for client in active:
@@ -165,15 +172,17 @@ def run(input_stream, output_stream, socket_path):
                         client.shutdown(socket.SHUT_RDWR)
                     except OSError:
                         pass
-        # A complete final message can still be answered after stdin EOF. This
-        # also makes the host usable by native-message smoke-test harnesses.
-        pool.shutdown(wait=True, cancel_futures=not clean_eof)
+                    client.close()
+        # Chrome closing stdin revokes outstanding browser work. Only explicit
+        # one-shot diagnostics may await a final reply after their input EOF.
+        pool.shutdown(wait=True, cancel_futures=not drain_final_request)
         stopping.set()
 
 
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--config', type=Path, default=Path(__file__).with_name('config.json'))
+    parser.add_argument('--one-shot', action='store_true', help='Await the final diagnostic response after stdin EOF.')
     parser.add_argument('origin')
     arguments = parser.parse_args(argv)
     try:
@@ -181,7 +190,7 @@ def main(argv=None):
     except (OSError, ValueError, ProtocolError):
         print('Muse Guard rejected the native host configuration or caller.', file=sys.stderr)
         return 1
-    run(sys.stdin.buffer, sys.stdout.buffer, path)
+    run(sys.stdin.buffer, sys.stdout.buffer, path, one_shot=arguments.one_shot)
     return 0
 
 

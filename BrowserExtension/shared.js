@@ -48,12 +48,11 @@
     return result?.ok === true && result.confirmed_extreme === true && result.risk_level === 'high' && result.decision === 'block' &&
       Number.isFinite(result.expires_at) && result.expires_at > now;
   }
-  function canPresent(result, kind = 'page', manual = false) {
-    if (manual) return !!result && result.version === 1 && typeof result.id === 'string' &&
+  function canPresentManual(result) {
+    return !!result && result.version === 1 && typeof result.id === 'string' &&
       ['allow', 'block', 'review'].includes(result.decision) && ['medium', 'high', 'unknown'].includes(result.risk_level);
-    return isConfirmedExtreme(result);
   }
-  const api = { LIMIT, EXTREME_TTL_MS, ASSESSMENT_REUSE_MS, url, origin, cleanText, failure, verdict, normalizeAction, assessmentKey, publicSignature, isConfirmedExtreme, canPresent };
+  const api = { LIMIT, EXTREME_TTL_MS, ASSESSMENT_REUSE_MS, url, origin, cleanText, failure, verdict, normalizeAction, assessmentKey, publicSignature, isConfirmedExtreme, canPresentManual };
   root.MuseGuardCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(globalThis);

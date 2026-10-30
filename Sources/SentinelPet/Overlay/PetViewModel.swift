@@ -23,12 +23,6 @@ struct PetChatMessage: Identifiable {
     }
 }
 
-/// A pending Chrome action that can be resolved only from Muse's native UI.
-struct BrowserAvatarAction: Equatable {
-    let assessmentID: String
-    let canContinue: Bool
-}
-
 /// A warning remains pinned until this exact warning is acknowledged.
 struct GuardianAcknowledgment: Equatable {
     let id: String
@@ -40,7 +34,7 @@ struct GuardianWarningDetails: Equatable {
     let guidance: String
 }
 
-/// Observable state shared between the pet sprite and its speech bubble.
+/// Observable state shared between Muse and its speech bubble.
 @MainActor
 final class PetViewModel: ObservableObject {
     @Published var isAvatarHidden = UserDefaults.standard.bool(forKey: "museAvatarHidden") {
@@ -60,7 +54,6 @@ final class PetViewModel: ObservableObject {
     @Published private(set) var isChatStreaming = false
     @Published var chatMessages: [PetChatMessage] = []
     @Published var chatContextLabel: String?
-    @Published var browserAction: BrowserAvatarAction?
     @Published private(set) var acknowledgment: GuardianAcknowledgment?
     @Published private(set) var warningDetails: GuardianWarningDetails?
 
@@ -92,7 +85,6 @@ final class PetViewModel: ObservableObject {
     func show(_ text: String, mood: PetMood = .idle, clearAfter seconds: Double? = nil) {
         guard acknowledgment == nil else { return }
         clearTask?.cancel()
-        browserAction = nil
         self.message = text
         self.mood = mood
         isChatOpen = false
@@ -105,7 +97,6 @@ final class PetViewModel: ObservableObject {
             try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
             guard !Task.isCancelled, self?.acknowledgment == nil else { return }
             self?.intervention = nil
-            self?.browserAction = nil
             self?.message = nil
             self?.mood = .idle
         }
@@ -118,7 +109,6 @@ final class PetViewModel: ObservableObject {
         clearTask?.cancel(); clearTask = nil
         acknowledgment = GuardianAcknowledgment(id: id)
         warningDetails = details
-        browserAction = nil
         message = text
         mood = .alert
         isChatOpen = false
@@ -159,7 +149,6 @@ final class PetViewModel: ObservableObject {
     func dismissBubble() {
         guard acknowledgment == nil else { return }
         warningDetails = nil
-        browserAction = nil
         intervention = nil
         clearTask?.cancel()
         message = nil

@@ -1,10 +1,9 @@
 import SwiftUI
 
 struct PetRootView: View {
-    @ObservedObject var viewModel: PetViewModel
     let dragActions: GuardianDragActions
     var body: some View {
-        PetView(mood: viewModel.mood)
+        PetView()
             .overlay { GuardianDragSurface(actions: dragActions) }
     }
 }
@@ -25,7 +24,6 @@ struct GuardianMessageView: View {
     private var width: CGFloat {
         if viewModel.isChatOpen { return MuseLayout.chatContentSize.width }
         if viewModel.acknowledgment != nil { return 360 }
-        if viewModel.browserAction != nil { return 336 }
         switch viewModel.bubbleMood {
         case .idle: return 220
         case .scanning: return 292
@@ -73,9 +71,6 @@ struct PetMessageView: View {
                     onDismiss: {
                         SentinelPetRuntime.shared.dismissPetBubble()
                     },
-                    onBrowserDecision: { assessmentID, continueOnce in
-                        SentinelPetRuntime.shared.resolveBrowserAction(assessmentID: assessmentID, continueOnce: continueOnce)
-                    },
                     onAcknowledge: { id in
                         SentinelPetRuntime.shared.acknowledgeWarning(id: id)
                     }
@@ -86,16 +81,12 @@ struct PetMessageView: View {
                     text: message,
                     mood: viewModel.bubbleMood,
                     isDismissible: viewModel.bubbleIsDismissible,
-                    browserAction: viewModel.browserAction,
                     acknowledgment: viewModel.acknowledgment,
                     warningDetails: viewModel.warningDetails,
                     warningAvailableSize: warningAvailableSize,
                     onOpen: { SentinelPetRuntime.shared.openPetChat() },
                     onDismiss: {
                         SentinelPetRuntime.shared.dismissPetBubble()
-                    },
-                    onBrowserDecision: { assessmentID, continueOnce in
-                        SentinelPetRuntime.shared.resolveBrowserAction(assessmentID: assessmentID, continueOnce: continueOnce)
                     },
                     onAcknowledge: { id in
                         SentinelPetRuntime.shared.acknowledgeWarning(id: id)
@@ -116,29 +107,5 @@ struct GuardianAcknowledgmentButton: View {
             .buttonStyle(.borderedProminent)
             .accessibilityIdentifier("guardian-acknowledge-\(acknowledgment.id)")
             .help("Acknowledge this warning and let Muse return home")
-    }
-}
-
-/// Reuses the existing native message panel; no browser-page warning is added.
-struct BrowserAvatarActionButtons: View {
-    let action: BrowserAvatarAction
-    let onDecision: (String, Bool) -> Void
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Button("Stay here") { onDecision(action.assessmentID, false) }
-                .buttonStyle(.borderedProminent)
-                .accessibilityIdentifier("browser-stay-here-\(action.assessmentID)")
-                .help("Cancel this browser action")
-            if action.canContinue {
-                Button("Continue once") { onDecision(action.assessmentID, true) }
-                    .buttonStyle(.bordered)
-                    .accessibilityIdentifier("browser-continue-once-\(action.assessmentID)")
-                    .help("Allow this action once")
-            }
-            Spacer(minLength: 0)
-        }
-        .controlSize(.small)
-        .font(.system(size: 12, weight: .semibold, design: .rounded))
     }
 }

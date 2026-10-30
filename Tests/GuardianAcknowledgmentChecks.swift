@@ -57,7 +57,7 @@ import SwiftUI
         assert(model.acknowledge(id: "warning-one"))
         assert(model.acknowledgment == nil && model.intervention == nil && model.message == nil)
         assert(model.warningDetails == nil)
-        assert(model.mood == .idle && model.browserAction == nil)
+        assert(model.mood == .idle)
         assert(!model.isChatOpen && !model.isChatThinking && model.chatMessages.isEmpty)
         assert(!model.acknowledge(id: "warning-one"), "An acknowledgement is consumed once.")
 

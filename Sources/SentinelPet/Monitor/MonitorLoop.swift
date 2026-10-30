@@ -2,19 +2,15 @@ import AppKit
 import Foundation
 
 enum MonitorLoopStatus: Equatable {
-    case idle
     case sampling
     case skippedDuplicate
     case skippedOwnApp
     case skippedDeniedApp(String)
-    case analyzing(String)
     case analyzingScreenshot(String)
     case sleeping
 
     var label: String {
         switch self {
-        case .idle:
-            return "Monitoring paused"
         case .sampling:
             return "Capturing screen"
         case .skippedDuplicate:
@@ -23,8 +19,6 @@ enum MonitorLoopStatus: Equatable {
             return "Waiting for another app"
         case let .skippedDeniedApp(appName):
             return "Skipping \(appName)"
-        case let .analyzing(appName):
-            return "Analyzing \(appName)"
         case let .analyzingScreenshot(appName):
             return "Analyzing screenshot for \(appName)"
         case .sleeping:
@@ -52,10 +46,6 @@ final class MonitorLoop {
         self.screenReader = screenReader
         self.riskAnalyzer = riskAnalyzer
         self.screenshotCapture = screenshotCapture
-    }
-
-    var isRunning: Bool {
-        task != nil
     }
 
     func start(

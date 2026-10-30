@@ -12,7 +12,7 @@ async function harness(options = {}) {
   const dom = new JSDOM(fs.readFileSync(path.join(root, 'popup.html'), 'utf8'), { url: 'chrome-extension://test-id/popup.html', runScripts: 'outside-only' });
   const w = dom.window, requests = [], messages = [], events = [], stored = [], worker = [], notices = new Set();
   const tab = { id: 7, windowId: 2, url: 'https://example.test/path?private=secret', active: true };
-  const snapshot = { nonce: 'content-a', revision: 0, captureSupport: 2, page: { url: 'https://example.test/path', title: 'Example', text: 'Visible example text' } };
+  const snapshot = { nonce: 'content-a', revision: 0, page: { url: 'https://example.test/path', title: 'Example', text: 'Visible example text' } };
   let focused = true, normalTab = false, capture = async () => 'data:image/jpeg;base64,cmF3', now = 2000000000000;
   const intervals = [], clearedIntervals = [];
   const protection = { enabled: true, paused: false, pauseUntil: 0, active: true, supported: true, origin: 'https://example.test',
@@ -60,7 +60,7 @@ async function harness(options = {}) {
     }
   }, tabs: {
     async getCurrent() { return normalTab ? { id: 99 } : undefined; }, async query() { return [{ ...tab }]; },
-    async sendMessage(id, message) { assert.equal(id, 7); messages.push(message); if (message.type === 'prepare-capture') { events.push('prepare'); return { ok: true, nonce: snapshot.nonce }; } if (message.type === 'restore-capture') { events.push('restore'); return { ok: true }; } return structuredClone(snapshot); },
+    async sendMessage(id, message) { assert.equal(id, 7); messages.push(message); return structuredClone(snapshot); },
     async captureVisibleTab(id) { assert.equal(id, 2); events.push('capture'); return capture(); }
   }, storage: { session: { async set(value) { stored.push(value); } } } };
   w.eval(fs.readFileSync(path.join(root, 'shared.js'), 'utf8')); w.eval(fs.readFileSync(path.join(root, 'popup.js'), 'utf8')); await turn();

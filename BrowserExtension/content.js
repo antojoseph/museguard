@@ -10,7 +10,7 @@
   const runtime = chrome.runtime, extensionID = runtime.id;
   const C = MuseGuardCore;
   const nonce = crypto.randomUUID?.() || [...crypto.getRandomValues(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, '0')).join('');
-  const PRIVATE = 'input,textarea,select,option,script,style,noscript,template,svg,canvas,iframe,[contenteditable]:not([contenteditable="false"]),[hidden],[aria-hidden="true"],[data-private],[data-muse-private],muse-guard-panel';
+  const PRIVATE = 'input,textarea,select,option,script,style,noscript,template,svg,canvas,iframe,[contenteditable]:not([contenteditable="false"]),[hidden],[aria-hidden="true"],[data-private],[data-muse-private]';
   let active = false, generation = 0, configurationSequence = 0, edits = 0, lastURL = location.href;
   let pageTimer, hoverTimer, mutationTimer, resumeTimer, lastPageKey = '', lastPageAttempt = 0, retryFailures = 0;
   let lastSuccessfulPageKey = '', lastSuccessfulPageUntil = 0, lastSuccessfulPageRisk = null;
@@ -376,15 +376,14 @@
         activate(); reply({ ok: true, active });
       }); return true;
     }
-    if (message.type === 'snapshot') { reply({ nonce, revision: edits, captureSupport: 2, page: snapshot() }); return; }
-    if (message.type === 'prepare-capture') { reply({ ok: message.nonce === nonce, nonce }); return; }
-    if (message.type === 'restore-capture' || message.type === 'manual-result') { reply({ ok: true }); return; }
+    if (message.type === 'snapshot') { reply({ nonce, revision: edits, page: snapshot() }); return; }
     if (message.type === 'configuration-changed') {
       // A fast Pause/Resume can make both settings reads report active. The
       // notification itself invalidates every pre-pause local finding.
       active = false; resetAutomatic(); clearTimeout(resumeTimer);
       refresh().then(() => reply({ ok: true })); return true;
     }
+    reply({ ok: false });
   };
   runtime.onMessage.addListener(runtimeMessage);
   refresh();

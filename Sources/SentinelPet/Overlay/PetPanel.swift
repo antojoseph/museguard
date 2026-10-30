@@ -20,7 +20,7 @@ final class PetPanel: NSPanel {
         isFloatingPanel = true
         hidesOnDeactivate = false
         isMovableByWindowBackground = false
-        sharingType = ProcessInfo.processInfo.arguments.contains("--visual-test") ? .readOnly : .none
+        sharingType = BuildConfiguration.visualTestingEnabled ? .readOnly : .none
         collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
     }
 

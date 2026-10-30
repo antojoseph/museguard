@@ -5,7 +5,7 @@ import Foundation
 actor LocalInferenceScheduler {
     static let shared = LocalInferenceScheduler(metricsURL: FileManager.default.homeDirectoryForCurrentUser
         .appendingPathComponent("Library/Application Support/MuseGuard/Diagnostics/inference-metrics.json"))
-    enum Priority: Int { case background, interactive, browserAction }
+    enum Priority: Int { case background, interactive }
     enum OperationKind: String, Codable { case chat, risk, vision, other }
     /// Metadata only. Never retain prompts, page titles, URLs, answers or keys.
     struct ResponseTiming: Codable, Equatable {

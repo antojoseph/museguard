@@ -48,6 +48,16 @@ class HostChecks(unittest.TestCase):
         result = host.forward({'id': 'unavailable', 'mode': 'text'}, '/tmp/muse-missing-test.sock', set(), threading.Lock())
         self.assertEqual((result['id'], result['ok'], result['decision'], result['risk_level']), ('unavailable', False, 'review', 'unknown'))
 
+    def test_configuration_rejects_non_object_json(self):
+        with tempfile.TemporaryDirectory(prefix='muse-native-check-', dir='/tmp') as folder:
+            config = Path(folder)/'config.json'
+            origin = 'chrome-extension://'+'a'*32+'/'
+            for value in [[], None, 'invalid', 1]:
+                config.write_text(json.dumps(value))
+                config.chmod(0o600)
+                with self.assertRaises(host.ProtocolError):
+                    host.load_config(config, origin)
+
     def test_concurrent_requests_keep_their_ids(self):
         with tempfile.TemporaryDirectory(prefix='muse-native-check-', dir='/tmp') as folder:
             endpoint = str(Path(folder)/'bridge.sock')
@@ -81,6 +91,50 @@ class HostChecks(unittest.TestCase):
             for thread in connections:
                 thread.join(timeout=2)
             server.close()
+
+    def test_browser_eof_closes_pending_application_connection(self):
+        with tempfile.TemporaryDirectory(prefix='muse-native-check-', dir='/tmp') as folder:
+            endpoint = str(Path(folder)/'bridge.sock')
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(endpoint); os.chmod(endpoint, 0o600); server.listen(1); server.settimeout(2)
+            entered, disconnected = threading.Event(), threading.Event()
+            def application():
+                client, _ = server.accept()
+                with client, client.makefile('rb') as reader:
+                    self.assertEqual(host.read_frame(reader)['id'], 'cancel-on-eof')
+                    entered.set()
+                    if reader.read(1) == b'':
+                        disconnected.set()
+            accepting = threading.Thread(target=application); accepting.start()
+            input_read, input_write = os.pipe()
+            output = io.BytesIO()
+            with os.fdopen(input_read, 'rb', buffering=0) as native_input:
+                running = threading.Thread(target=host.run, args=(native_input, output, endpoint)); running.start()
+                with os.fdopen(input_write, 'wb', buffering=0) as chrome_output:
+                    chrome_output.write(host.encode_frame(dict(id='cancel-on-eof')))
+                    self.assertTrue(entered.wait(1))
+                running.join(timeout=1)
+                self.assertFalse(running.is_alive(), 'Chrome disconnect must not wait for the old model request.')
+                self.assertTrue(disconnected.wait(1))
+                self.assertEqual(output.getvalue(), b'')
+            accepting.join(timeout=1); server.close()
+
+    def test_explicit_one_shot_may_receive_final_reply_after_input_eof(self):
+        with tempfile.TemporaryDirectory(prefix='muse-native-check-', dir='/tmp') as folder:
+            endpoint = str(Path(folder)/'bridge.sock')
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(endpoint); os.chmod(endpoint, 0o600); server.listen(1); server.settimeout(2)
+            def application():
+                client, _ = server.accept()
+                with client, client.makefile('rb') as reader:
+                    request = host.read_frame(reader)
+                    time.sleep(.05)
+                    client.sendall(host.encode_frame(dict(id=request['id'], ok=True, decision='review')))
+            accepting = threading.Thread(target=application); accepting.start()
+            output = io.BytesIO()
+            host.run(io.BytesIO(host.encode_frame(dict(id='one-shot'))), output, endpoint, one_shot=True)
+            self.assertEqual(host.read_frame(io.BytesIO(output.getvalue()))['id'], 'one-shot')
+            accepting.join(timeout=1); server.close()
 
 
 if __name__ == '__main__':

@@ -7,13 +7,11 @@ struct SpeechBubbleView: View {
     let text: String
     let mood: PetMood
     var isDismissible = false
-    var browserAction: BrowserAvatarAction?
     var acknowledgment: GuardianAcknowledgment?
     var warningDetails: GuardianWarningDetails?
     var warningAvailableSize: CGSize? = nil
     var onOpen: (() -> Void)?
     var onDismiss: (() -> Void)?
-    var onBrowserDecision: ((String, Bool) -> Void)?
     var onAcknowledge: ((String) -> Void)?
 
     var body: some View {
@@ -29,18 +27,13 @@ struct SpeechBubbleView: View {
     private var regularBubble: some View {
         let style = BubbleStyle(mood: mood)
         let shouldScroll = shouldScroll(style: style)
-        let canDismiss = isDismissible && acknowledgment == nil
+        let canDismiss = isDismissible
 
         return ZStack(alignment: .topTrailing) {
             VStack(alignment: .leading, spacing: 10) {
                 messageContent(style: style, shouldScroll: shouldScroll)
                     .contentShape(Rectangle())
                     .onTapGesture { onOpen?() }
-                if let acknowledgment, let onAcknowledge {
-                    GuardianAcknowledgmentButton(acknowledgment: acknowledgment, onAcknowledge: onAcknowledge)
-                } else if acknowledgment == nil, let browserAction, let onBrowserDecision {
-                    BrowserAvatarActionButtons(action: browserAction, onDecision: onBrowserDecision)
-                }
             }
             .padding(.trailing, canDismiss ? 34 : 0)
 

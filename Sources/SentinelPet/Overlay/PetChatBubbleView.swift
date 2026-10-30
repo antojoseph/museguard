@@ -5,7 +5,6 @@ struct PetChatBubbleView: View {
     var acknowledgmentAvailableSize: CGSize? = nil
     let onSend: (String) -> Void
     let onDismiss: () -> Void
-    var onBrowserDecision: ((String, Bool) -> Void)?
     var onAcknowledge: ((String) -> Void)?
 
     @State private var draft = ""
@@ -72,7 +71,7 @@ struct PetChatBubbleView: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .frame(height: acknowledgmentTranscriptHeight)
-                .frame(maxHeight: viewModel.browserAction == nil && viewModel.acknowledgment == nil ? 196 : 152)
+                .frame(maxHeight: viewModel.acknowledgment == nil ? 196 : 152)
                 .onChange(of: viewModel.chatMessages.count) { _ in
                     scrollToBottom(proxy)
                 }
@@ -87,8 +86,6 @@ struct PetChatBubbleView: View {
             if let acknowledgment = viewModel.acknowledgment, let onAcknowledge {
                 GuardianAcknowledgmentButton(acknowledgment: acknowledgment, onAcknowledge: onAcknowledge)
                     .layoutPriority(1)
-            } else if viewModel.acknowledgment == nil, let action = viewModel.browserAction, let onBrowserDecision {
-                BrowserAvatarActionButtons(action: action, onDecision: onBrowserDecision)
             }
 
             HStack(spacing: 6) {

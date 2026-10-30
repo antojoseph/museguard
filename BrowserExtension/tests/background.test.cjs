@@ -81,7 +81,11 @@ function harness(settings = {}, options = {}) {
     url: value.url, tab: { ...value } }; };
   const sender = { ...senderFor(7), documentId: 'document-a' };
   const popup = { id: 'extension-id', url: 'chrome-extension://extension-id/popup.html', documentId: 'popup-a' };
-  const pageRequest = (kind = 'link') => ({ type: 'assess', nonce: 'nonce-a', page: structuredClone(snapshot.page), action: { kind, url: 'https://destination.test/path?private=token', label: 'Continue' } });
+  const pageRequest = (kind = 'link') => {
+    const action = { kind, url: 'https://destination.test/path?private=token', label: 'Continue' };
+    return { type: 'assess', nonce: 'nonce-a', purpose: kind === 'page' ? 'proactive' : 'intent', page: structuredClone(snapshot.page), action,
+      public_signature: api.core.publicSignature(action), action_fingerprint: 'a'.repeat(64) };
+  };
   function automatic(kind = 'page', purpose = kind === 'page' ? 'proactive' : 'intent', id = 7) {
     const request = id === 7 ? pageRequest(kind) : { type: 'assess', nonce: 'nonce-'+id,
       page: { url: tabs.get(id).url.split('?')[0], title: 'Tab '+id, text: 'Public tab '+id },
@@ -133,13 +137,6 @@ async function nativeCall(h, message, value = {}, sender = h.sender) {
 async function assessed(h, value = {}, kind = 'link') {
   return (await nativeCall(h, h.pageRequest(kind), value)).result;
 }
-async function presented(h, id, value = {}) {
-  return (await nativeCall(h, { type: 'present', nonce: 'nonce-a', assessment_id: id }, value)).result;
-}
-async function polled(h, id, value = {}) {
-  return (await nativeCall(h, { type: 'decision', nonce: 'nonce-a', assessment_id: id }, value)).result;
-}
-
 test('global protection ignores the legacy site allowlist and preserves explicit disable', async () => {
   const h = harness({ configVersion: 0, sites: [] });
   const { result } = await nativeCall(h, h.pageRequest());
@@ -170,176 +167,29 @@ test('native checks receive bounded redacted evidence and session stores complet
 test('page/link requests use canonical GET and form methods retain their meaning', async () => {
   for (const [kind, method, expected] of [['page', undefined, 'GET'], ['link', undefined, 'GET'], ['submit', 'post', 'POST'], ['submit', undefined, 'GET']]) {
     const h = harness(), request = h.pageRequest(kind); request.action.method = method;
+    request.public_signature = h.api.core.publicSignature(request.action);
     const { request: native } = await nativeCall(h, request);
     assert.equal(native.action.method, expected, kind);
   }
 });
 
-test('assessments require a fresh active-tab acknowledgement before avatar presentation', async () => {
-  const h = harness(), value = await assessed(h);
-  assert.equal(h.sent.length, 1);
-  h.focus(false);
-  assert.equal((await h.api.handle({ type: 'present', nonce: 'nonce-a', assessment_id: value.id }, h.sender)).ok, false);
-  assert.equal(h.sent.length, 1);
-  h.focus(true);
-  const { request, result } = await nativeCall(h, { type: 'present', nonce: 'nonce-a', assessment_id: value.id }, { action_state: 'pending' });
-  assert.equal(request.type, 'present'); assert.equal(request.assessment_id, value.id);
-  assert.ok(!('page' in request)); assert.equal(result.action_state, 'pending');
-  const before = h.sent.length;
-  assert.equal((await h.api.handle({ type: 'present', nonce: 'nonce-a', assessment_id: value.id }, h.sender)).ok, false);
-  assert.equal(h.sent.length, before, 'A receipt may be presented only once.');
-});
-
-test('native action decisions remain raw even when a model failure made ok false', async () => {
-  const h = harness(), failed = { ok: false, risk_level: 'unknown', decision: 'review', error: 'Model unavailable' };
-  const value = await assessed(h, failed);
-  const shown = await presented(h, value.id, { ...failed, action_state: 'pending' });
-  assert.equal(shown.action_state, 'pending');
-  h.focus(false); // Clicking the native avatar must not invalidate a pending poll.
-  const pending = await polled(h, value.id, { ...failed, action_state: 'pending' });
-  assert.equal(pending.ok, false); assert.equal(pending.action_state, 'pending');
-  h.focus(true);
-  const continued = await polled(h, value.id, { ...failed, action_state: 'continue' });
-  assert.equal(continued.ok, false); assert.equal(continued.action_state, 'continue');
-  const count = h.sent.length;
-  assert.equal((await h.api.handle({ type: 'decision', nonce: 'nonce-a', assessment_id: value.id }, h.sender)).action_state, 'expired');
-  assert.equal(h.sent.length, count, 'Terminal grants are consumed exactly once.');
-});
-
-test('a Continue grant cannot pass while Chrome loses focus, the tab changes, or protection is paused', async () => {
-  for (const change of ['focus', 'active', 'pause']) {
-    const h = harness(), value = await assessed(h, { risk_level: 'unknown', decision: 'review', ok: false });
-    await presented(h, value.id, { action_state: 'pending' });
-    if (change === 'focus') h.focus(false);
-    if (change === 'active') h.tab.active = false;
-    if (change === 'pause') h.local.enabled = false;
-    const count = h.sent.length;
-    const pending = h.api.handle({ type: 'decision', nonce: 'nonce-a', assessment_id: value.id }, h.sender);
-    await sentCount(h, count + 1);
-    h.answer(h.sent[count], { ok: false, risk_level: 'unknown', decision: 'review', action_state: 'continue' });
-    const result = await pending;
-    assert.equal(result.action_state, 'expired', change); assert.equal(result.ok, false, change);
-    await sentCount(h, count + 2);
-    assert.equal(h.sent[count + 1].type, 'cancel', change);
-    assert.equal(h.sent[count + 1].assessment_id, value.id);
-    h.answer(h.sent[count + 1], { action_state: 'stay' });
+test('retired held-action and navigation routes are rejected without native calls', async () => {
+  for (const type of ['present', 'notice', 'decision', 'finish-checking', 'open-link']) {
+    const h = harness();
+    for (const sender of [h.sender, h.popup]) {
+      const result = await h.api.handle({ type, nonce: 'nonce-a', assessment_id: 'old-receipt',
+        url: 'https://destination.test/path', reason: 'checking' }, sender);
+      assert.equal(result.ok, false, type);
+    }
+    assert.equal(h.sent.length, 0, type); assert.equal(h.opened.length, 0, type);
   }
 });
 
-test('Stay here is terminal and may be received while the native panel has focus', async () => {
-  const h = harness(), value = await assessed(h, { risk_level: 'medium', decision: 'review' });
-  await presented(h, value.id, { action_state: 'pending' });
-  h.focus(false);
-  assert.equal((await polled(h, value.id, { action_state: 'stay' })).action_state, 'stay');
-  const count = h.sent.length;
-  assert.equal((await h.api.handle({ type: 'decision', nonce: 'nonce-a', assessment_id: value.id }, h.sender)).action_state, 'expired');
-  assert.equal(h.sent.length, count);
-});
-
-test('native notice reasons retain the original action and can present unassessed receipts', async () => {
-  for (const reason of ['checking', 'unavailable', 'changed', 'unsupported', 'open_failed']) {
-    const h = harness(), message = { ...h.pageRequest(), type: 'notice', reason };
-    const failed = { ok: false, risk_level: 'unknown', decision: 'review', error: reason };
-    const { result: value, request } = await nativeCall(h, message, failed);
-    assert.equal(request.type, 'notice'); assert.equal(request.reason, reason);
-    assert.equal(request.action.kind, 'link'); assert.equal(request.action.url, 'https://destination.test/path');
-    const shown = await presented(h, value.id, { ...failed, action_state: 'pending' });
-    assert.equal(shown.action_state, 'pending', reason);
-  }
-});
-
-async function checkingReceipt(h) {
-  const message = { ...h.pageRequest(), type: 'notice', reason: 'checking' };
-  return (await nativeCall(h, message, { risk_level: 'unknown', decision: 'review' })).result;
-}
-
-test('finish-checking forwards metadata only and returns the raw prior state exactly once', async () => {
-  const h = harness(), progress = await checkingReceipt(h);
-  await presented(h, progress.id, { action_state: 'pending' });
-  h.focus(false); // Reading/finishing progress is cleanup, not a browser grant.
-  const { request, result } = await nativeCall(h, {
-    type: 'finish-checking', nonce: 'nonce-a', assessment_id: progress.id,
-    page: h.snapshot.page, screenshot: 'PRIVATE_IMAGE', decision: 'continue'
-  }, { ok: false, risk_level: 'unknown', decision: 'review', action_state: 'pending', error: 'Prior model status' });
-  assert.deepEqual(Object.keys(request).sort(), ['assessment_id', 'id', 'type', 'version']);
-  assert.equal(request.type, 'finish-checking'); assert.equal(request.assessment_id, progress.id);
-  assert.equal(result.ok, false); assert.equal(result.action_state, 'pending');
-  const count = h.sent.length;
-  assert.equal((await h.api.handle({ type: 'finish-checking', nonce: 'nonce-a', assessment_id: progress.id }, h.sender)).action_state, 'expired');
-  assert.equal(h.sent.length, count, 'Finishing consumes the progress receipt.');
-});
-
-test('finish-checking preserves Stay so a late safe assessment cannot erase cancellation', async () => {
-  const h = harness(), progress = await checkingReceipt(h);
-  await presented(h, progress.id, { action_state: 'pending' });
-  const { result } = await nativeCall(h,
-    { type: 'finish-checking', nonce: 'nonce-a', assessment_id: progress.id },
-    { ok: false, risk_level: 'unknown', decision: 'review', action_state: 'stay' });
-  assert.equal(result.ok, false); assert.equal(result.action_state, 'stay');
-  const count = h.sent.length;
-  assert.equal((await h.api.handle({ type: 'decision', nonce: 'nonce-a', assessment_id: progress.id }, h.sender)).action_state, 'expired');
-  assert.equal(h.sent.length, count);
-});
-
-test('finish-checking rejects ordinary, unpresented, mismatched and stale receipts', async () => {
-  for (const change of ['ordinary', 'unpresented', 'nonce', 'tab', 'navigation', 'document']) {
-    const h = harness(), receipt = change === 'ordinary' ? await assessed(h) : await checkingReceipt(h);
-    if (change !== 'unpresented') await presented(h, receipt.id, { action_state: 'pending' });
-    let nonce = 'nonce-a', sender = h.sender;
-    if (change === 'nonce') nonce = 'another-document';
-    if (change === 'tab') sender = { ...sender, tab: { ...sender.tab, id: 8 } };
-    if (change === 'navigation') h.tab.url = 'https://shop.example.test/other';
-    if (change === 'document') h.api.documents.set(7, { nonce: 'nonce-new', documentId: 'document-new' });
-    const count = h.sent.length;
-    const result = await h.api.handle({ type: 'finish-checking', nonce, assessment_id: receipt.id }, sender);
-    assert.equal(result.action_state, 'expired', change); assert.equal(h.sent.length, count, change);
-  }
-});
-
-test('finishing progress leaves the distinct final assessment available for avatar presentation', async () => {
-  const h = harness(), progress = await checkingReceipt(h);
-  await presented(h, progress.id, { action_state: 'pending' });
-  const final = await assessed(h, { risk_level: 'medium', decision: 'review' });
-  await nativeCall(h, { type: 'finish-checking', nonce: 'nonce-a', assessment_id: progress.id }, { action_state: 'pending' });
-  const count = h.sent.length;
-  const shown = await presented(h, final.id, { action_state: 'pending' });
-  assert.equal(h.sent[count].assessment_id, final.id); assert.equal(shown.action_state, 'pending');
-  assert.deepEqual(Object.keys(h.session['result:7']).sort(), ['checked', 'mode', 'timestamp']);
-});
-
-test('cancellation forwards the exact assessment and removes its local grant', async () => {
-  const h = harness(), value = await assessed(h);
-  await presented(h, value.id, { action_state: 'pending' });
-  h.focus(false);
-  const { result, request } = await nativeCall(h, { type: 'cancel', nonce: 'nonce-a', assessment_id: value.id }, { action_state: 'stay' });
-  assert.equal(request.type, 'cancel'); assert.equal(request.assessment_id, value.id); assert.equal(result.action_state, 'stay');
-  const count = h.sent.length;
-  assert.equal((await h.api.handle({ type: 'decision', nonce: 'nonce-a', assessment_id: value.id }, h.sender)).action_state, 'expired');
-  assert.equal(h.sent.length, count);
-});
-
-test('navigation forgets presented receipts and sends native cancellation', async () => {
-  const h = harness(), value = await assessed(h);
-  await presented(h, value.id, { action_state: 'pending' });
-  const count = h.sent.length;
-  h.api.forget(7);
-  await sentCount(h, count + 1);
-  assert.equal(h.sent[count].type, 'cancel'); assert.equal(h.sent[count].assessment_id, value.id);
-  h.answer(h.sent[count], { action_state: 'stay' });
-  assert.equal((await h.api.handle({ type: 'decision', nonce: 'nonce-a', assessment_id: value.id }, h.sender)).action_state, 'expired');
-  assert.equal(h.session['result:7'], undefined);
-});
-
-test('navigation, same-URL document replacement and paused protection suppress stale presentation', async () => {
-  for (const change of ['navigation', 'document', 'pause', 'expired']) {
-    const h = harness(), value = await assessed(h);
-    if (change === 'navigation') h.tab.url = 'https://shop.example.test/other';
-    if (change === 'document') h.api.documents.set(7, { nonce: 'nonce-new', documentId: 'document-new' });
-    if (change === 'pause') h.local.enabled = false;
-    if (change === 'expired') h.advance(30001);
-    const count = h.sent.length;
-    assert.equal((await h.api.handle({ type: 'present', nonce: 'nonce-a', assessment_id: value.id }, h.sender)).ok, false, change);
-    assert.equal(h.sent.length, count, change);
+test('automatic assessments require the current purpose and exact local proof', async () => {
+  for (const missing of ['purpose', 'public_signature', 'action_fingerprint']) {
+    const h = harness(), request = h.pageRequest(); delete request[missing];
+    await assert.rejects(h.api.handle(request, h.sender), /purpose|proof|fingerprint/);
+    assert.equal(h.sent.length, 0, missing);
   }
 });
 
@@ -351,28 +201,14 @@ test('an in-flight old-page result cannot approve or record the newly navigated 
   assert.equal(value.ok, false); assert.equal(value.decision, 'review'); assert.equal(h.writes.length, 0);
 });
 
-test('switching tabs or pausing protection prevents delayed safe approval', async () => {
-  for (const change of ['focus', 'active', 'pause']) {
-    const h = harness(); const pending = h.api.handle(h.pageRequest(), h.sender); await sentCount(h, 1);
-    if (change === 'focus') h.focus(false);
-    if (change === 'active') h.tab.active = false;
-    if (change === 'pause') h.local.enabled = false;
-    h.answer(h.sent[0], { risk_level: 'safe' });
-    const value = await pending; assert.equal(value.ok, false, change); assert.equal(value.decision, 'review', change);
-  }
-});
-
-test('all automatic work shares one native slot and later intent discards stale legacy scan metadata', async () => {
-  const h = harness();
-  const page = h.api.handle(h.pageRequest('page'), h.sender); await sentCount(h, 1);
-  const action = h.api.handle(h.pageRequest('submit'), h.sender); await turn();
-  assert.equal(h.sent.length, 1, 'No second simultaneous automatic inference.');
-  h.answer(h.sent[0], { risk_level: 'unknown' });
-  await sentCount(h, 2); h.answer(h.sent[1]);
-  const [old, current] = await Promise.all([page, action]);
-  assert.equal(old.ok, false); assert.equal(current.risk_level, 'high');
-  assert.deepEqual(Object.keys(h.session['result:7']).sort(), ['checked', 'mode', 'timestamp']);
-  assert.equal(h.session['result:7'].checked, true);
+test('background assessments may finish while unfocused but cannot present a warning', async () => {
+  const h = harness(), request = h.automatic();
+  const pending = h.api.handle(request, h.sender); await sentCount(h, 1);
+  h.focus(false); h.tab.active = false; h.answer(h.sent[0]);
+  const finding = await pending; assert.equal(finding.ok, true);
+  const count = h.sent.length;
+  assert.equal((await h.api.handle(blockMessage(request, finding.id), h.sender)).ok, false);
+  assert.equal(h.sent.length, count);
 });
 
 test('passive safe page scans cannot summon the avatar and manual popup routes stay separate', async () => {
@@ -656,11 +492,11 @@ test('proof fingerprints are mandatory, bounded and kept out of native evidence'
 
 test('confirmed extremes re-present through fresh native IDs with metadata-only requests', async () => {
   const h=harness(), request=h.automatic('link'), finding=await automaticResult(h,request);
-  const first=await nativeCall(h,blockMessage(request,finding.id),{action_state:'pending'});
+  const first=await nativeCall(h,blockMessage(request,finding.id),{});
   assert.equal(first.request.type,'present-block'); assert.equal(first.request.assessment_id,finding.id);
   assert.deepEqual(Object.keys(first.request).sort(),['assessment_id','id','mode','type','version']);
   assert.notEqual(first.result.id,finding.id); assert.equal(h.api.receipts.get(first.result.id).presented,true);
-  const second=await nativeCall(h,blockMessage(request,finding.id),{action_state:'pending'});
+  const second=await nativeCall(h,blockMessage(request,finding.id),{});
   assert.notEqual(second.result.id,first.result.id); assert.equal(second.request.assessment_id,finding.id);
   const before=h.sent.length; await h.api.handle({type:'pause',duration_ms:0},h.popup);
   const cancellations=h.sent.slice(before).filter(item=>item.type==='cancel').map(item=>item.assessment_id);
@@ -687,14 +523,14 @@ test('present-block rejects stale, changed, hidden and mismatched proof without 
 
 test('navigation cancels the fresh display ID and a pause during presentation discards it', async () => {
   const h=harness(), request=h.automatic(), finding=await automaticResult(h,request);
-  const shown=await nativeCall(h,blockMessage(request,finding.id),{action_state:'pending'});
+  const shown=await nativeCall(h,blockMessage(request,finding.id),{});
   const before=h.sent.length; h.api.forget(7); await sentCount(h,before+1);
   assert.equal(h.sent[before].assessment_id,shown.result.id);
   const next=harness(), payload=next.automatic(), high=await automaticResult(next,payload);
   const waiting=next.api.handle(blockMessage(payload,high.id),next.sender); await sentCount(next,2);
   await next.api.handle({type:'pause',duration_ms:0},next.popup); await next.api.handle({type:'resume'},next.popup);
-  next.answer(next.sent[1],{action_state:'pending'}); const result=await waiting;
-  assert.equal(result.action_state,'expired'); await sentCount(next,3);
+  next.answer(next.sent[1],{}); const result=await waiting;
+  assert.equal(result.ok,false); await sentCount(next,3);
   assert.equal(next.sent[2].type,'cancel'); assert.equal(next.sent[2].assessment_id,next.sent[1].id);
   assert.equal(next.api.receipts.size,0);
 });

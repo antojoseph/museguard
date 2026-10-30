@@ -14,7 +14,9 @@ final class SentinelPetRuntime: ObservableObject {
     @Published private(set) var monitorStatus = "Monitoring paused"
     @Published private(set) var analysisLogs: [AnalysisLogEntry] = []
     @Published private(set) var isAnalyzing = false
+    #if MUSE_DEVELOPMENT
     @Published private(set) var lastMockResult: String?
+    #endif
     @Published private(set) var browserStatus = "Browser guard stopped"
     private let browserBridge = BrowserBridgeServer()
     private let browserChatContext = BrowserChatContextBroker()
@@ -39,15 +41,6 @@ final class SentinelPetRuntime: ObservableObject {
                 // Other findings remain retryable after the user acknowledges it.
                 return verdict.riskLevel == .high && self.acknowledgmentContext == warningContext
             }
-            if request.reason == "checking" {
-                self.petViewModel.show("Let me check that before you go…\nI’ve paused this action while I check.", mood: .scanning,
-                    clearAfter: request.mode == "vision" ? 65 : 35)
-                self.browserPresentation = (request.id, self.petViewModel.message ?? "")
-                if let kind = request.action?.kind, kind == "link" || kind == "submit" {
-                    self.petViewModel.browserAction = BrowserAvatarAction(assessmentID: request.id, canContinue: false)
-                }
-                return true
-            }
             self.logVerdict(verdict, source: request.mode == "vision" ? .browserVision : .browserText,
                 snapshot: snapshot, includesScreenshot: request.mode == "vision")
             // Text-only browser protection needs no Screen Recording access.
@@ -60,11 +53,6 @@ final class SentinelPetRuntime: ObservableObject {
             guard self.presentVerdict(verdict, snapshot: snapshot, target: target,
                 acknowledgmentID: request.id, acknowledgmentContext: warningContext) else { return false }
             if self.petViewModel.acknowledgment != nil { self.browserStatus = "Muse is waiting for Got it." }
-            self.browserPresentation = (request.id, self.petViewModel.message ?? "")
-            if verdict.riskLevel != .high, let kind = request.action?.kind, kind == "link" || kind == "submit" {
-                self.petViewModel.browserAction = BrowserAvatarAction(assessmentID: request.id,
-                    canContinue: self.browserAssessments.canContinue(assessmentID: request.id))
-            }
             return true
         })
     private let screenReader = ScreenReader()
@@ -75,16 +63,14 @@ final class SentinelPetRuntime: ObservableObject {
     private let analysisLogsWindowController = AnalysisLogsWindowController()
     private var analysisTask: Task<Void, Never>?
     private var chatTask: Task<Void, Never>?
+    #if MUSE_DEVELOPMENT
     private var demoTask: Task<Void, Never>?
+    #endif
     private var latestChatContext: RiskReportChatContext?
     private var lastMonitorErrorMessage: String?
     private var browserSubscriptions = Set<AnyCancellable>()
-    private var visibleBrowserAssessmentID: String?
-    private var browserPresentation: (id: String, message: String)?
     private var acknowledgmentContext: String?
     private var acknowledgmentTarget: CGPoint?
-    private var browserActionExpiryTask: Task<Void, Never>?
-    private var browserChoiceTask: Task<Void, Never>?
     private var inferenceActivityTask: Task<Void, Never>?
     private var lastExternalApplication: NSRunningApplication?
     private var chatRequestID: UUID?
@@ -106,61 +92,14 @@ final class SentinelPetRuntime: ObservableObject {
                 UnrealCharacterRenderer.shared.setInferenceWorking(working)
             }
         }
-        petViewModel.$browserAction.map { $0?.assessmentID }.removeDuplicates().sink { [weak self] next in
-            guard let self else { return }
-            if let previous = self.visibleBrowserAssessmentID, previous != next {
-                self.browserAssessments.resolve(assessmentID: previous, continueOnce: false)
-            }
-            self.visibleBrowserAssessmentID = next
-            self.browserActionExpiryTask?.cancel()
-            guard let next else { return }
-            self.browserActionExpiryTask = Task { [weak self] in
-                try? await Task.sleep(nanoseconds: 120_000_000_000)
-                guard !Task.isCancelled, let self, self.petViewModel.browserAction?.assessmentID == next else { return }
-                self.dismissPetBubble()
-            }
-        }.store(in: &browserSubscriptions)
         petViewModel.$isAvatarHidden.removeDuplicates().filter { $0 }.sink { [weak self] _ in
             guard let self else { return }
             self.cancelChat()
             self.screenChatHistory.reset()
-            if self.petViewModel.browserAction != nil { self.dismissPetBubble() }
         }.store(in: &browserSubscriptions)
         petViewModel.$isChatOpen.removeDuplicates().filter { !$0 }.sink { [weak self] _ in
             self?.cancelChat()
         }.store(in: &browserSubscriptions)
-    }
-
-    /// The extension alone resumes the original action after rechecking its
-    /// document and form. Native controls never open or submit a destination.
-    func resolveBrowserAction(assessmentID: String, continueOnce: Bool) {
-        guard let action = petViewModel.browserAction, action.assessmentID == assessmentID,
-              !continueOnce || action.canContinue else { return }
-        browserChoiceTask?.cancel()
-        if !continueOnce {
-            browserAssessments.resolve(assessmentID: assessmentID, continueOnce: false)
-            dismissPetBubble()
-            return
-        }
-        browserChoiceTask = Task { [weak self] in
-            guard let self else { return }
-            let chrome = NSRunningApplication.runningApplications(withBundleIdentifier: "com.google.Chrome").first
-            _ = chrome?.activate(options: [.activateIgnoringOtherApps])
-            // Clicking Muse can activate the native panel. Publish the one-time
-            // choice only after Chrome is foreground again; keep browser focus
-            // checks intact rather than treating native clicks as an exception.
-            for _ in 0..<10 {
-                try? await Task.sleep(nanoseconds: 100_000_000)
-                guard !Task.isCancelled, self.petViewModel.browserAction?.assessmentID == assessmentID else { return }
-                if NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.google.Chrome" {
-                    self.browserAssessments.resolve(assessmentID: assessmentID, continueOnce: true)
-                    self.dismissPetBubble()
-                    return
-                }
-            }
-            self.browserAssessments.resolve(assessmentID: assessmentID, continueOnce: false)
-            self.dismissPetBubble()
-        }
     }
 
     func startBrowserBridge() {
@@ -169,15 +108,7 @@ final class SentinelPetRuntime: ObservableObject {
                 guard let self else { return .failure(id: request.id, mode: request.mode, message: "Muse Guard is closing.") }
                 if let contextReply = self.browserChatContext.handle(request) { return contextReply }
                 if request.type == "assess", request.purpose != nil { self.browserProtection.refreshFromAutomaticCheck() }
-                let response = await self.browserAssessments.handle(request)
-                let closesPresentation = request.type == "cancel" ||
-                    (request.type == "finish-checking" && ["pending", "stay"].contains(response.actionState ?? ""))
-                if self.petViewModel.acknowledgment == nil, closesPresentation, let id = request.assessmentID,
-                   self.petViewModel.browserAction?.assessmentID == id ||
-                    (self.browserPresentation?.id == id && self.browserPresentation?.message == self.petViewModel.message) {
-                    self.dismissPetBubble()
-                }
-                return response
+                return await self.browserAssessments.handle(request)
             }
             browserStatus = "Browser guard · local connection ready"
         } catch { browserStatus = "Browser guard unavailable: \(error.localizedDescription)" }
@@ -256,8 +187,8 @@ final class SentinelPetRuntime: ObservableObject {
     private func evaluate(_ snapshot: ScreenSnapshot, image: String?, source: AnalysisLogSource, target: CGPoint? = nil) async throws {
         petViewModel.show("Checking locally with Muse Glimmer…", mood: .scanning)
         let verdict: RiskVerdict
-        if let image { verdict = try await riskAnalyzer.analyze(snapshot: snapshot, screenshotDataURL: image, model: settings.modelName) }
-        else { verdict = try await riskAnalyzer.analyze(snapshot: snapshot, model: settings.modelName) }
+        if let image { verdict = try await riskAnalyzer.analyze(snapshot: snapshot, screenshotDataURL: image, model: LocalModelConfiguration.model) }
+        else { verdict = try await riskAnalyzer.analyze(snapshot: snapshot, model: LocalModelConfiguration.model) }
         try Task.checkCancellation()
         logVerdict(verdict, source: source, snapshot: snapshot, includesScreenshot: image != nil)
         presentVerdict(verdict, snapshot: snapshot, target: target)
@@ -269,7 +200,7 @@ final class SentinelPetRuntime: ObservableObject {
         guard screenCaptureTrusted else { permissionMessage("Screen Recording"); return }
         guard modelReady() else { return }
         lastMonitorErrorMessage = nil
-        monitorLoop.start(model: settings.modelName, deniedAppNames: settings.deniedAppNames,
+        monitorLoop.start(model: LocalModelConfiguration.model, deniedAppNames: settings.deniedAppNames,
             onStatus: { [weak self] status in self?.monitorStatus = status.label },
             onVerdict: { [weak self] verdict, snapshot, screenshot in
                 guard let self else { return }
@@ -294,17 +225,17 @@ final class SentinelPetRuntime: ObservableObject {
         monitorLoop.stop(); isMonitoring = false; monitorStatus = "Monitoring paused"
         if showMessage { petViewModel.show("Monitoring paused.", clearAfter: 4) }
     }
-    func saveSettings(model: String, monitoringConsentGranted: Bool, alertSensitivity: AlertSensitivity, deniedAppNames: [String]) {
+    func saveSettings(monitoringConsentGranted: Bool, alertSensitivity: AlertSensitivity, deniedAppNames: [String]) {
         let restart = isMonitoring
         stopMonitoring()
-        settings = AppSettings(modelName: model.isEmpty ? AppSettings.defaultModel : model, monitoringConsentGranted: monitoringConsentGranted, alertSensitivity: alertSensitivity, deniedAppNames: deniedAppNames)
+        settings = AppSettings(monitoringConsentGranted: monitoringConsentGranted, alertSensitivity: alertSensitivity, deniedAppNames: deniedAppNames)
         AppSettingsStore.save(settings)
         petViewModel.show("Local model settings saved.", clearAfter: 4)
         if restart && monitoringConsentGranted { startMonitoring() }
     }
     func openPetChat() {
         rememberChatApplication()
-        let explainsWarning = petViewModel.acknowledgment != nil || petViewModel.browserAction != nil ||
+        let explainsWarning = petViewModel.acknowledgment != nil ||
             (petViewModel.mood == .alert && petViewModel.message != nil)
         let explanation = explainsWarning ? latestChatContext.map { "Why I flagged it:\n\($0.summary)\n\nWhat to do:\n\($0.guidance)" } : nil
         petViewModel.openChat(seedText: explanation)
@@ -315,20 +246,17 @@ final class SentinelPetRuntime: ObservableObject {
     func dismissPetBubble() {
         cancelChat()
         guard petViewModel.acknowledgment == nil else { return }
-        demoTask?.cancel(); latestChatContext = nil
-        browserChoiceTask?.cancel()
-        browserPresentation = nil
+        cancelDemo(); latestChatContext = nil
         screenChatHistory.reset()
         petViewModel.dismissBubble()
     }
     func acknowledgeWarning(id: String) {
         guard petViewModel.acknowledgment?.id == id else { return }
         // Acknowledgement dismisses this explanation, never the browser's
-        // high-risk block and never a Continue/allow grant.
-        browserAssessments.resolve(assessmentID: id, continueOnce: false)
-        demoTask?.cancel(); cancelChat(); browserChoiceTask?.cancel()
+        // high-risk block. Native controls never grant a browser action.
+        cancelDemo(); cancelChat()
         acknowledgmentContext = nil; acknowledgmentTarget = nil
-        latestChatContext = nil; browserPresentation = nil
+        latestChatContext = nil
         screenChatHistory.reset()
         petViewModel.acknowledge(id: id)
         browserStatus = "Warning acknowledged."
@@ -370,7 +298,7 @@ final class SentinelPetRuntime: ObservableObject {
                 guard self.chatRequestID == requestID, self.petViewModel.isChatOpen, !self.petViewModel.isAvatarHidden else { return }
                 let scopedHistory = self.screenChatHistory.history(for:sourceKey)
                 let answer = try await self.riskAnalyzer.answerQuestion(question, context:context,
-                    screenContext:screen,history:scopedHistory,model:self.settings.modelName,
+                    screenContext:screen,history:scopedHistory,model:LocalModelConfiguration.model,
                     directAnswer:screen?.screenshotDataURL == nil,
                     onVisibleAnswer: { [weak self] answer in
                         try Task.checkCancellation()
@@ -460,9 +388,10 @@ final class SentinelPetRuntime: ObservableObject {
         return (ScreenChatContext(snapshot:evidence,sourceLabel:image == nil ? "Current application window text" : "Current application window screenshot",screenshotDataURL:image),
             "app:\(app.processIdentifier):\(beforeWindow?.id ?? -1)","Using \(name) · \(evidence.windowTitle ?? "current window")")
     }
+    #if MUSE_DEVELOPMENT
     func previewGuardianIntervention() {
         guard petViewModel.acknowledgment == nil else { return }
-        demoTask?.cancel()
+        cancelDemo()
         petViewModel.show("Demo · Let’s pause and check.\nThis is Muse’s stop gesture preview.", mood: .alert)
         petViewModel.intervene(at: GuardianTarget.demoTarget())
         demoTask = Task { [weak self] in
@@ -473,7 +402,7 @@ final class SentinelPetRuntime: ObservableObject {
     }
     func analyzeMock(_ scenario: MockScenario) {
         guard modelReady() else { return }
-        analysisTask?.cancel(); demoTask?.cancel()
+        analysisTask?.cancel(); cancelDemo()
         lastMockResult = nil
         let target = GuardianTarget.demoTarget()
         analysisTask = Task { [weak self] in
@@ -491,6 +420,12 @@ final class SentinelPetRuntime: ObservableObject {
                 self.petViewModel.show(error.localizedDescription, mood: .alert, clearAfter: 10)
             }
         }
+    }
+    #endif
+    private func cancelDemo() {
+        #if MUSE_DEVELOPMENT
+        demoTask?.cancel(); demoTask = nil
+        #endif
     }
     private func modelReady() -> Bool {
         guard LocalModelService.shared.isReady else {
@@ -514,7 +449,7 @@ final class SentinelPetRuntime: ObservableObject {
         if petViewModel.acknowledgment != nil {
             return verdict.riskLevel == .high && acknowledgmentContext == key
         }
-        demoTask?.cancel()
+        cancelDemo()
         let risky = verdict.riskLevel == .medium || verdict.riskLevel == .high
         let pinned = risky || verdict.riskLevel == .unknown
         if verdict.riskLevel == .high {
@@ -537,10 +472,10 @@ final class SentinelPetRuntime: ObservableObject {
     }
     private func logVerdict(_ verdict: RiskVerdict, source: AnalysisLogSource, snapshot: ScreenSnapshot, includesScreenshot: Bool, updatesChatContext: Bool = true) {
         if updatesChatContext && petViewModel.acknowledgment == nil { latestChatContext = RiskReportChatContext(sourceLabel: source.label, appName: snapshot.appName, windowTitle: snapshot.windowTitle, riskLevel: verdict.riskLevel, summary: verdict.summary, guidance: verdict.guidance, categories: verdict.categories) }
-        appendLog(AnalysisLogEntry(timestamp: Date(), source: source, appName: snapshot.appName, windowTitle: snapshot.windowTitle, model: settings.modelName, includesScreenshot: includesScreenshot, verdict: verdict, errorMessage: nil))
+        appendLog(AnalysisLogEntry(timestamp: Date(), source: source, appName: snapshot.appName, windowTitle: snapshot.windowTitle, model: LocalModelConfiguration.model, includesScreenshot: includesScreenshot, verdict: verdict, errorMessage: nil))
     }
     private func logError(_ error: Error, source: AnalysisLogSource, snapshot: ScreenSnapshot?) {
-        appendLog(AnalysisLogEntry(timestamp: Date(), source: source, appName: snapshot?.appName ?? source.label, windowTitle: snapshot?.windowTitle, model: settings.modelName, includesScreenshot: false, verdict: nil, errorMessage: error.localizedDescription))
+        appendLog(AnalysisLogEntry(timestamp: Date(), source: source, appName: snapshot?.appName ?? source.label, windowTitle: snapshot?.windowTitle, model: LocalModelConfiguration.model, includesScreenshot: false, verdict: nil, errorMessage: error.localizedDescription))
     }
     private func appendLog(_ entry: AnalysisLogEntry) { analysisLogs.insert(entry, at: 0); if analysisLogs.count > 200 { analysisLogs.removeLast() } }
     deinit { inferenceActivityTask?.cancel() }

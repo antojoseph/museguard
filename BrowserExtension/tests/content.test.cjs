@@ -165,10 +165,10 @@ test('only a consistent stamped high/block can interrupt automatically; explicit
   for (const value of [null, result('high'), result('medium', { confirmed_extreme: true, expires_at: now + 1 }),
     result('high', { ok: false, confirmed_extreme: true, expires_at: now + 1 }), result('high', { confirmed_extreme: true, expires_at: now })]) assert.equal(core.isConfirmedExtreme(value, now), false);
   assert.equal(core.verdict(result('high', { decision: 'allow', confirmed_extreme: true, expires_at: now + 1 })).decision, 'review');
-  assert.equal(core.canPresent(result('high'), 'page', true), true);
-  assert.equal(core.canPresent(result('medium'), 'page', true), true);
-  assert.equal(core.canPresent(result('safe'), 'page', true), false);
-  assert.equal(core.canPresent(result('high')), false);
+  assert.equal(core.canPresentManual(result('high')), true);
+  assert.equal(core.canPresentManual(result('medium')), true);
+  assert.equal(core.canPresentManual(result('safe')), false);
+  assert.equal(core.canPresentManual(null), false);
   const publicSignature = core.publicSignature({ kind: 'link', url: 'https://user:secret@target.test/path?otp=secret', method: '', label: 'Open' }, ['PASSWORD']);
   assert.ok(!publicSignature.includes('secret')); assert.ok(publicSignature.includes('password')); assert.equal(JSON.parse(publicSignature)[0].method, 'GET');
 });
@@ -569,12 +569,13 @@ test('a page-high warning cannot blanket-block an unassessed link', async () => 
     assert.equal(h.trigger(h.w.document.getElementById('go')).defaultPrevented, false); h.noWarning();
   } finally { h.close(); }
 });
-test('snapshots and screenshot preparation remain bounded and introduce no risk DOM', async () => {
+test('bounded snapshots reject retired capture messages and introduce no risk DOM', async () => {
   const h = await harness('<p>' + 'Visible public content '.repeat(700) + '</p><a href="javascript:alert(1)">Script action</a>');
   try {
-    const snap = await h.message({ type: 'snapshot' }); assert.ok(snap.page.text.length <= 6000); assert.equal(snap.captureSupport, 2);
-    assert.equal((await h.message({ type: 'prepare-capture', nonce: snap.nonce })).ok, true);
-    assert.equal((await h.message({ type: 'prepare-capture', nonce: 'wrong' })).ok, false);
+    const snap = await h.message({ type: 'snapshot' }); assert.ok(snap.page.text.length <= 6000); assert.equal('captureSupport' in snap, false);
+    for (const type of ['prepare-capture', 'restore-capture', 'manual-result']) {
+      assert.equal((await h.message({ type, nonce: snap.nonce })).ok, false);
+    }
     assert.equal(h.trigger(h.w.document.querySelector('a')).defaultPrevented, false); h.noWarning();
   } finally { h.close(); }
 });
@@ -677,7 +678,7 @@ test('pages with no readable text expose no invented evidence or private control
   try {
     const snap = await h.message({ type: 'snapshot' });
     assert.equal(snap.page.text, 'Visible link destinations: Visible forms:');
-    assert.equal(snap.captureSupport, 2);
+    assert.equal('captureSupport' in snap, false);
     assert.ok(!JSON.stringify(snap).includes('_SECRET'));
     h.noWarning();
   } finally { h.close(); }

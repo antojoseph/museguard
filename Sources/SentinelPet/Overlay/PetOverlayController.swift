@@ -46,7 +46,7 @@ final class PetOverlayController {
 
     init(viewModel: PetViewModel) { self.viewModel = viewModel }
     func show() {
-        let hosting = NSHostingView(rootView: PetRootView(viewModel: viewModel, dragActions: dragActions))
+        let hosting = NSHostingView(rootView: PetRootView(dragActions: dragActions))
         hosting.sizingOptions = []
         hosting.frame = NSRect(origin: .zero, size: MuseLayout.panelSize)
         let panel = PetPanel(contentRect: hosting.frame)
@@ -146,12 +146,14 @@ final class PetOverlayController {
         UnrealCharacterRenderer.shared.start()
         viewModel.greet()
     }
+    #if MUSE_DEVELOPMENT
     func showChatCornerCheck() {
-        guard ProcessInfo.processInfo.arguments.contains("--visual-test"),
+        guard BuildConfiguration.visualTestingEnabled,
               let screen=NSScreen.main?.visibleFrame else { return }
         applyHomeAnchor(CGPoint(x:screen.maxX,y:screen.minY),persist:false)
         viewModel.openChat(seedText:"Corner layout check. The close button and message field should stay fully visible, and closing should leave the box closed.")
     }
+    #endif
     private func intervene(at target: CGPoint) {
         cancelBedtime()
         guard let panel, !viewModel.isAvatarHidden else { return }
@@ -202,7 +204,7 @@ final class PetOverlayController {
             let stage = PetPanel(contentRect: scene.viewport)
             stage.isMovableByWindowBackground = false
             stage.ignoresMouseEvents = true
-            stage.contentView = NSHostingView(rootView: GuardianDesktopView(presentation: desktopPresentation, viewModel: viewModel, dragActions: dragActions))
+            stage.contentView = NSHostingView(rootView: GuardianDesktopView(presentation: desktopPresentation, dragActions: dragActions))
             desktopPanel = stage
         }
         desktopPanel?.setFrame(scene.viewport, display: false)
@@ -532,13 +534,15 @@ final class PetOverlayController {
     }
 
     private func recordMotion(_ phase: String) {
-        guard ProcessInfo.processInfo.arguments.contains("--visual-test"), let panel else { return }
+        #if MUSE_DEVELOPMENT
+        guard BuildConfiguration.visualTestingEnabled, let panel else { return }
         let record: [String: Any] = ["phase": phase, "x": panel.frame.minX, "y": panel.frame.minY, "homeX": home?.x ?? 0, "homeY": home?.y ?? 0, "time": Date().timeIntervalSince1970, "desktopScene": UnrealCharacterRenderer.shared.latestFrame?.isDesktopScene ?? false, "anchorX": homeAnchor.x, "anchorY": homeAnchor.y, "hidden": viewModel.isAvatarHidden, "automatic": viewModel.automaticallyPositions]
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("muse-motion-\(ProcessInfo.processInfo.processIdentifier).jsonl")
         guard var data = try? JSONSerialization.data(withJSONObject: record) else { return }
         data.append(10)
         if !FileManager.default.fileExists(atPath: url.path) { FileManager.default.createFile(atPath: url.path, contents: nil) }
         if let file = try? FileHandle(forWritingTo: url) { _ = try? file.seekToEnd(); try? file.write(contentsOf: data); try? file.close() }
+        #endif
     }
 
     private func updateHitTesting() {

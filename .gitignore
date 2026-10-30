@@ -4,6 +4,7 @@
 xcuserdata/
 DerivedData/
 build/
+dist/
 *.xcuserstate
 
 # Swift Package Manager
@@ -15,7 +16,24 @@ build/
 
 # Secrets (never commit API keys)
 *.env
+.env.*
 Secrets.plist
+*.pem
+*.p12
+*.p8
+*.key
+
+# Local model downloads stay outside source control
+*.gguf
+*.pte
+*.safetensors
+
+# Local Python and JavaScript caches/dependencies
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+node_modules/
 
 # Unreal generated build products (source assets remain tracked)
 Unreal/**/Binaries/

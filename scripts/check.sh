@@ -6,9 +6,13 @@ mkdir -p build
 python3 scripts/check-muse-mesh.py
 python3 scripts/check-guard-accessories.py
 sources=Sources/SentinelPet
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/release-configuration-checks Tests/BuildConfigurationChecks.swift "$sources/App/BuildConfiguration.swift"
+./build/release-configuration-checks --visual-test --expect-disabled
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -D MUSE_DEVELOPMENT -o build/development-configuration-checks Tests/BuildConfigurationChecks.swift "$sources/App/BuildConfiguration.swift"
+./build/development-configuration-checks --visual-test --expect-enabled
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/local-model-configuration-checks Tests/LocalModelConfigurationChecks.swift "$sources/Risk/LocalModelConfiguration.swift"
 ./build/local-model-configuration-checks
-xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/character-checks Tests/CharacterChecks.swift "$sources/Character/GuardianMotion.swift" "$sources/Character/GuardianPlacement.swift" "$sources/Character/GuardianWorkActivity.swift" "$sources/Character/UnrealCharacterRenderer.swift"
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/character-checks Tests/CharacterChecks.swift "$sources/Character/GuardianMotion.swift" "$sources/Character/GuardianPlacement.swift" "$sources/Character/GuardianWorkActivity.swift" "$sources/Character/UnrealCharacterRenderer.swift" "$sources/App/BuildConfiguration.swift"
 ./build/character-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/guardian-work-activity-checks Tests/GuardianWorkActivityChecks.swift "$sources/Character/GuardianWorkActivity.swift"
 ./build/guardian-work-activity-checks
@@ -35,6 +39,6 @@ xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-br
 ./build/browser-bridge-checks
 python3 -m unittest discover -s BrowserNativeHost -p 'test_*.py'
 if [[ "${1:-}" == "--local-model" ]]; then
-    xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/local-model-checks Tests/LocalModelChecks.swift "$sources/Character/MockScenario.swift" "${shared[@]}"
+    xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/local-model-checks Tests/LocalModelChecks.swift Development/MockScenario.swift "${shared[@]}"
     ./build/local-model-checks
 fi

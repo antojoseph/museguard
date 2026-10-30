@@ -3,10 +3,9 @@ import Darwin
 import ImageIO
 import CoreGraphics
 
-private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = nil) throws -> BrowserResponse {
+private func beginExchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = nil) throws -> Int32 {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
     guard fd >= 0 else { throw BrowserProtocolError.unavailable }
-    defer { close(fd) }
     var address = sockaddr_un(); address.sun_family = sa_family_t(AF_UNIX)
     let bytes = Array(socketURL.path.utf8)
     withUnsafeMutableBytes(of: &address.sun_path) { $0.copyBytes(from: bytes + [0]) }
@@ -14,7 +13,7 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
     let result = withUnsafePointer(to: &address) { pointer in
         pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) { connect(fd, $0, socklen_t(MemoryLayout<sockaddr_un>.size)) }
     }
-    guard result == 0 else { throw BrowserProtocolError.unavailable }
+    guard result == 0 else { close(fd); throw BrowserProtocolError.unavailable }
     var length = UInt32(declaredLength ?? payload.count).littleEndian
     let framed = withUnsafeBytes(of: &length) { Data($0) } + payload
     framed.withUnsafeBytes { bytes in
@@ -24,6 +23,12 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
             precondition(wrote > 0); offset += wrote
         }
     }
+    return fd
+}
+
+private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = nil) throws -> BrowserResponse {
+    let fd = try beginExchange(socketURL, payload, declaredLength: declaredLength)
+    defer { close(fd) }
     shutdown(fd, SHUT_WR)
     func read(_ count: Int) throws -> Data {
         var result = Data(count: count)
@@ -46,27 +51,28 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
 @main struct BrowserBridgeChecks {
     @MainActor static func main() async throws {
         let page = BrowserRequest.Page(url: "https://person:secret@example.test/login?token=secret#private", title: "Synthetic", text: "Visible text")
-        let request = BrowserRequest(id: "one", type: "assess", page: page, action: .init(kind: "submit", url: "https://example.test/submit?key=private", label: "Sign in", method: "post", sensitive: true))
+        let request = BrowserRequest(id: "one", type: "assess", page: page, action: .init(kind: "submit", url: "https://example.test/submit?key=private", label: "Sign in", method: "post", sensitive: true), purpose: "intent")
         let cleaned = try request.validated()
         assert(cleaned.page?.url == "https://example.test/login")
         assert(cleaned.action?.url == "https://example.test/submit" && cleaned.action?.method == "POST")
         // Match Chrome's actual background descriptor, including empty
         // strings for optional fields rather than only native constructors.
         for kind in ["page", "link"] {
-            let wire: [String: Any] = ["version": 1, "id": "chrome-"+kind,
+            var wire: [String: Any] = ["version": 1, "id": "chrome-"+kind,
                 "type": "assess", "mode": "text",
                 "page": ["url": "https://example.test/", "title": "Chrome fixture", "text": "Documentation"],
                 "action": ["kind": kind, "url": "https://example.test/docs", "label": "", "method": "", "sensitive": false]]
+            if kind == "link" { wire["purpose"] = "intent" }
             let decoded = try JSONDecoder().decode(BrowserRequest.self, from: JSONSerialization.data(withJSONObject: wire))
             let chromeMethod = try decoded.validated().action?.method
             assert(chromeMethod == "GET")
             let missing = BrowserRequest(id: "missing-"+kind, type: "assess", page: page,
-                action: .init(kind: kind, url: page.url, label: nil, method: nil, sensitive: nil))
+                action: .init(kind: kind, url: page.url, label: nil, method: nil, sensitive: nil), purpose: kind == "link" ? "intent" : nil)
             let missingMethod = try missing.validated().action?.method
             assert(missingMethod == "GET")
         }
         let defaultForm = BrowserRequest(id: "default-form", type: "assess", page: page,
-            action: .init(kind: "submit", url: page.url, label: nil, method: nil, sensitive: true))
+            action: .init(kind: "submit", url: page.url, label: nil, method: nil, sensitive: true), purpose: "intent")
         let defaultMethod = try defaultForm.validated().action?.method
         assert(defaultMethod == "GET")
         _ = try BrowserRequest(id: "status", type: "status").validated()
@@ -95,22 +101,16 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
             let decoded = try JSONDecoder().decode(BrowserRequest.self, from: JSONEncoder().encode(request))
             assert(decoded.purpose == purpose)
         }
-        _ = try BrowserRequest(id: "decision", type: "decision", assessmentID: "one").validated()
         _ = try BrowserRequest(id: "cancel", type: "cancel", assessmentID: "one").validated()
-        _ = try BrowserRequest(id: "finish", type: "finish-checking", assessmentID: "one").validated()
-        let checking = try BrowserRequest(id: "checking", type: "notice", page: page,
-            action: .init(kind: "page", url: page.url, label: nil, method: nil, sensitive: nil), reason: "checking").validated()
-        assert(checking.reason == "checking" && checking.page?.url == "https://example.test/login")
-        for (kind, method) in [("link", "GET"), ("submit", "POST")] {
-            let actionChecking = try BrowserRequest(id: "checking-"+kind, type: "notice", page: page,
-                action: .init(kind: kind, url: page.url, label: nil, method: method, sensitive: true), reason: "checking").validated()
-            assert(actionChecking.action?.kind == kind && actionChecking.action?.method == method)
+        for reason in ["changed", "unavailable"] {
+            let notice = try BrowserRequest(id: "manual-"+reason, type: "notice", page: page,
+                action: .init(kind: "page", url: page.url, label: nil, method: nil, sensitive: nil), reason: reason).validated()
+            assert(notice.reason == reason && notice.page?.url == "https://example.test/login")
         }
-        let stateResponse = BrowserResponse(id: "decision", ok: true, decision: "review", riskLevel: "unknown",
-            summary: "Synthetic", guidance: "Stay", actionState: "pending")
-        let stateWire = try JSONSerialization.jsonObject(with: JSONEncoder().encode(stateResponse)) as! [String: Any]
-        assert(stateWire["action_state"] as? String == "pending")
-        assert(stateWire["last_assessment"] == nil && stateWire["completed_assessments"] == nil)
+        let response = BrowserResponse(id: "manual", ok: true, decision: "review", riskLevel: "unknown",
+            summary: "Synthetic", guidance: "Review this page")
+        let responseWire = try JSONSerialization.jsonObject(with: JSONEncoder().encode(response)) as! [String: Any]
+        assert(responseWire["action_state"] == nil && responseWire["last_assessment"] == nil && responseWire["completed_assessments"] == nil)
         let diagnostic = BrowserResponse(id: "health", ok: true, decision: "review", riskLevel: "unknown",
             summary: "Connected", guidance: "Ready", modelReady: true,
             lastAssessment: .init(id: "prefetch", kind: "submit", riskLevel: "high", ok: true, completedAt: 1_793_306_700_123),
@@ -153,6 +153,13 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
         }
         let tooManyBytes = "a" + String(repeating: "\u{0301}", count: 17_000)
         for invalid in [imageRequest(oversizedPNG(width: 4_097, height: 1)),
+                        BrowserRequest(id: "retired", type: "decision", assessmentID: "one"),
+                        BrowserRequest(id: "retired", type: "finish-checking", assessmentID: "one"),
+                        BrowserRequest(id: "retired", type: "notice", page: page, reason: "checking"),
+                        BrowserRequest(id: "retired", type: "notice", page: page, reason: "unsupported"),
+                        BrowserRequest(id: "retired", type: "notice", page: page, reason: "open_failed"),
+                        BrowserRequest(id: "retired", type: "assess", page: page, action: .init(kind: "submit", url: page.url, label: nil, method: "POST", sensitive: true)),
+                        BrowserRequest(id: "retired", type: "assess", page: page, action: .init(kind: "link", url: page.url, label: nil, method: "GET", sensitive: false)),
                         BrowserRequest(id: "x", type: "protection-state"),
                         BrowserRequest(id: "x", type: "protection-state", mode: "vision", protectionEnabled: true),
                         BrowserRequest(id: "x", type: "protection-state", page: page, protectionEnabled: true),
@@ -173,9 +180,9 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
                         imageRequest(Data([137,80,78,71,13,10,26,10])),
                         BrowserRequest(id: "x", type: "assess", page: .init(url: "https://example.test", title: "", text: tooManyBytes)),
                         BrowserRequest(id: "x", type: "assess", page: .init(url: "https://example.test", title: "a" + String(repeating: "\u{0301}", count: 700), text: "")),
-                        BrowserRequest(id: "x", type: "assess", page: page, action: .init(kind: "link", url: page.url, label: "a" + String(repeating: "\u{0301}", count: 1_100), method: nil, sensitive: false)),
-                        BrowserRequest(id: "x", type: "assess", page: page, action: .init(kind: "submit", url: page.url, label: nil, method: "", sensitive: false)),
-                        BrowserRequest(id: "x", type: "assess", page: page, action: .init(kind: "submit", url: page.url, label: nil, method: "DELETE", sensitive: false)),
+                        BrowserRequest(id: "x", type: "assess", page: page, action: .init(kind: "link", url: page.url, label: "a" + String(repeating: "\u{0301}", count: 1_100), method: nil, sensitive: false), purpose: "intent"),
+                        BrowserRequest(id: "x", type: "assess", page: page, action: .init(kind: "submit", url: page.url, label: nil, method: "", sensitive: false), purpose: "intent"),
+                        BrowserRequest(id: "x", type: "assess", page: page, action: .init(kind: "submit", url: page.url, label: nil, method: "DELETE", sensitive: false), purpose: "intent"),
                         BrowserRequest(id: "x", type: "finish-checking"),
                         BrowserRequest(id: "x", type: "present-block"),
                         BrowserRequest(id: "x", type: "present-block", page: page, assessmentID: "one"),
@@ -200,7 +207,14 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
         let endpoint = directory.appendingPathComponent("bridge.sock")
         let server = BrowserBridgeServer()
         var completionOrder: [String] = []
+        var waiting = Set<String>(), cancelled = Set<String>()
         try server.start(socketURL: endpoint) { input in
+            if input.id.hasPrefix("cancel-") {
+                waiting.insert(input.id)
+                do { try await Task.sleep(nanoseconds: 10_000_000_000) }
+                catch is CancellationError { cancelled.insert(input.id) }
+                catch {}
+            }
             if input.id == "slow" { try? await Task.sleep(nanoseconds: 200_000_000) }
             completionOrder.append(input.id)
             return BrowserResponse(id: input.id, ok: true, decision: "allow", riskLevel: "safe", summary: "Synthetic test", guidance: "Continue")
@@ -219,8 +233,27 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
         assert(!bad.ok && bad.decision == "review" && bad.riskLevel == "unknown")
         let huge = try await Task.detached { try exchange(endpoint, Data(), declaredLength: BrowserRequest.maximumFrameBytes+1) }.value
         assert(!huge.ok && huge.decision == "review")
+        func waitFor(_ condition: () -> Bool) async throws {
+            for _ in 0..<100 {
+                if condition() { return }
+                try await Task.sleep(nanoseconds: 10_000_000)
+            }
+            assert(condition(), "Expected transport cancellation within one second")
+        }
+        let disconnected = try beginExchange(endpoint, encoder.encode(BrowserRequest(id: "cancel-disconnect", type: "status")))
+        try await waitFor { waiting.contains("cancel-disconnect") }
+        let disconnectTime = Date()
+        close(disconnected)
+        try await waitFor { cancelled.contains("cancel-disconnect") }
+        assert(Date().timeIntervalSince(disconnectTime) < 1)
+        let stopping = try beginExchange(endpoint, encoder.encode(BrowserRequest(id: "cancel-stop", type: "status")))
+        try await waitFor { waiting.contains("cancel-stop") }
+        let stopTime = Date()
         server.stop()
+        try await waitFor { cancelled.contains("cancel-stop") }
+        assert(Date().timeIntervalSince(stopTime) < 1)
+        close(stopping)
         assert(!FileManager.default.fileExists(atPath: endpoint.path))
-        print("PASS browser URL redaction, request/image validation, UTF-8 limits and bounded image dimensions, private socket permissions, concurrent correlated replies, truncation/oversize rejection and shutdown")
+        print("PASS browser URL redaction, request/image validation, UTF-8 limits and bounded image dimensions, private socket permissions, concurrent correlated half-closed replies, truncation/oversize rejection, peer-disconnect cancellation and shutdown cancellation")
     }
 }

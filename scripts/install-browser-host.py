@@ -12,7 +12,6 @@ import json
 import os
 from pathlib import Path
 import shlex
-import shutil
 import sys
 
 ROOT = Path(__file__).resolve().parents[1]

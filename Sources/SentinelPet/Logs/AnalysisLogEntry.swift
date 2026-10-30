@@ -1,28 +1,26 @@
 import Foundation
 
 enum AnalysisLogSource {
+    #if MUSE_DEVELOPMENT
     case mock
+    #endif
     case focusedWindow
     case screenshot
-    case screenshotVerification
-    case monitor
     case monitorScreenshot
     case browserText
     case browserVision
 
     var label: String {
         switch self {
+        #if MUSE_DEVELOPMENT
         case .mock: return "Mock lab"
+        #endif
         case .browserText: return "Chrome text"
         case .browserVision: return "Chrome visual check"
         case .focusedWindow:
             return "Focused window"
         case .screenshot:
             return "Screenshot"
-        case .screenshotVerification:
-            return "High-detail verification"
-        case .monitor:
-            return "Monitor"
         case .monitorScreenshot:
             return "Monitor screenshot"
         }
@@ -30,17 +28,15 @@ enum AnalysisLogSource {
 
     var systemImage: String {
         switch self {
+        #if MUSE_DEVELOPMENT
         case .mock: return "testtube.2"
+        #endif
         case .browserText: return "globe"
         case .browserVision: return "photo.on.rectangle"
         case .focusedWindow:
             return "text.viewfinder"
         case .screenshot:
             return "camera.viewfinder"
-        case .screenshotVerification:
-            return "checkmark.seal"
-        case .monitor:
-            return "eye"
         case .monitorScreenshot:
             return "eye.circle"
         }

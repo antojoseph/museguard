@@ -14,7 +14,7 @@ final class SettingsWindowController {
 
         let hostingController = NSHostingController(rootView: SettingsView(runtime: runtime))
         let window = NSWindow(contentViewController: hostingController)
-        window.title = "Sentinel Pet Settings"
+        window.title = "Muse Guard Settings"
         window.styleMask = [.titled, .closable, .miniaturizable]
         window.setContentSize(NSSize(width: 560, height: 540))
         window.center()

@@ -4,8 +4,6 @@ import Foundation
 
 struct CapturedScreenshot {
     let dataURL: String
-    let pixelSize: CGSize
-    let byteCount: Int
 }
 
 enum ScreenshotCaptureError: LocalizedError {
@@ -51,37 +49,8 @@ final class ScreenshotCapture {
         }
 
         return CapturedScreenshot(
-            dataURL: "data:image/jpeg;base64,\(data.base64EncodedString())",
-            pixelSize: CGSize(width: preparedImage.width, height: preparedImage.height),
-            byteCount: data.count
+            dataURL: "data:image/jpeg;base64,\(data.base64EncodedString())"
         )
-    }
-
-
-    func captureFrames(
-        count: Int,
-        intervalNanoseconds: UInt64,
-        maxPixelDimension: Int,
-        compression: CGFloat
-    ) async throws -> [CapturedScreenshot] {
-        let frameCount = max(1, count)
-        var frames: [CapturedScreenshot] = []
-        frames.reserveCapacity(frameCount)
-
-        for index in 0..<frameCount {
-            frames.append(
-                try capture(
-                    maxPixelDimension: maxPixelDimension,
-                    compression: compression
-                )
-            )
-
-            if index < frameCount - 1 {
-                try await Task.sleep(nanoseconds: intervalNanoseconds)
-            }
-        }
-
-        return frames
     }
 
     private func downscaled(_ image: CGImage, maxPixelDimension: Int) -> CGImage {

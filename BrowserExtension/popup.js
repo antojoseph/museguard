@@ -61,23 +61,9 @@ async function manualCheck(mode) {
   await fresh(tab, original);
   let screenshot;
   if (mode === 'vision') {
-    const captureID = crypto.randomUUID();
-    const cleanCapture = original.captureSupport === 1;
-    try {
-      if (cleanCapture) {
-        const ready = await chrome.tabs.sendMessage(tab.id, { type: 'prepare-capture', nonce: original.nonce, capture_id: captureID }, { frameId: 0 });
-        if (!ready?.ok || ready.nonce !== original.nonce) throw new Error('The page changed or Muse could not prepare its clean capture. Try the check again.');
-      } else {
-        // An older injected context still supports an explicit screenshot of
-        // the visible tab. Never alter a held action to fake a clean view.
-        // Older contexts capture the visible view without altering held actions.
-      }
-      await fresh(tab, original);
-      screenshot = await prepareScreenshot(await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 75 }));
-      await fresh(tab, original);
-    } finally {
-      if (cleanCapture) await chrome.tabs.sendMessage(tab.id, { type: 'restore-capture', nonce: original.nonce, capture_id: captureID }, { frameId: 0 }).catch(() => {});
-    }
+    await fresh(tab, original);
+    screenshot = await prepareScreenshot(await chrome.tabs.captureVisibleTab(tab.windowId, { format: 'jpeg', quality: 75 }));
+    await fresh(tab, original);
   }
   await fresh(tab, original);
   const request = { type: 'assess', mode,
@@ -87,7 +73,7 @@ async function manualCheck(mode) {
   const result = { ...C.verdict(await nativeRequest(request, mode === 'vision' ? 65000 : 35000)), mode };
   await fresh(tab, original);
   await chrome.storage.session.set({ ['result:' + tab.id]: { checked: result.ok === true, mode, timestamp: Date.now() } });
-  if (result.id && (!result.ok || C.canPresent(result, 'page', true))) {
+  if (result.id && (!result.ok || C.canPresentManual(result))) {
     await fresh(tab, original);
     await nativeRequest({ type: 'present', mode, assessment_id: result.id }, 3000);
   }

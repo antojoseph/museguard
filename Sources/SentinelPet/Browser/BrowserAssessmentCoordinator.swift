@@ -1,7 +1,7 @@
 import Foundation
 
-/// Model results remain native receipts. A fresh extension acknowledgement
-/// presents them; only native avatar controls can resolve a held browser action.
+/// Results remain brief, redacted receipts. Chrome verifies its current page
+/// before asking the native avatar to present a finding.
 @MainActor
 final class BrowserAssessmentCoordinator {
     private let analyzer: LocalRiskAnalyzer
@@ -17,24 +17,15 @@ final class BrowserAssessmentCoordinator {
         let snapshot: ScreenSnapshot
         let date: Date
         let error: String?
-        let decisionOverride: String?
-        var decision: String { decisionOverride ?? BrowserAssessmentCoordinator.decision(for: verdict) }
-        var isAction: Bool { request.action?.kind == "link" || request.action?.kind == "submit" }
-        var canContinue: Bool {
-            isAction && decision == "review" && (request.reason == nil || request.reason == "unavailable")
-        }
-    }
-    private enum ActionState: String { case pending, stay, `continue` }
-    private struct PendingDecision {
-        let receipt: Receipt
-        let date: Date
-        var state: ActionState
+        var decision: String { BrowserAssessmentCoordinator.decision(for: verdict) }
     }
     private var receipts: [String: Receipt] = [:]
     // Retain only redacted, model-confirmed high findings briefly, so a fresh
     // browser action can repeat its warning after an earlier page alert closed.
     private var highFindings: [String: Receipt] = [:]
-    private var decisions: [String: PendingDecision] = [:]
+    // Presentation IDs cannot be reused by a later warning. Browser cleanup
+    // never acknowledges a warning already visible in the native UI.
+    private var presentedIDs: [String: Date] = [:]
     private var activeIDs = Set<String>()
     private var activeChecks: [String: Task<RiskVerdict, Error>] = [:]
     // Independent native-host connections can deliver a cancellation just
@@ -54,33 +45,11 @@ final class BrowserAssessmentCoordinator {
         self.onProtectionChanged = onProtectionChanged
     }
 
-    func canContinue(assessmentID: String) -> Bool {
-        prune()
-        guard let decision = decisions[assessmentID], decision.state == .pending else { return false }
-        return decision.receipt.canContinue
-    }
-    /// A later dismissal after Continue cannot overwrite the terminal choice.
-    @discardableResult
-    func resolve(assessmentID: String, continueOnce: Bool) -> Bool {
-        prune()
-        guard var decision = decisions[assessmentID], decision.state == .pending,
-              !continueOnce || decision.receipt.canContinue else { return false }
-        decision.state = continueOnce ? .continue : .stay
-        decisions[assessmentID] = decision
-        return true
-    }
-
     func handle(_ raw: BrowserRequest) async -> BrowserResponse {
         let request: BrowserRequest
         do { request = try raw.validated() }
         catch { return .failure(id: raw.id, mode: raw.mode, message: error.localizedDescription) }
-        let result = await handleValidated(request)
-        if request.type == "assess", result.actionState != "stay" {
-            lastAssessment = BrowserResponse.AssessmentMetadata(id: request.id,
-                kind: request.action?.kind ?? "page", riskLevel: result.riskLevel,
-                ok: result.ok, completedAt: Int64(now().timeIntervalSince1970 * 1_000))
-        }
-        return result
+        return await handleValidated(request)
     }
 
     private func handleValidated(_ request: BrowserRequest) async -> BrowserResponse {
@@ -103,93 +72,70 @@ final class BrowserAssessmentCoordinator {
         if request.type == "present-block" {
             guard let id = request.assessmentID, let finding = highFindings[id],
                   finding.error == nil, finding.verdict.riskLevel == .high,
-                  finding.decision == "block", decisions[request.id] == nil else { return expired(request) }
-            // Give each presentation its own native decision ID. Reusing the
-            // original finding ID could let dismissal of an old bubble cancel
-            // a newer one. This path never creates an override for a high risk.
+                  finding.decision == "block", request.id != id,
+                  presentedIDs[request.id] == nil, receipts[request.id] == nil,
+                  highFindings[request.id] == nil, !activeIDs.contains(request.id) else { return expired(request) }
+            // Each display gets a fresh ID, so a late acknowledgment of an old
+            // warning cannot dismiss a newer one. No action override exists.
             let original = finding.request
             let displayRequest = BrowserRequest(id: request.id, type: original.type, mode: original.mode,
                 page: original.page, action: original.action, reason: original.reason, purpose: original.purpose)
             let display = Receipt(request: displayRequest, verdict: finding.verdict, snapshot: finding.snapshot,
-                date: now(), error: nil, decisionOverride: nil)
-            if display.isAction {
-                decisions[request.id] = PendingDecision(receipt: display, date: now(), state: .pending)
-                boundDecisions()
-            }
+                date: now(), error: nil)
+            rememberPresentation(request.id)
             guard onPresent(display.request, display.verdict, display.snapshot) else {
-                decisions.removeValue(forKey: request.id)
+                presentedIDs.removeValue(forKey: request.id)
                 return expired(request)
             }
-            return response(request, receipt: display, elapsed: 0, actionState: display.isAction ? "pending" : nil)
-        }
-        if request.type == "finish-checking" {
-            // Atomically hand progress ownership back to the extension. A
-            // previously accepted Stay must win over a late safe model result.
-            guard let id = request.assessmentID, let decision = decisions[id],
-                  decision.receipt.request.reason == "checking" else { return expired(request) }
-            decisions.removeValue(forKey: id)
-            return response(request, receipt: decision.receipt, elapsed: 0, actionState: decision.state.rawValue)
-        }
-        if request.type == "decision" {
-            guard let id = request.assessmentID, let decision = decisions[id] else { return expired(request) }
-            if decision.state != .pending { decisions.removeValue(forKey: id) }
-            return response(request, receipt: decision.receipt, elapsed: 0, actionState: decision.state.rawValue)
+            return response(request, receipt: display, elapsed: 0)
         }
         if request.type == "cancel" {
             guard let id = request.assessmentID else { return expired(request) }
+            rememberCancellation(id)
+            receipts.removeValue(forKey: id)
+            highFindings.removeValue(forKey: id)
             if let check = activeChecks[id] {
                 // Cancelling a document also releases queued scheduler work
                 // and its HTTP request. It never dismisses a native warning
                 // or turns an unfinished assessment into permission to act.
-                rememberCancellation(id)
                 check.cancel()
-                return BrowserResponse(id: request.id, ok: true, decision: "review", riskLevel: "unknown",
-                    summary: "This browser check was cancelled.", guidance: "No browser action was cleared.", actionState: "stay")
             }
-            if let receipt = receipts.removeValue(forKey: id) {
-                return response(request, receipt: receipt, elapsed: 0, actionState: "stay")
-            }
-            guard var decision = decisions[id] else {
-                rememberCancellation(id)
-                return expired(request)
-            }
-            // An explicit browser cancellation revokes an unread choice. A
-            // native UI dismissal uses resolve(false), which cannot do this.
-            decision.state = .stay; decisions[id] = decision
-            return response(request, receipt: decision.receipt, elapsed: 0, actionState: "stay")
+            return BrowserResponse(id: request.id, ok: true, decision: "review", riskLevel: "unknown",
+                summary: "This browser check was cancelled.", guidance: "No browser action was cleared.")
         }
         if request.type == "present" {
-            guard let id = request.assessmentID, let receipt = receipts.removeValue(forKey: id) else {
+            guard let id = request.assessmentID, presentedIDs[id] == nil,
+                  let receipt = receipts[id], receipt.request.purpose == nil,
+                  receipt.request.action == nil || receipt.request.action?.kind == "page" else {
                 return expired(request)
             }
-            if receipt.isAction {
-                decisions[id] = PendingDecision(receipt: receipt, date: now(), state: .pending)
-                boundDecisions()
-            }
+            receipts.removeValue(forKey: id)
+            rememberPresentation(id)
             guard onPresent(receipt.request, receipt.verdict, receipt.snapshot) else {
-                decisions.removeValue(forKey: id)
+                presentedIDs.removeValue(forKey: id)
                 return expired(request)
             }
-            return response(request, receipt: receipt, elapsed: 0, actionState: receipt.isAction ? "pending" : nil)
+            return response(request, receipt: receipt, elapsed: 0)
         }
         guard let page = request.page else { return .failure(id: request.id, mode: request.mode, message: "The browser request has no page evidence.") }
         if request.type == "assess", cancelledChecks[request.id] != nil {
-            return .failure(id: request.id, mode: request.mode, message: "This browser check was cancelled before it started. No action was cleared.", actionState: "stay")
+            return .failure(id: request.id, mode: request.mode, message: "This browser check was cancelled before it started. No action was cleared.")
         }
-        // Never replace another request's receipt, decision or in-flight ID.
-        guard !activeIDs.contains(request.id), receipts[request.id] == nil, decisions[request.id] == nil else {
+        // Never replace another request's receipt, finding or in-flight ID.
+        guard !activeIDs.contains(request.id), receipts[request.id] == nil,
+              highFindings[request.id] == nil, presentedIDs[request.id] == nil else {
             return .failure(id: request.id, mode: request.mode, message: "A check with this identifier already exists.")
         }
-        if request.type == "notice" { return notice(request, page: page) }
+        if request.type == "notice" { return notice(request) }
         guard modelReady() else {
-            return rememberFailure(request, page: page, message: "The local model is not ready. Keep this action paused and try again when Muse is ready.")
+            return rememberFailure(request, message: "The local model is not ready. Retry this check when Muse is ready.")
         }
         guard activeIDs.count < 6 else {
-            return rememberFailure(request, page: page, message: "The local queue is full. This action has not been cleared; try again.")
+            return rememberFailure(request, message: "The local queue is full. This content has not been assessed; retry shortly.")
         }
         let snapshot = Self.snapshot(for: request, page: page)
         guard !isDenied(snapshot) else {
-            return rememberFailure(request, page: page, message: "This page matches your native privacy deny list and was not analyzed.")
+            return rememberFailure(request, message: "This page matches your native privacy deny list and was not analyzed.")
         }
         activeIDs.insert(request.id)
         defer { activeIDs.remove(request.id); activeChecks.removeValue(forKey: request.id) }
@@ -224,15 +170,15 @@ final class BrowserAssessmentCoordinator {
                 }
             }
             completedCount += 1
-            return response(request, receipt: receipt, elapsed: now().timeIntervalSince(start))
+            return recordAssessment(request, response: response(request, receipt: receipt, elapsed: now().timeIntervalSince(start)))
         } catch {
             if check.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
                 // No receipt/high finding, completion counter or last-result
                 // diagnostic is created for obsolete, cancelled evidence.
                 return .failure(id: request.id, mode: request.mode,
-                    message: "This scan was cancelled or superseded. No browser action was cleared.", actionState: "stay")
+                    message: "This scan was cancelled or superseded. No browser action was cleared.")
             }
-            return rememberFailure(request, page: page, message: error.localizedDescription)
+            return rememberFailure(request, message: error.localizedDescription)
         }
     }
 
@@ -242,46 +188,42 @@ final class BrowserAssessmentCoordinator {
             // but must not cancel an equally important ongoing user chat.
             return request.purpose == "intent" && request.action?.kind == "submit" && request.action?.sensitive == true ? .interactive : .background
         }
-        return request.action?.kind == "link" || request.action?.kind == "submit" ? .browserAction : .interactive
+        return .interactive
     }
 
-    private func notice(_ request: BrowserRequest, page: BrowserRequest.Page) -> BrowserResponse {
+    private func notice(_ request: BrowserRequest) -> BrowserResponse {
         let summary: String, guidance: String
         switch request.reason {
-        case "checking":
-            let verdict = RiskVerdict(riskLevel: .unknown,
-                summary: "I’ve paused this action while I check the page and destination.",
-                guidance: "Checking locally on this Mac.", categories: ["browser_checking"])
-            return response(request, receipt: remember(request, verdict: verdict), elapsed: 0)
         case "changed":
-            summary = "The page changed before this action could be checked."
-            guidance = "Stay here and choose the action again on the current page."
-        case "unsupported":
-            summary = "Muse cannot safely resume this browser action."
-            guidance = "This action stays paused. Use a normal link or form on the current page."
-        case "open_failed":
-            summary = "Chrome could not open the checked destination."
-            guidance = "Stay here and try opening the destination again."
+            summary = "The page changed before its check completed."
+            guidance = "Check the currently visible page again. No browser action was cleared."
         default:
             summary = "Muse could not finish this browser check."
-            guidance = "This action has not been cleared. Stay here, or continue once after reviewing it yourself."
+            guidance = "No assessment is available. Check the connection and try again."
         }
         let verdict = RiskVerdict(riskLevel: .unknown, summary: summary, guidance: guidance, categories: ["browser_"+(request.reason ?? "unavailable")])
-        let override = request.reason == "unavailable" ? "review" : "block"
-        let receipt = remember(request, verdict: verdict, error: guidance, decisionOverride: override)
+        let receipt = remember(request, verdict: verdict, error: guidance)
         return response(request, receipt: receipt, elapsed: 0)
     }
-    private func rememberFailure(_ request: BrowserRequest, page: BrowserRequest.Page, message: String) -> BrowserResponse {
-        let verdict = RiskVerdict(riskLevel: .unknown, summary: "Muse could not check this action.", guidance: message, categories: ["unassessed"])
+    private func rememberFailure(_ request: BrowserRequest, message: String) -> BrowserResponse {
+        let verdict = RiskVerdict(riskLevel: .unknown, summary: "Muse could not complete this check.", guidance: message, categories: ["unassessed"])
         let receipt = remember(request, verdict: verdict, error: message)
-        return response(request, receipt: receipt, elapsed: 0)
+        return recordAssessment(request, response: response(request, receipt: receipt, elapsed: 0))
     }
-    private func remember(_ request: BrowserRequest, verdict: RiskVerdict, error: String? = nil, decisionOverride: String? = nil) -> Receipt {
+    private func recordAssessment(_ request: BrowserRequest, response: BrowserResponse) -> BrowserResponse {
+        if request.type == "assess" {
+            lastAssessment = BrowserResponse.AssessmentMetadata(id: request.id,
+                kind: request.action?.kind ?? "page", riskLevel: response.riskLevel,
+                ok: response.ok, completedAt: Int64(now().timeIntervalSince1970 * 1_000))
+        }
+        return response
+    }
+    private func remember(_ request: BrowserRequest, verdict: RiskVerdict, error: String? = nil) -> Receipt {
         let metadata = BrowserRequest(id: request.id, type: request.type, mode: request.mode,
             page: request.page.map { BrowserRequest.Page(url: $0.url, title: $0.title, text: "") }, action: request.action, reason: request.reason, purpose: request.purpose)
         let receipt = Receipt(request: metadata, verdict: verdict,
             snapshot: ScreenSnapshot(appName: "Google Chrome", windowTitle: request.page?.title, text: ""),
-            date: now(), error: error, decisionOverride: decisionOverride)
+            date: now(), error: error)
         receipts[request.id] = receipt
         if receipts.count > 64, let oldest = receipts.min(by: { $0.value.date < $1.value.date })?.key { receipts.removeValue(forKey: oldest) }
         return receipt
@@ -290,7 +232,7 @@ final class BrowserAssessmentCoordinator {
         let date = now()
         receipts = receipts.filter { date.timeIntervalSince($0.value.date) < 15 }
         highFindings = highFindings.filter { date.timeIntervalSince($0.value.date) < 60 }
-        decisions = decisions.filter { date.timeIntervalSince($0.value.date) < 120 }
+        presentedIDs = presentedIDs.filter { date.timeIntervalSince($0.value) < 120 }
         cancelledChecks = cancelledChecks.filter { date.timeIntervalSince($0.value) < 120 }
     }
     private func rememberCancellation(_ id: String) {
@@ -299,11 +241,12 @@ final class BrowserAssessmentCoordinator {
             cancelledChecks.removeValue(forKey: oldest)
         }
     }
-    private func boundDecisions() {
-        if decisions.count > 64, let oldest = decisions.min(by: { $0.value.date < $1.value.date })?.key { decisions.removeValue(forKey: oldest) }
+    private func rememberPresentation(_ id: String) {
+        presentedIDs[id] = now()
+        if presentedIDs.count > 64, let oldest = presentedIDs.min(by: { $0.value < $1.value })?.key { presentedIDs.removeValue(forKey: oldest) }
     }
     private func expired(_ request: BrowserRequest) -> BrowserResponse {
-        .failure(id: request.id, mode: request.mode, message: "That browser action has expired. Choose the action again on the current page.", actionState: "expired")
+        .failure(id: request.id, mode: request.mode, message: "That browser finding has expired. Check the current page again.")
     }
     static func snapshot(for request: BrowserRequest, page: BrowserRequest.Page) -> ScreenSnapshot {
         var evidence: [String: Any] = ["page_url": page.url, "page_title": page.title,
@@ -323,13 +266,13 @@ final class BrowserAssessmentCoordinator {
         case .medium, .unknown: return "review"
         }
     }
-    private func response(_ request: BrowserRequest, receipt: Receipt, elapsed: TimeInterval, actionState: String? = nil) -> BrowserResponse {
+    private func response(_ request: BrowserRequest, receipt: Receipt, elapsed: TimeInterval) -> BrowserResponse {
         BrowserResponse(id: request.id, ok: receipt.error == nil, decision: receipt.decision, riskLevel: receipt.verdict.riskLevel.rawValue,
             summary: receipt.verdict.summary, guidance: receipt.verdict.guidance, categories: receipt.verdict.categories,
-            mode: receipt.request.mode, durationMS: Int(max(0, elapsed) * 1_000), error: receipt.error, actionState: actionState)
+            mode: receipt.request.mode, durationMS: Int(max(0, elapsed) * 1_000), error: receipt.error)
     }
     enum BrowserCheckError: LocalizedError {
         case timedOut
-        var errorDescription: String? { "The local check timed out. Keep this action paused and retry, or review it yourself." }
+        var errorDescription: String? { "The local check timed out. This content has not been assessed. Retry the check." }
     }
 }

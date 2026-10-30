@@ -30,7 +30,13 @@ private final class BrowserBridgeIO: @unchecked Sendable {
     private var listener: DispatchSourceRead?
     private var socketFD: Int32 = -1
     private var lockFD: Int32 = -1
-    private var clients = Set<Int32>()
+    private var clients: [Int32: UUID] = [:]
+    private struct PendingRequest {
+        let owner: UUID
+        let task: Task<Void, Never>
+        let monitor: DispatchSourceTimer
+    }
+    private var requests: [Int32: PendingRequest] = [:]
     private var stopped = false
     private let socketURL: URL
     private let lockURL: URL
@@ -85,12 +91,15 @@ private final class BrowserBridgeIO: @unchecked Sendable {
         lock.lock()
         guard !stopped else { lock.unlock(); return }
         stopped = true
-        let descriptors = clients
+        let pending = Array(requests.values)
         let listening = socketFD; socketFD = -1
+        // Keep descriptor ownership locked until shutdown, so a finishing
+        // request cannot close and reuse a descriptor underneath this loop.
+        for fd in clients.keys { shutdown(fd, SHUT_RDWR) }
         lock.unlock()
         listener?.cancel(); listener = nil
         if listening >= 0 { shutdown(listening, SHUT_RDWR); close(listening) }
-        for fd in descriptors { shutdown(fd, SHUT_RDWR) }
+        for request in pending { request.monitor.cancel(); request.task.cancel() }
         unlink(socketURL.path)
         if lockFD >= 0 { flock(lockFD, LOCK_UN); close(lockFD); lockFD = -1 }
     }
@@ -102,7 +111,8 @@ private final class BrowserBridgeIO: @unchecked Sendable {
             let fd = accept(socketFD, nil, nil)
             guard fd >= 0 else { lock.unlock(); return }
             guard clients.count < 8 else { lock.unlock(); close(fd); continue }
-            clients.insert(fd)
+            let owner = UUID()
+            clients[fd] = owner
             lock.unlock()
             _ = fcntl(fd, F_SETFD, FD_CLOEXEC)
             _ = fcntl(fd, F_SETFL, 0)
@@ -111,32 +121,50 @@ private final class BrowserBridgeIO: @unchecked Sendable {
             setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, socklen_t(MemoryLayout<timeval>.size))
             var noSignal: Int32 = 1
             setsockopt(fd, SOL_SOCKET, SO_NOSIGPIPE, &noSignal, socklen_t(MemoryLayout<Int32>.size))
-            queue.async { [self] in receive(fd) }
+            queue.async { [self] in receive(fd, owner: owner) }
         }
     }
-    private func receive(_ fd: Int32) {
+    private func receive(_ fd: Int32, owner: UUID) {
         var id = "", mode = "text"
         do {
-            let header = try readExactly(fd, count: 4)
+            let header = try readExactly(fd, count: 4, owner: owner)
             let count = header.withUnsafeBytes { Int(UInt32(littleEndian: $0.loadUnaligned(as: UInt32.self))) }
             guard count > 0, count <= BrowserRequest.maximumFrameBytes else { throw BrowserProtocolError.frameTooLarge }
-            let payload = try readExactly(fd, count: count)
+            let payload = try readExactly(fd, count: count, owner: owner)
             let raw = try JSONDecoder().decode(BrowserRequest.self, from: payload)
             id = String(raw.id.prefix(128)); mode = raw.mode == "vision" ? "vision" : "text"
             let request = try raw.validated()
-            Task { [self] in
-                guard self.contains(fd) else { self.finish(fd); return }
+            let task = Task { [self] in
+                guard self.contains(fd, owner: owner) else { self.finish(fd, owner: owner); return }
                 let result = await self.handler(request)
-                self.queue.async { [self] in reply(fd, result) }
+                self.queue.async { [self] in reply(fd, result, owner: owner) }
             }
-        } catch { reply(fd, .failure(id: id, mode: mode, message: error.localizedDescription)) }
+            let monitor = DispatchSource.makeTimerSource(queue: queue)
+            monitor.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100), leeway: .milliseconds(25))
+            monitor.setEventHandler { [weak self] in self?.checkClient(fd, owner: owner) }
+            lock.lock()
+            let current = !stopped && clients[fd] == owner
+            if current { requests[fd] = PendingRequest(owner: owner, task: task, monitor: monitor) }
+            lock.unlock()
+            if !current { monitor.cancel(); task.cancel() }
+            monitor.resume()
+        } catch { reply(fd, .failure(id: id, mode: mode, message: error.localizedDescription), owner: owner) }
     }
-    private func contains(_ fd: Int32) -> Bool {
-        lock.lock(); defer { lock.unlock() }; return !stopped && clients.contains(fd)
+    private func contains(_ fd: Int32, owner: UUID) -> Bool {
+        lock.lock(); defer { lock.unlock() }; return !stopped && clients[fd] == owner
     }
-    private func reply(_ fd: Int32, _ response: BrowserResponse) {
-        defer { finish(fd) }
-        guard contains(fd) else { return }
+    private func checkClient(_ fd: Int32, owner: UUID) {
+        lock.lock()
+        guard !stopped, clients[fd] == owner, let request = requests[fd], request.owner == owner else { lock.unlock(); return }
+        // No bytes are sent. A client may half-close its write side and still
+        // await a response; only losing its read side cancels the handler.
+        let disconnected = Darwin.send(fd, nil, 0, MSG_DONTWAIT) < 0 && ![EINTR, EAGAIN, EWOULDBLOCK].contains(errno)
+        lock.unlock()
+        if disconnected { request.task.cancel() }
+    }
+    private func reply(_ fd: Int32, _ response: BrowserResponse, owner: UUID) {
+        defer { finish(fd, owner: owner) }
+        guard contains(fd, owner: owner) else { return }
         guard let body = try? JSONEncoder().encode(response), body.count <= 1_048_576 else { return }
         var count = UInt32(body.count).littleEndian
         let frame = withUnsafeBytes(of: &count) { Data($0) } + body
@@ -148,18 +176,21 @@ private final class BrowserBridgeIO: @unchecked Sendable {
             }
         }
     }
-    private func finish(_ fd: Int32) {
+    private func finish(_ fd: Int32, owner: UUID) {
         lock.lock()
-        let owned = clients.remove(fd) != nil
+        let owned = clients[fd] == owner
+        let pending = owned ? requests.removeValue(forKey: fd) : nil
+        if owned { clients.removeValue(forKey: fd) }
         lock.unlock()
+        pending?.monitor.cancel()
         if owned { shutdown(fd, SHUT_RDWR); close(fd) }
     }
-    private func readExactly(_ fd: Int32, count: Int) throws -> Data {
+    private func readExactly(_ fd: Int32, count: Int, owner: UUID) throws -> Data {
         var result = Data(count: count)
         try result.withUnsafeMutableBytes { raw in
             var offset = 0
             while offset < count {
-                guard contains(fd) else { throw BrowserProtocolError.unavailable }
+                guard contains(fd, owner: owner) else { throw BrowserProtocolError.unavailable }
                 let read = Darwin.read(fd, raw.baseAddress!.advanced(by: offset), count-offset)
                 if read < 0 && errno == EINTR { continue }
                 guard read > 0 else { throw BrowserProtocolError.truncatedFrame }

@@ -12,7 +12,6 @@ final class GuardianDesktopPresentation: ObservableObject {
 struct GuardianDesktopView: View {
     @ObservedObject var renderer = UnrealCharacterRenderer.shared
     @ObservedObject var presentation: GuardianDesktopPresentation
-    @ObservedObject var viewModel: PetViewModel
     let dragActions: GuardianDragActions
 
     var body: some View {
