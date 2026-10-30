@@ -76,6 +76,7 @@ final class PetOverlayController {
         messageHost.autoresizingMask = [.width,.height]
         message.contentView = messageHost
         message.title = "Muse Guard Chat"
+        message.identifier = NSUserInterfaceItemIdentifier(WatchedApplicationPolicy.chatWindowIdentifier)
         messagePanel = message
         NotificationCenter.default.publisher(for:NSApplication.didChangeScreenParametersNotification).sink { [weak self] _ in
             guard let self, !self.away else { return }

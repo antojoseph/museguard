@@ -20,7 +20,7 @@
   }
   function failure(message, id = '') {
     return { version: 1, id, ok: false, decision: 'review', risk_level: 'unknown',
-      summary: 'Muse could not finish this check.', guidance: message || 'This page has not been assessed. You can try a manual check.',
+      summary: 'Muse could not finish this check.', guidance: message || 'This page has not been assessed. Open Muse Guard and check that monitoring is on.',
       categories: [], mode: 'text', duration_ms: 0, error: message || 'unavailable' };
   }
   function verdict(value) {

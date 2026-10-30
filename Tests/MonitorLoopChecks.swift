@@ -195,6 +195,36 @@ private enum FixtureError: Error { case failed }
         high.acceptsWarning = true; await high.sample(); await high.sample()
         assert(high.analyzeCount == 3 && high.loop.diagnostics.lastOutcome == "unchanged")
 
+        // Returning to an acknowledged danger is a new episode when different
+        // content was actually observed, even if that transition's model work
+        // became stale before it could finish.
+        let repeated = MonitorFixture(); repeated.risk = .high
+        let danger = "Permanently delete every backup and production record without a recovery copy."
+        repeated.text(danger); await repeated.sample(); await repeated.sample()
+        assert(repeated.analyzeCount == 1 && repeated.outputs.count == 1)
+        repeated.text("This is a neutral reference document explaining how to browse safely and preserve work.")
+        repeated.blockAnalysis = true
+        let neutralTask = Task { await repeated.sample() }
+        while repeated.analyzeGate == nil { await Task.yield() }
+        repeated.text(danger); repeated.release(); await neutralTask.value
+        assert(repeated.outputs.count == 1, "A stale transition must not warn using obsolete content.")
+        repeated.blockAnalysis = false; await repeated.sample(); await repeated.sample()
+        assert(repeated.analyzeCount == 3 && repeated.outputs.count == 2,
+            "The returning danger must warn again, then remain quiet while unchanged.")
+
+        // Reading the replacement content during post-inference validation
+        // also invalidates old receipts, even before a new sample can begin.
+        let intermediate = MonitorFixture(); intermediate.risk = .high
+        intermediate.text(danger); await intermediate.sample()
+        intermediate.text("Different risky action: transfer every savings balance to an unknown recipient immediately.")
+        intermediate.blockAnalysis = true
+        let intermediateTask = Task { await intermediate.sample() }
+        while intermediate.analyzeGate == nil { await Task.yield() }
+        intermediate.text("A neutral screen was observed during validation and no risky action is currently visible.")
+        intermediate.release(); await intermediateTask.value
+        intermediate.text(danger); intermediate.blockAnalysis = false; await intermediate.sample()
+        assert(intermediate.analyzeCount == 3 && intermediate.outputs.count == 2)
+
         // A visual cooldown does not delay fresh meaningful text in the same
         // window, even if a previous image attempt failed.
         let visualThenText = MonitorFixture(); visualThenText.visual(); visualThenText.fail = true
@@ -234,6 +264,23 @@ private enum FixtureError: Error { case failed }
         assert(switched.outputs == [false], "The cancelled source cannot deliver a late warning.")
         switched.loop.stop()
 
+        // The shared watched-app policy keeps the external source current
+        // when Muse chat takes focus. Its own activation must not cancel a
+        // pending high-risk assessment or erase its delivery receipt.
+        let chatFocus = MonitorFixture(); chatFocus.text(); chatFocus.risk = .high; chatFocus.blockAnalysis = true
+        chatFocus.loop.start(model: "fixture", intervalSeconds: 30, onStatus: { _ in },
+            onVerdict: { _, _, image in chatFocus.outputs.append(image); return true }, onError: { _, _ in chatFocus.errors += 1 })
+        while chatFocus.analyzeGate == nil { await Task.yield() }
+        chatFocus.loop.applicationActivated(processID: ProcessInfo.processInfo.processIdentifier)
+        chatFocus.release()
+        for _ in 0..<1_000 {
+            if !chatFocus.outputs.isEmpty { break }
+            await Task.yield()
+        }
+        assert(chatFocus.analyzeCount == 1 && chatFocus.outputs == [false] && chatFocus.errors == 0,
+            "Chat handoff must preserve the watched app's pending warning.")
+        chatFocus.loop.stop()
+
         // The bounded cache preserves separate windows and evicts old sources.
         var cache = MonitorEvidenceCache(maximumSources: 2)
         let a = text.source, b = ScreenSourceIdentity(processID: 2), c = ScreenSourceIdentity(processID: 3)
@@ -241,6 +288,14 @@ private enum FixtureError: Error { case failed }
         cache.rememberText(2, source: b, now: Date(timeIntervalSince1970: 2))
         cache.rememberText(3, source: c, now: Date(timeIntervalSince1970: 3))
         assert(!cache.containsText(1, source: a) && cache.containsText(2, source: b) && cache.containsText(3, source: c))
+        var episodes = MonitorEvidenceCache()
+        episodes.rememberText(1, source: a, now: Date())
+        episodes.observeText(1, source: a)
+        assert(episodes.containsText(1, source: a))
+        let newTitle = ScreenSourceIdentity(processID: a.processID, bundleID: a.bundleID,
+            windowID: a.windowID, windowTitle: "Different document", appName: a.appName)
+        episodes.observeText(2, source: newTitle)
+        assert(!episodes.containsText(1, source: a), "A title change in the same physical window ends its previous episode.")
         cache.beginVisualAttempt(source: a, now: Date(timeIntervalSince1970: 10))
         assert(cache.visualCoolingDown(source: a, now: Date(timeIntervalSince1970: 20)))
         assert(!cache.containsText(99, source: a) && !cache.containsImage(99, text: 99, source: a),

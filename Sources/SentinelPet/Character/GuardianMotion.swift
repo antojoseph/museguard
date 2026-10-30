@@ -8,9 +8,11 @@ struct GuardianIntervention: Identifiable {
 /// Target only the active app's current window. A delayed verdict must not send
 /// the character toward an unrelated window after the user switches apps.
 enum GuardianTarget {
-    static func verifiedWindowCenter(windowID: CGWindowID, processID: pid_t) -> CGPoint? {
+    static func verifiedWindowCenter(windowID: CGWindowID, processID: pid_t, watchedProcessID: pid_t? = nil) -> CGPoint? {
+        // A caller may supply its shared watched-source policy result when
+        // Muse's own chat panel is temporarily key over the watched app.
         guard windowID != kCGNullWindowID,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == processID else { return nil }
+              (watchedProcessID ?? NSWorkspace.shared.frontmostApplication?.processIdentifier) == processID else { return nil }
         let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly, .excludeDesktopElements], kCGNullWindowID)
             as? [[String: Any]] ?? []
         return windowCenter(windowID: windowID, processID: processID, windows: windows,

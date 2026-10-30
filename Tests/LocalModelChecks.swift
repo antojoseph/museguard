@@ -23,7 +23,9 @@ import Foundation
             if scenario == .phishing {
                 let context = RiskReportChatContext(sourceLabel: "Mock lab", appName: snapshot.appName, windowTitle: snapshot.windowTitle, riskLevel: verdict.riskLevel, summary: verdict.summary, guidance: verdict.guidance, categories: verdict.categories)
                 let answer = try await analyzer.answerQuestion("Why should I stop?", context: context, model: LocalModelConfiguration.model)
-                assert(!answer.isEmpty)
+                let reason = answer.lowercased()
+                assert(["password", "lookalike", "phishing", "microsoft-account-verify"].contains(where: reason.contains),
+                    "A warning follow-up must explain the report’s concrete risk, not merely return a nonempty refusal.")
                 print("PASS follow-up: \(answer)")
                 results.append(["scenario": "follow-up", "answer": answer, "passed": true])
             }

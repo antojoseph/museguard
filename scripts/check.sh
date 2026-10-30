@@ -29,6 +29,8 @@ xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/guardian-a
 shared=("$sources/Risk/LocalRiskAnalyzer.swift" "$sources/Risk/LocalInferenceScheduler.swift" "$sources/Risk/LocalModelConfiguration.swift" "$sources/Risk/RiskVerdict.swift" "$sources/Accessibility/ScreenReader.swift" "$sources/Accessibility/ContextEvidence.swift" "$sources/Accessibility/AccessibilityPermissionController.swift")
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/context-evidence-checks Tests/ContextEvidenceChecks.swift "$sources/Accessibility/ContextEvidence.swift"
 ./build/context-evidence-checks
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/watched-application-policy-checks Tests/WatchedApplicationPolicyChecks.swift "$sources/Context/WatchedApplicationPolicy.swift"
+./build/watched-application-policy-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/chat-capture-policy-checks Tests/ChatCapturePolicyChecks.swift "$sources/Context/ChatCapturePolicy.swift" "$sources/Accessibility/ScreenReader.swift" "$sources/Accessibility/ContextEvidence.swift" "$sources/Accessibility/AccessibilityPermissionController.swift"
 ./build/chat-capture-policy-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/monitor-loop-checks Tests/MonitorLoopChecks.swift "${shared[@]}" "$sources/Monitor/MonitorLoop.swift" "$sources/Monitor/MonitorEvidenceCache.swift" "$sources/Media/ScreenshotCapture.swift" "$sources/Media/ScreenCapturePermissionController.swift"

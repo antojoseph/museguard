@@ -33,7 +33,8 @@ import Foundation
         let analyzer = LocalRiskAnalyzer()
         var results: [[String: Any]] = []
         var failures = 0
-        for (name, text, expectsHigh) in cases {
+        let selectedCases = CommandLine.arguments.contains("--warning-only") ? [] : cases
+        for (name, text, expectsHigh) in selectedCases {
             let start = Date()
             let snapshot = ScreenSnapshot(appName: "Muse Context Fixture", windowTitle: name,
                 text: text, evidence: .visibleText(text))
@@ -46,6 +47,18 @@ import Foundation
             print("\(passed ? "PASS" : "FAIL") \(name): \(verdict.riskLevel.rawValue) · \(verdict.summary)")
             fflush(stdout)
         }
+        let report = RiskReportChatContext(sourceLabel: "Earlier desktop warning", appName: "Muse Context Fixture",
+            windowTitle: "Harbor wallet recovery", riskLevel: .high,
+            summary: "A third-party agent requested the entire 12-word wallet seed phrase and one-time code on a different recovery domain.",
+            guidance: "Do not share the seed phrase or code; verify support through the official account site.", categories: ["credential_theft"])
+        let explanation = try await analyzer.answerQuestion("Why should I stop?", context: report,
+            model: LocalModelConfiguration.model, directAnswer: true)
+        let lower = explanation.lowercased()
+        let explained = lower.contains("seed") && !lower.contains("untrusted") &&
+            (lower.contains("warning") || lower.contains("earlier") || lower.contains("report"))
+        if !explained { failures += 1 }
+        results.append(["case": "explain earlier warning without fresh screen", "passed": explained, "answer": explanation])
+        print("\(explained ? "PASS" : "FAIL") explain earlier warning: \(explanation)")
         try JSONSerialization.data(withJSONObject: results, options: [.prettyPrinted, .sortedKeys])
             .write(to: URL(fileURLWithPath: "build/desktop-risk-model-results.json"))
         if failures > 0 { exit(1) }

@@ -79,7 +79,8 @@ final class SentinelPetRuntime: ObservableObject {
     private lazy var monitorLoop = MonitorLoop(screenReader: screenReader, riskAnalyzer: riskAnalyzer,
         screenshotCapture: screenshotCapture,
         chromeCoverage: { [weak self] source in await self?.hasFreshBrowserCoverage(source) ?? false },
-        ignoredProcess: { UnrealCharacterRenderer.shared.ownsProcess($0) })
+        ignoredProcess: { UnrealCharacterRenderer.shared.ownsProcess($0) },
+        watchedApplication: { [weak self] in self?.watchedApplication() })
     private let settingsWindowController = SettingsWindowController()
     private let analysisLogsWindowController = AnalysisLogsWindowController()
     private var chatTask: Task<Void, Never>?
@@ -94,11 +95,19 @@ final class SentinelPetRuntime: ObservableObject {
     private var acknowledgmentTarget: CGPoint?
     private var inferenceActivityTask: Task<Void, Never>?
     private var lastExternalApplication: NSRunningApplication?
+    private var menuTrackingDepth = 0
     private var chatRequestID: UUID?
     private var screenChatHistory = ScreenChatHistory()
     private lazy var browserProtection = GuardianProtectionActivity { [weak self] _ in self?.refreshOnDutyAppearance() }
     private init() {
         rememberChatApplication()
+        NotificationCenter.default.publisher(for: NSMenu.didBeginTrackingNotification).sink { [weak self] _ in
+            self?.menuTrackingDepth += 1
+        }.store(in: &browserSubscriptions)
+        NotificationCenter.default.publisher(for: NSMenu.didEndTrackingNotification).sink { [weak self] _ in
+            guard let self else { return }
+            self.menuTrackingDepth = max(0, self.menuTrackingDepth - 1)
+        }.store(in: &browserSubscriptions)
         NSWorkspace.shared.notificationCenter.publisher(for:NSWorkspace.didActivateApplicationNotification)
             .compactMap { $0.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication }
             .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && $0.activationPolicy == .regular }
@@ -289,7 +298,7 @@ final class SentinelPetRuntime: ObservableObject {
             (petViewModel.mood == .alert && petViewModel.message != nil)
         let explanation = explainsWarning ? latestChatContext.map { "Why I flagged it:\n\($0.summary)\n\nWhat to do:\n\($0.guidance)" } : nil
         petViewModel.openChat(seedText: explanation)
-        petViewModel.chatContextLabel = chatApplication().map { "Current app · \($0.localizedName ?? "selected app")" } ?? "Context refreshes when you ask"
+        petViewModel.chatContextLabel = chatApplication().map { "Chat context · \($0.localizedName ?? "selected app")" } ?? "Chat context refreshes when you ask"
     }
     func dismissPetBubble() {
         cancelChat()
@@ -403,9 +412,21 @@ final class SentinelPetRuntime: ObservableObject {
             lastExternalApplication = app
         }
     }
-    private func chatApplication() -> NSRunningApplication? {
-        if let app = NSWorkspace.shared.frontmostApplication, isContextApplication(app) { return app }
-        return lastExternalApplication.flatMap { $0.isTerminated ? nil : $0 }
+    private func chatApplication() -> NSRunningApplication? { watchedApplication() }
+    private func watchedApplication() -> NSRunningApplication? {
+        let frontmost = NSWorkspace.shared.frontmostApplication
+        let previous = lastExternalApplication.flatMap { $0.isTerminated ? nil : $0 }
+        let ignored = Set([frontmost, previous].compactMap { app -> Int32? in
+            guard let app, UnrealCharacterRenderer.shared.ownsProcess(app.processIdentifier) else { return nil }
+            return app.processIdentifier
+        })
+        let processID = WatchedApplicationPolicy.processToWatch(frontmost: frontmost?.processIdentifier,
+            ownProcess: ProcessInfo.processInfo.processIdentifier, chatOpen: petViewModel.isChatOpen,
+            keyWindowIdentifier: NSApp.keyWindow?.identifier?.rawValue, lastExternal: previous?.processIdentifier,
+            ignoredProcesses: ignored, menuTracking: menuTrackingDepth > 0)
+        if let frontmost, frontmost.processIdentifier == processID { return frontmost }
+        if let previous, previous.processIdentifier == processID { return previous }
+        return nil
     }
     private func isContextApplication(_ app: NSRunningApplication) -> Bool {
         app.processIdentifier != ProcessInfo.processInfo.processIdentifier && app.activationPolicy == .regular &&
@@ -414,6 +435,7 @@ final class SentinelPetRuntime: ObservableObject {
     private func isChrome(_ app: NSRunningApplication?) -> Bool { app?.bundleIdentifier?.hasPrefix("com.google.Chrome") == true }
     private func hasFreshBrowserCoverage(_ source: ScreenSourceIdentity) async -> Bool {
         guard !monitoringPaused, !monitoringControl.syncPending, monitoringControl.browserConnected,
+              NSWorkspace.shared.frontmostApplication?.processIdentifier == source.processID,
               browserProtection.isActive, source.bundleID?.hasPrefix("com.google.Chrome") == true else { return false }
         do {
             let fresh = try await browserChatContext.requestContext(timeout: 2)
@@ -556,6 +578,7 @@ final class SentinelPetRuntime: ObservableObject {
     @discardableResult
     private func presentVerdict(_ verdict: RiskVerdict, snapshot: ScreenSnapshot, target: CGPoint? = nil,
         acknowledgmentID: String? = nil, acknowledgmentContext context: String? = nil) -> Bool {
+        let watchedProcessID = watchedApplication()?.processIdentifier
         let key: String
         if let context { key = context }
         else {
@@ -592,7 +615,8 @@ final class SentinelPetRuntime: ObservableObject {
             acknowledgmentContext = key
             let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
             let verifiedTarget = snapshot.source.flatMap { source in
-                source.windowID.flatMap { GuardianTarget.verifiedWindowCenter(windowID: $0, processID: source.processID) }
+                source.windowID.flatMap { GuardianTarget.verifiedWindowCenter(windowID: $0, processID: source.processID,
+                    watchedProcessID: watchedProcessID) }
             }
             let point = target ?? verifiedTarget ?? GuardianTarget.activeWindowCenter(expectedAppName: snapshot.appName) ??
                 screen.map { CGPoint(x: $0.visibleFrame.midX, y: $0.visibleFrame.midY) }

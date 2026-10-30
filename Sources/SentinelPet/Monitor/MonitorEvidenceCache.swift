@@ -21,6 +21,17 @@ struct MonitorEvidenceCache {
         self.visualInterval = max(1, visualInterval)
     }
     mutating func removeAll() { entries.removeAll(); visualAttempts.removeAll() }
+    /// A newly observed document ends the previous assessment episode as soon
+    /// as it is read, not only after the replacement model job completes.
+    /// Otherwise A → B → A can reuse A forever when B was cancelled/stale.
+    mutating func observeText(_ fingerprint: Int, source: ScreenSourceIdentity) {
+        let obsolete = entries.keys.filter { existing in
+            guard existing.processID == source.processID, existing.bundleID == source.bundleID else { return false }
+            let sameWindow = existing.windowID == source.windowID || existing.windowID == nil || source.windowID == nil
+            return sameWindow && (existing != source || entries[existing]?.text != fingerprint)
+        }
+        for existing in obsolete { entries.removeValue(forKey: existing) }
+    }
     func containsText(_ fingerprint: Int, source: ScreenSourceIdentity) -> Bool { entries[source]?.text == fingerprint }
     func visualCoolingDown(source: ScreenSourceIdentity, now: Date) -> Bool {
         guard let date = visualAttempts[source] else { return false }

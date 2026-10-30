@@ -65,10 +65,12 @@ final class MonitorLoop {
 
     init(screenReader: ScreenReader, riskAnalyzer: LocalRiskAnalyzer, screenshotCapture: ScreenshotCapture,
          chromeCoverage: @escaping (ScreenSourceIdentity) async -> Bool = { _ in false },
-         ignoredProcess: @escaping (Int32) -> Bool = { _ in false }) {
+         ignoredProcess: @escaping (Int32) -> Bool = { _ in false },
+         watchedApplication: (() -> NSRunningApplication?)? = nil) {
+        let application = watchedApplication ?? { NSWorkspace.shared.frontmostApplication }
         dependencies = Dependencies(
             focusedSource: {
-                guard let app = NSWorkspace.shared.frontmostApplication else { throw ScreenReaderError.noFrontmostApplication }
+                guard let app = application() else { throw ScreenReaderError.ownAppIsFocused }
                 guard app.processIdentifier != ProcessInfo.processInfo.processIdentifier, !ignoredProcess(app.processIdentifier) else {
                     throw ScreenReaderError.ownAppIsFocused
                 }
@@ -83,7 +85,7 @@ final class MonitorLoop {
                 catch { return nil }
             },
             isCurrent: { source in
-                guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier == source.processID,
+                guard let app = application(), app.processIdentifier == source.processID,
                       !ignoredProcess(app.processIdentifier) else { return false }
                 return screenReader.sourceIdentity(for: app) == source
             },
@@ -195,6 +197,7 @@ final class MonitorLoop {
                 text: "No readable window text is available. Inspect only the supplied current-window image.", source: source)
             snapshot = evidence
             let textFingerprint = MonitorEvidenceCache.textFingerprint(evidence)
+            cache.observeText(textFingerprint, source: source)
             let needsImage = !evidence.evidence.hasMeaningfulText || evidence.evidence.needsVisualContext
             var image: CapturedScreenshot?
             if needsImage {
@@ -231,8 +234,12 @@ final class MonitorLoop {
             if readable != nil {
                 let latest = try await dependencies.readText(source)
                 guard valid(source, stamp: stamp), let latest,
-                      latest.source == nil || latest.source == source,
-                      MonitorEvidenceCache.textFingerprint(latest) == textFingerprint else {
+                      latest.source == nil || latest.source == source else {
+                    emit(.sourceChanged, stamp: stamp, callback: onStatus); return
+                }
+                let latestFingerprint = MonitorEvidenceCache.textFingerprint(latest)
+                cache.observeText(latestFingerprint, source: source)
+                guard latestFingerprint == textFingerprint else {
                     emit(.sourceChanged, stamp: stamp, callback: onStatus); return
                 }
             }
