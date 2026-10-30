@@ -14,7 +14,7 @@ final class AnalysisLogsWindowController {
 
         let hostingController = NSHostingController(rootView: AnalysisLogsView(runtime: runtime))
         let window = NSWindow(contentViewController: hostingController)
-        window.title = "Muse Guard Logs"
+        window.title = "Muse Guard Recent Activity"
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable]
         window.setContentSize(NSSize(width: 720, height: 560))
         window.center()

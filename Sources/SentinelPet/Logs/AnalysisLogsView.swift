@@ -7,153 +7,90 @@ struct AnalysisLogsView: View {
         VStack(alignment: .leading, spacing: 14) {
             HStack(alignment: .firstTextBaseline) {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("LLM Judging Logs")
-                        .font(.title2.weight(.semibold))
-                    Text("Session history of local Muse Glimmer verdicts and model errors. Raw screen text and screenshots are not stored here.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
+                    Text("Recent activity").font(.title2.weight(.semibold))
+                    Text("Checks and errors from this session. Screen text and screenshots are not saved in this list.")
+                        .font(.callout).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
-
                 Spacer()
-
-                Button("Clear") {
-                    runtime.clearAnalysisLogs()
-                }
-                .disabled(runtime.analysisLogs.isEmpty)
+                Button("Clear activity") { runtime.clearAnalysisLogs() }
+                    .disabled(runtime.analysisLogs.isEmpty)
             }
-
             Divider()
-
             if runtime.analysisLogs.isEmpty {
                 VStack(spacing: 8) {
-                    Image(systemName: "list.bullet.rectangle")
-                        .font(.system(size: 32))
-                        .foregroundStyle(.secondary)
-                    Text("No judgements yet")
-                        .font(.headline)
-                    Text("Run focused-window, screenshot, or monitoring analysis to populate this log.")
-                        .font(.callout)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    Image(systemName: "checklist").font(.system(size: 32)).foregroundStyle(.secondary)
+                    Text("No recent checks").font(.headline)
+                    Text("Automatic browser and desktop checks will appear here as they finish.")
+                        .font(.callout).foregroundStyle(.secondary)
+                }.frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 ScrollView {
                     LazyVStack(alignment: .leading, spacing: 10) {
                         ForEach(runtime.analysisLogs) { entry in
-                            AnalysisLogEntryView(entry: entry)
+                            ActivityEntryView(entry: entry)
                         }
-                    }
-                    .padding(.vertical, 2)
+                    }.padding(.vertical, 2)
                 }
             }
-        }
-        .padding(20)
-        .frame(minWidth: 640, minHeight: 460)
+        }.padding(20).frame(minWidth: 640, minHeight: 460)
     }
 }
 
-private struct AnalysisLogEntryView: View {
+private struct ActivityEntryView: View {
     let entry: AnalysisLogEntry
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 9) {
             HStack(alignment: .firstTextBaseline, spacing: 8) {
-                Label(entry.source.label, systemImage: entry.source.systemImage)
-                    .font(.headline)
-
-                if entry.includesScreenshot {
-                    Label("Image", systemImage: "photo")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(.secondary)
-                }
-
+                Label(sourceLabel, systemImage: entry.source.systemImage).font(.headline)
                 Spacer()
-
-                Text(entry.timestamp.formatted(date: .abbreviated, time: .standard))
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                Text(entry.timestamp.formatted(date: .omitted, time: .standard))
+                    .font(.caption).foregroundStyle(.secondary)
             }
-
-            Grid(alignment: .leading, horizontalSpacing: 10, verticalSpacing: 4) {
-                GridRow {
-                    Text("App")
-                        .foregroundStyle(.secondary)
-                    Text(entry.appName)
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(resultLabel).font(.subheadline.weight(.semibold))
+                    .foregroundStyle(entry.errorMessage != nil ? Color.secondary : Color.primary)
+                if let title = entry.windowTitle, !title.isEmpty {
+                    Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                 }
-
-                if let windowTitle = entry.windowTitle, !windowTitle.isEmpty {
-                    GridRow {
-                        Text("Window")
-                            .foregroundStyle(.secondary)
-                        Text(windowTitle)
+            }
+            Text(entry.errorMessage ?? entry.verdict?.summary ?? "Check completed.")
+                .font(.callout).textSelection(.enabled)
+            DisclosureGroup("Details") {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("App: \(entry.appName)")
+                    if let title = entry.windowTitle, !title.isEmpty { Text("Window: \(title)") }
+                    if let verdict = entry.verdict {
+                        Text("Assessment: \(verdict.riskLevel.rawValue)")
+                        if !verdict.guidance.isEmpty { Text(verdict.guidance) }
+                        if !verdict.categories.isEmpty { Text("Categories: \(verdict.categories.joined(separator: ", "))") }
                     }
-                }
-
-                GridRow {
-                    Text("Model")
-                        .foregroundStyle(.secondary)
-                    Text(entry.model)
-                        .font(.system(size: 11, design: .monospaced))
-                        .textSelection(.enabled)
-                }
-            }
-            .font(.caption)
-
-            if let verdict = entry.verdict {
-                HStack(spacing: 8) {
-                    Text(verdict.riskLevel.rawValue.uppercased())
-                        .font(.caption.weight(.bold))
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(riskColor(for: verdict.riskLevel).opacity(0.18))
-                        .foregroundStyle(riskColor(for: verdict.riskLevel))
-                        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-
-                    if !verdict.categories.isEmpty {
-                        Text(verdict.categories.joined(separator: ", "))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                    }
-                }
-
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(verdict.summary)
-                    Text(verdict.guidance)
-                        .foregroundStyle(.secondary)
-                }
-                .font(.callout)
-                .textSelection(.enabled)
-            }
-
-            if let errorMessage = entry.errorMessage {
-                Text(errorMessage)
-                    .font(.callout)
-                    .foregroundStyle(.red)
-                    .textSelection(.enabled)
-            }
+                    Text("Model: \(entry.model)").font(.system(.caption, design: .monospaced))
+                    if entry.includesScreenshot { Text("This check included an image.") }
+                }.font(.caption).foregroundStyle(.secondary)
+                    .textSelection(.enabled).padding(.top, 6)
+            }.font(.caption)
         }
-        .padding(12)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor))
-        .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
-                .strokeBorder(Color(nsColor: .separatorColor), lineWidth: 1)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+        .padding(12).frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    private func riskColor(for riskLevel: RiskLevel) -> Color {
-        switch riskLevel {
-        case .safe:
-            return .green
-        case .low:
-            return .teal
-        case .medium, .unknown:
-            return .orange
-        case .high:
-            return .red
+    private var sourceLabel: String {
+        switch entry.source {
+        case .browserText: return "Browser check"
+        case .monitorScreenshot: return "Desktop check"
+        #if MUSE_DEVELOPMENT
+        case .mock: return "Example check"
+        #endif
+        }
+    }
+    private var resultLabel: String {
+        guard entry.errorMessage == nil, let verdict = entry.verdict else { return "Check unavailable" }
+        switch verdict.riskLevel {
+        case .high: return "Concern found"
+        case .unknown: return "Could not assess"
+        case .safe, .low, .medium: return "No high-risk concern found"
         }
     }
 }

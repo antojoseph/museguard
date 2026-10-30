@@ -199,12 +199,10 @@ private actor CallbackGate {
             assertionFailure("Accepted non-SSE response as a stream")
         } catch LocalRiskAnalyzerError.invalidResponse { }
 
-        let storedHidden = UserDefaults.standard.object(forKey:"museAvatarHidden")
-        defer {
-            if let storedHidden { UserDefaults.standard.set(storedHidden,forKey:"museAvatarHidden") }
-            else { UserDefaults.standard.removeObject(forKey:"museAvatarHidden") }
-        }
-        let view = PetViewModel(), id = UUID()
+        let domain = "MuseGuardStreamingChecks.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName:domain)!
+        defer { defaults.removePersistentDomain(forName:domain) }
+        let view = PetViewModel(defaults:defaults), id = UUID()
         view.isAvatarHidden = false
         var publishedAnswers:[String] = []
         let transcriptUpdates = view.$chatMessages.sink { messages in
@@ -221,7 +219,8 @@ private actor CallbackGate {
         assert(view.interruptAssistantChat(id:id,message:"This reply was interrupted. Please retry."))
         assert(view.chatMessages.last!.text.hasSuffix("Please retry.") && !view.isChatStreaming)
         view.dismissBubble()
-        assert(!view.updateAssistantChat(id:id,text:"Late token") && view.chatMessages.isEmpty)
+        let preservedTranscript = view.chatMessages.map(\.text)
+        assert(!view.updateAssistantChat(id:id,text:"Late token") && view.chatMessages.map(\.text) == preservedTranscript)
         view.openChat(); view.beginChatResponse(id:id)
         let gate = CallbackGate()
         let stale = Task.detached {
@@ -235,7 +234,8 @@ private actor CallbackGate {
         view.dismissBubble(); view.openChat()
         await gate.release()
         let acceptedStale = try await stale.value
-        assert(!acceptedStale && view.chatMessages.isEmpty,"An already-queued callback cannot repopulate a closed and reopened chat.")
+        assert(!acceptedStale && view.chatMessages.map(\.text) == preservedTranscript,
+            "An already-queued callback cannot modify preserved history after closing and reopening chat.")
         let next = UUID()
         view.beginChatResponse(id:next)
         assert(!view.updateAssistantChat(id:id,text:"Earlier request") && view.updateAssistantChat(id:next,text:"Current request"))
@@ -250,6 +250,41 @@ private actor CallbackGate {
             "Hiding must invalidate replies even while acknowledgement prevents generic dismissal.")
         view.isAvatarHidden = false
         assert(!view.updateAssistantChat(id:warningResponse,text:"Reply after showing again"))
+
+        // Stop before visible output keeps the question and leaves chat usable;
+        // an already queued callback must not resurrect the cancelled reply.
+        let stopped = PetViewModel(defaults:defaults)
+        stopped.isAvatarHidden = false
+        stopped.openChat(); stopped.appendUserChat("Question to stop")
+        let beforeOutput = UUID()
+        stopped.beginChatResponse(id:beforeOutput)
+        stopped.invalidateChatResponse()
+        assert(stopped.isChatOpen && !stopped.isChatThinking && stopped.chatMessages.count == 1)
+        assert(!stopped.updateAssistantChat(id:beforeOutput,text:"Arrived after Stop"))
+        let afterOutput = UUID()
+        stopped.beginChatResponse(id:afterOutput)
+        assert(stopped.updateAssistantChat(id:afterOutput,text:"Useful partial answer"))
+        assert(stopped.interruptAssistantChat(id:afterOutput,message:"Reply stopped."))
+        stopped.invalidateChatResponse()
+        assert(stopped.isChatOpen && !stopped.isChatThinking && stopped.chatMessages.last?.text == "Useful partial answer\n\nReply stopped.")
+        assert(!stopped.updateAssistantChat(id:afterOutput,text:"Overwrote a stopped answer"))
+        stopped.resetChat()
+        assert(stopped.isChatOpen && stopped.chatMessages.isEmpty)
+        assert(!stopped.updateAssistantChat(id:afterOutput,text:"Arrived in New chat"))
+
+        // Back preserves the warning and its explanation but revokes the reply
+        // token even when the same warning conversation is immediately reopened.
+        assert(stopped.showAcknowledgment(id:"back-check",text:"Pinned warning"))
+        stopped.openChat(seedText:"Explanation")
+        let backResponse = UUID()
+        stopped.beginChatResponse(id:backResponse)
+        assert(stopped.updateAssistantChat(id:backResponse,text:"Partial explanation"))
+        stopped.returnToWarning()
+        let warningTranscript = stopped.chatMessages.map(\.text)
+        assert(!stopped.isChatOpen && !stopped.isChatThinking && stopped.acknowledgment?.id == "back-check")
+        stopped.openChat()
+        assert(!stopped.updateAssistantChat(id:backResponse,text:"Late explanation after Back"))
+        assert(stopped.chatMessages.map(\.text) == warningTranscript && stopped.acknowledgment?.id == "back-check")
         print("PASS: streaming sends visible text before completion, excludes reasoning, bounds SSE, validates terminal frames, cancels transport, records aggregate timing, keeps one transcript row and rejects late hidden/dismissed updates")
     }
 }

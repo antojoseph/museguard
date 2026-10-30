@@ -48,11 +48,7 @@
     return result?.ok === true && result.confirmed_extreme === true && result.risk_level === 'high' && result.decision === 'block' &&
       Number.isFinite(result.expires_at) && result.expires_at > now;
   }
-  function canPresentManual(result) {
-    return !!result && result.version === 1 && typeof result.id === 'string' &&
-      ['allow', 'block', 'review'].includes(result.decision) && ['medium', 'high', 'unknown'].includes(result.risk_level);
-  }
-  const api = { LIMIT, EXTREME_TTL_MS, ASSESSMENT_REUSE_MS, url, origin, cleanText, failure, verdict, normalizeAction, assessmentKey, publicSignature, isConfirmedExtreme, canPresentManual };
+  const api = { LIMIT, EXTREME_TTL_MS, ASSESSMENT_REUSE_MS, url, origin, cleanText, failure, verdict, normalizeAction, assessmentKey, publicSignature, isConfirmedExtreme };
   root.MuseGuardCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(globalThis);

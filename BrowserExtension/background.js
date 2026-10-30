@@ -3,6 +3,7 @@ importScripts('shared.js');
 const C = MuseGuardCore;
 const HOST = 'com.antojoseph.museguard';
 const RESUME_ALARM = 'muse-guard-resume';
+const MONITORING_SYNC_ALARM = 'muse-guard-monitoring-sync';
 const PROTECTION_HEARTBEAT_ALARM = 'muse-guard-protection-heartbeat';
 const PROTECTION_HEARTBEAT_INTERVAL = 25000;
 const CHAT_CONTEXT_POLL_INTERVAL = 1000;
@@ -18,7 +19,9 @@ const monitoringInFlight = new Map();
 let openTabsHydration = null;
 let heartbeatAlarmKey = null, heartbeatTask = null, heartbeatQueued = false, heartbeatForced = false;
 let lastHeartbeatEnabled = null, lastHeartbeatAt = 0, lastHeartbeatSucceeded = false;
-let chatContextTimer = null, chatContextFlight = null;
+let chatContextTimer = null, chatContextFlight = null, monitoringFlight = null, monitoringTimer = null;
+let monitoringAvailable = false, commandTail = Promise.resolve();
+let monitoringTail = Promise.resolve(), monitoringAppliedRevision = 0;
 function quietFailure(message) { return { ...C.failure(message), confirmed_extreme: false, retry_after_ms: 15000 }; }
 
 function nativeRequest(payload, timeout = 35000, expectedPort = null, signal = null) {
@@ -50,9 +53,11 @@ function nativeRequest(payload, timeout = 35000, expectedPort = null, signal = n
           const message = chrome.runtime.lastError?.message || 'The Muse app disconnected.';
           port = null; cache.clear(); receipts.clear();
           clearTimeout(chatContextTimer); chatContextTimer = null;
+          clearTimeout(monitoringTimer); monitoringTimer = null; monitoringAvailable = false;
           for (const item of [...pending.values()]) item.finish(C.failure(message));
         });
         scheduleChatContextPoll(connected);
+        scheduleMonitoringPoll(connected);
       }
       const timer = setTimeout(() => {
         if (request.type === 'assess') abort();
@@ -71,6 +76,56 @@ function scheduleChatContextPoll(connected) {
       if (port === connected) scheduleChatContextPoll(connected);
     });
   }, CHAT_CONTEXT_POLL_INTERVAL);
+}
+function scheduleMonitoringPoll(connected) {
+  clearTimeout(monitoringTimer);
+  if (port !== connected) return;
+  monitoringTimer = setTimeout(() => {
+    monitoringTimer = null;
+    void pollMonitoringState(connected).catch(() => {}).finally(() => {
+      if (port === connected) scheduleMonitoringPoll(connected);
+    });
+  }, CHAT_CONTEXT_POLL_INTERVAL);
+}
+function validMonitoring(value) {
+  return value && typeof value.paused === 'boolean' && Number.isSafeInteger(value.revision) && value.revision > 0 &&
+    Number.isSafeInteger(value.pause_until) && value.pause_until >= 0 && (value.paused || value.pause_until === 0);
+}
+function applyMonitoringState(value, fromCommand = false) {
+  const result = monitoringTail.then(() => applyMonitoringStateOrdered(value, fromCommand), () => applyMonitoringStateOrdered(value, fromCommand));
+  monitoringTail = result.catch(() => {});
+  return result;
+}
+async function applyMonitoringStateOrdered(value, fromCommand) {
+  if (!validMonitoring(value)) throw new Error('Update the Muse Guard app to synchronize monitoring.');
+  const current = await config();
+  if (value.revision < current.monitoringRevision) return false;
+  if (current.monitoringPending && value.revision === current.monitoringRevision && !fromCommand) return false;
+  if (value.revision === current.monitoringRevision && current.enabled && current.paused === value.paused && current.pauseUntil === value.pause_until && monitoringAppliedRevision === value.revision && !current.monitoringPending) return true;
+  clearAutomaticState(value.paused ? 'All monitoring is paused.' : 'Monitoring resumed with fresh checks.');
+  await writeConfig({ enabled: true, paused: value.paused, pauseUntil: value.pause_until, monitoringRevision: value.revision, monitoringPending: false });
+  const applied = await broadcastConfiguration();
+  if (applied) monitoringAppliedRevision = value.revision;
+  return applied;
+}
+function pollMonitoringState(connected = port) {
+  if (!connected || port !== connected) return Promise.resolve();
+  if (monitoringFlight) return monitoringFlight;
+  const task = (async () => {
+    const value = await config();
+    let result = await nativeRequest({ type: 'monitoring-state', monitoring_revision: monitoringAppliedRevision || undefined }, 1500, connected);
+    // Preserve a user's old explicit pause once when upgrading a native app
+    // that has never owned a monitoring setting. Later native changes win.
+    if (port === connected && value.monitoringRevision === 0 && (!value.enabled || value.paused) && result?.monitoring?.revision === 1)
+      result = await nativeRequest({ type: 'monitoring-control', monitoring_command: 'pause', pause_duration_ms: value.pauseUntil > Date.now() ? 1800000 : 0 }, 1500, connected);
+    if (port === connected) {
+      monitoringAvailable = result?.ok === true && validMonitoring(result.monitoring);
+      if (monitoringAvailable) await applyMonitoringState(result.monitoring);
+    }
+  })();
+  monitoringFlight = task;
+  task.finally(() => { if (monitoringFlight === task) monitoringFlight = null; }).catch(() => {});
+  return task;
 }
 function contextOperation(operation, expiresAt, connected) {
   const remaining = expiresAt - Date.now();
@@ -174,9 +229,11 @@ function settingsOperation(operation) {
   return result;
 }
 async function readConfig() {
-  const saved = await chrome.storage.local.get({ configVersion: 0, enabled: true, paused: false, pauseUntil: 0 });
+  const saved = await chrome.storage.local.get({ configVersion: 0, enabled: true, paused: false, pauseUntil: 0, monitoringRevision: 0, monitoringPending: false });
   const value = { enabled: saved.enabled !== false, paused: saved.paused === true,
-    pauseUntil: Number.isFinite(saved.pauseUntil) && saved.pauseUntil > 0 ? saved.pauseUntil : 0 };
+    pauseUntil: Number.isFinite(saved.pauseUntil) && saved.pauseUntil > 0 ? saved.pauseUntil : 0,
+    monitoringRevision: Number.isSafeInteger(saved.monitoringRevision) && saved.monitoringRevision > 0 ? saved.monitoringRevision : 0,
+    monitoringPending: saved.monitoringPending === true };
   if (!value.paused) value.pauseUntil = 0;
   if (value.paused && value.pauseUntil && value.pauseUntil <= Date.now()) { value.paused = false; value.pauseUntil = 0; }
   if (saved.configVersion !== 2 || saved.enabled !== value.enabled || saved.paused !== value.paused || saved.pauseUntil !== value.pauseUntil)
@@ -248,11 +305,6 @@ function saveReceipt(id, value) {
   if (receipts.size > 128) receipts.delete(receipts.keys().next().value);
   return receipt;
 }
-async function storeResult(ctx, result) {
-  if (!await current(ctx)) return;
-  await chrome.storage.session.set({ ['result:' + ctx.tabId]: { checked: result.ok === true, mode: result.mode, timestamp: Date.now() } });
-  await chrome.action.setBadgeText({ tabId: ctx.tabId, text: '' });
-}
 function validatedPayload(message, ctx) {
   const page = message.page;
   if (!page || page.url !== C.url(ctx.rawURL) || typeof page.text !== 'string') throw new Error('The page changed before its check.');
@@ -307,8 +359,6 @@ async function performAssessment(job) {
     cache.set(job.key, { result: stamped, expiresAt, generation: job.generation });
     if (cache.size > 64) cache.delete(cache.keys().next().value);
   }
-  await storeResult(job.ctx, stamped);
-  if (job.generation !== protectionGeneration) return quietFailure('Protection settings changed during this check.');
   return stamped;
 }
 function sensitiveIntent(job) { return job?.purpose === 'intent' && job.request.action.kind === 'submit' && job.request.action.sensitive; }
@@ -460,6 +510,7 @@ function hydrateOpenTabs() {
   return task;
 }
 async function restoreMonitoring() {
+  if (chrome.alarms) await chrome.alarms.create(MONITORING_SYNC_ALARM, { periodInMinutes: 0.5 });
   alarmKey = null; heartbeatAlarmKey = null;
   await config();
   void syncProtectionState(true).catch(() => {});
@@ -467,7 +518,19 @@ async function restoreMonitoring() {
   await broadcastConfiguration();
 }
 async function broadcastConfiguration() {
-  for (const tab of await chrome.tabs.query({})) if (tab.id && C.url(tab.url)) chrome.tabs.sendMessage(tab.id, { type: 'configuration-changed' }, { frameId: 0 }).catch(() => {});
+  const tabs = await chrome.tabs.query({});
+  const results = await Promise.all(tabs.filter(tab => tab.id && C.url(tab.url)).map(async tab => {
+    let timer;
+    try {
+      // A missing listener cannot retain a blocking cache. A live but stalled
+      // listener must not hold the worker forever or earn a false native ack.
+      return await Promise.race([
+        chrome.tabs.sendMessage(tab.id, { type: 'configuration-changed' }, { frameId: 0 }).then(() => true, () => true),
+        new Promise(resolve => { timer = setTimeout(() => resolve(false), 1200); })
+      ]);
+    } finally { clearTimeout(timer); }
+  }));
+  return results.every(Boolean);
 }
 function clearAutomaticState(message = 'Protection settings changed.') {
   protectionGeneration++; cache.clear(); latestSlots.clear();
@@ -482,17 +545,38 @@ async function protectionChanged() {
   void syncProtectionState(true).catch(() => {});
   await broadcastConfiguration();
 }
-async function changePause(duration) {
-  if (![0,1800000].includes(duration)) throw new Error('Unsupported pause duration.');
-  clearAutomaticState('Automatic protection is paused.');
-  await writeConfig({ enabled: true, paused: true, pauseUntil: duration ? Date.now()+duration : 0 });
-  void syncProtectionState(true).catch(() => {});
-  await broadcastConfiguration(); return { ok: true };
+function changeMonitoring(command, duration) {
+  const result = commandTail.then(() => changeMonitoringOrdered(command, duration), () => changeMonitoringOrdered(command, duration));
+  commandTail = result.catch(() => {});
+  return result;
 }
-async function resumeProtection() {
-  clearAutomaticState(); await writeConfig({ enabled: true, paused: false, pauseUntil: 0 });
+async function changeMonitoringOrdered(command, duration) {
+  if (command === 'pause' && ![0, 1800000].includes(duration)) throw new Error('Unsupported pause duration.');
+  const before = await config();
+  // Stop browser work immediately while the native app applies the same switch
+  // to desktop checks. A transport failure must never be called global success.
+  if (command === 'pause') {
+    monitoringAppliedRevision = 0;
+    clearAutomaticState('Monitoring is being paused.');
+    await writeConfig({ enabled: true, paused: true, pauseUntil: duration ? Date.now() + duration : 0, monitoringPending: true });
+    await broadcastConfiguration();
+  }
+  const result = await nativeRequest({ type: 'monitoring-control', monitoring_command: command,
+    pause_duration_ms: command === 'pause' ? duration : undefined, monitoring_revision: before.monitoringRevision || undefined }, 3500);
+  if (result?.ok === false && validMonitoring(result.monitoring)) {
+    monitoringAvailable = true; await applyMonitoringState(result.monitoring, true);
+    return { ok: false, error: 'Monitoring changed elsewhere. The newer setting was kept; try again.' };
+  }
+  if (result?.ok !== true || !validMonitoring(result.monitoring)) { monitoringAvailable = false; return { ok: false,
+    error: command === 'pause' ? 'Chrome is paused. Open Muse Guard to pause desktop checks too.' : 'Open Muse Guard to resume monitoring.' }; }
+  monitoringAvailable = true;
+  const applied = await applyMonitoringState(result.monitoring, true);
+  if (!applied) return { ok: false, error: 'Monitoring changed. A Chrome tab has not responded yet; Muse will keep trying.' };
+  // The acknowledgement follows cache cancellation and all-tab configuration
+  // delivery, so native controls do not claim Chrome applied an unseen state.
+  await nativeRequest({ type: 'monitoring-state', monitoring_revision: result.monitoring.revision }, 1500);
   void syncProtectionState(true).catch(() => {});
-  await broadcastConfiguration(); return { ok: true };
+  return { ok: true };
 }
 async function handle(message, sender) {
   if (!message || typeof message.type !== 'string') return C.failure('Unsupported request.');
@@ -506,19 +590,14 @@ async function handle(message, sender) {
   if (message.type === 'cancel') return cancelAction(message, sender);
   if (!fromPopup(sender)) return C.failure('This request must come from Muse Guard.');
   if (message.type === 'popup-state') {
+    await pollMonitoringState();
     const tab = await activeTab(), value = await config(); const supported = !!tab?.id && !!C.url(tab.url);
-    return { ...value, supported, origin: supported ? C.origin(tab.url) : null,
-      result: supported ? (await chrome.storage.session.get('result:'+tab.id))['result:'+tab.id] : undefined };
+    return { ...value, monitoringConfirmed: monitoringAvailable && !value.monitoringPending && monitoringAppliedRevision === value.monitoringRevision, supported, origin: supported ? C.origin(tab.url) : null,
+      readable: supported ? await ensureTabMonitoring(tab.id) : false };
   }
   if (message.type === 'status') return nativeRequest({ type: 'status', mode: 'text' }, 3500);
-  if (message.type === 'pause') return changePause(message.duration_ms);
-  if (message.type === 'resume') return resumeProtection();
-  if (message.type === 'set-enabled') {
-    if (message.enabled === true) return resumeProtection();
-    clearAutomaticState(); await writeConfig({ enabled: false, paused: false, pauseUntil: 0 });
-    void syncProtectionState(true).catch(() => {});
-    await broadcastConfiguration(); return { ok: true };
-  }
+  if (message.type === 'pause') return changeMonitoring('pause', message.duration_ms);
+  if (message.type === 'resume') return changeMonitoring('resume');
   return C.failure('Unsupported request.');
 }
 chrome.runtime.onMessage.addListener((message, sender, reply) => { handle(message, sender).then(reply).catch(error => reply(C.failure(error.message))); return true; });
@@ -529,7 +608,6 @@ function forget(tabId) {
   for (const [slot, job] of automaticQueue) if (job.ctx.tabId === tabId) { automaticQueue.delete(slot); latestSlots.delete(slot); job.resolve(quietFailure('The tab navigated.')); }
   for (const [id, receipt] of receipts) if (receipt.ctx.tabId === tabId) { receipts.delete(id); if (receipt.presented) void nativeRequest({ type: 'cancel', assessment_id: id }, 1500); }
   for (const key of cache.keys()) { try { if (JSON.parse(key)[0] === tabId) cache.delete(key); } catch { cache.delete(key); } }
-  chrome.storage.session.remove('result:'+tabId).catch(() => {});
 }
 chrome.tabs.onUpdated.addListener((tabId, change) => {
   if (change.url || change.status === 'loading') forget(tabId);
@@ -548,6 +626,9 @@ chrome.windows.onFocusChanged?.addListener(windowId => {
     Promise.allSettled(tabs.map(tab => activateTabMonitoring(tab.id)))).catch(() => {});
 });
 chrome.alarms?.onAlarm.addListener(alarm => {
+  if (alarm.name === MONITORING_SYNC_ALARM) void nativeRequest({ type: 'monitoring-state', monitoring_revision: monitoringAppliedRevision || undefined }, 1500).then(result => {
+    if (result?.ok === true) return applyMonitoringState(result.monitoring);
+  }).catch(() => {});
   if (alarm.name === RESUME_ALARM) { alarmKey = null; void protectionChanged(); }
   if (alarm.name === PROTECTION_HEARTBEAT_ALARM) void syncProtectionState(true).catch(() => {});
 });

@@ -11,6 +11,8 @@ const turn = () => new Promise(resolve => setImmediate(resolve));
 function harness(settings = {}, options = {}) {
   const sent = [], heartbeats = [], contextPolls = [], contextResults = [], contextRequests = [], onNative = [], onDisconnect = [], opened = [], writes = [], badges = [], tabMessages = [], injections = [];
   const local = { configVersion: 2, enabled: true, paused: false, pauseUntil: 0, ...settings }, session = {};
+  const monitoring = { paused: settings.paused === true || settings.enabled === false, pause_until: settings.pauseUntil || 0, revision: 1 };
+  const monitoringRequests = [];
   const tab = { id: 7, windowId: 2, active: true, url: 'https://shop.example.test/account?session=secret' };
   const tabs = new Map([[7, tab], ...(options.tabs || []).map(value => [value.id, value])]), alarms = new Map(), events = {};
   const monitoringTabs = new Set(options.readyTabs || []), injectionFailures = new Set(options.injectionFailures || []);
@@ -33,6 +35,21 @@ function harness(settings = {}, options = {}) {
     runtime: { id: 'extension-id', getURL: file => 'chrome-extension://extension-id/' + file,
       connectNative(name) { assert.equal(name, 'com.antojoseph.museguard'); connections++; return {
         postMessage(value) {
+          if (['monitoring-state', 'monitoring-control'].includes(value.type)) {
+            monitoringRequests.push(value);
+            const conflict = value.type === 'monitoring-control' && value.monitoring_revision && value.monitoring_revision !== monitoring.revision;
+            if (value.type === 'monitoring-control' && !conflict) {
+              monitoring.paused = value.monitoring_command === 'pause';
+              monitoring.pause_until = monitoring.paused && value.pause_duration_ms ? now + value.pause_duration_ms : 0;
+              monitoring.revision++;
+            }
+            if (monitoring.paused && monitoring.pause_until > 0 && monitoring.pause_until <= now) {
+              monitoring.paused = false; monitoring.pause_until = 0; monitoring.revision++;
+            }
+            const response = { version: 1, id: value.id, ok: options.monitoringUnavailable !== true && !conflict, ...(options.monitoringUnavailable ? {} : { monitoring: { ...monitoring } }) };
+            queueMicrotask(() => { for (const listener of onNative) listener(response); });
+            return;
+          }
           if (value.type === 'chat-context-poll' || value.type === 'chat-context-result') {
             const isPoll = value.type === 'chat-context-poll';
             (isPoll ? contextPolls : contextResults).push(value);
@@ -76,7 +93,7 @@ function harness(settings = {}, options = {}) {
     setTimeout: (fn, time) => { const handle = setTimeout(fn, time); handle.unref(); return handle; }, clearTimeout });
   sandbox.importScripts = file => vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), sandbox);
   vm.runInContext(fs.readFileSync(path.join(root, 'background.js'), 'utf8'), sandbox);
-  const api = vm.runInContext('({handle, documents, pending, forget, config, cache, receipts, automaticQueue, ensureTabMonitoring, hydrateOpenTabs, restoreMonitoring, syncProtectionState, pollChatContext, core:C, getActive:()=>activeAutomatic, hasContextTimer:()=>chatContextTimer!==null})', sandbox);
+  const api = vm.runInContext('({handle, documents, pending, forget, config, cache, receipts, automaticQueue, ensureTabMonitoring, hydrateOpenTabs, restoreMonitoring, syncProtectionState, pollChatContext, pollMonitoringState, applyMonitoringState, core:C, getActive:()=>activeAutomatic, hasContextTimer:()=>chatContextTimer!==null})', sandbox);
   const senderFor = id => { const value = tabs.get(id); return { id: 'extension-id', frameId: 0, documentId: 'document-'+id,
     url: value.url, tab: { ...value } }; };
   const sender = { ...senderFor(7), documentId: 'document-a' };
@@ -102,7 +119,7 @@ function harness(settings = {}, options = {}) {
       summary: 'Concrete concern', guidance: 'Stay here.', categories: [], mode: request.mode || 'text', duration_ms: 20, ...value };
     for (const listener of onNative) listener(response);
   }
-  return { api, sent, heartbeats, contextPolls, contextResults, tab, tabs, sender, senderFor, popup, local, snapshot, writes, badges, opened, pageRequest, automatic, answer, tabMessages, session, alarms, events, injections, monitoringTabs,
+  return { api, monitoring, monitoringRequests, sent, heartbeats, contextPolls, contextResults, tab, tabs, sender, senderFor, popup, local, snapshot, writes, badges, opened, pageRequest, automatic, answer, tabMessages, session, alarms, events, injections, monitoringTabs,
     focus: value => { focused = value; }, advance: value => { now += value; },
     addTab(id, active = false) { const value = { id, active, windowId: 2, url: 'https://tab'+id+'.test/page' }; tabs.set(id, value); return value; },
     blockNextRead() { let release; nextGetGate = new Promise(resolve => { release = resolve; }); return release; },
@@ -146,7 +163,7 @@ test('global protection ignores the legacy site allowlist and preserves explicit
   assert.equal(skipped.ok, false); assert.equal(disabled.sent.length, 0);
 });
 
-test('native checks receive bounded redacted evidence and session stores completion metadata only', async () => {
+test('native checks receive bounded redacted evidence without storing browser check history', async () => {
   const h = harness(), request = h.pageRequest();
   request.password = 'SHOULD_NOT_PASS'; request.screenshot = 'SHOULD_NOT_PASS';
   request.page.text += ' https://site.test/pay?token=TEXT_SECRET';
@@ -157,8 +174,7 @@ test('native checks receive bounded redacted evidence and session stores complet
   assert.ok(!JSON.stringify(native).includes('TEXT_SECRET'));
   assert.equal(result.risk_level, 'high');
   assert.ok(h.writes.every(write => write.area !== 'local'));
-  assert.deepEqual(Object.keys(h.session['result:7']).sort(), ['checked', 'mode', 'timestamp']);
-  assert.equal(h.session['result:7'].checked, true);
+  assert.deepEqual(h.session, {});
   const stored = JSON.stringify(h.writes);
   for (const secret of ['Visible original context', 'session=secret', 'Concrete concern', 'risk_level', 'data:image']) assert.ok(!stored.includes(secret));
   assert.ok(h.badges.every(value => value.text === ''), 'Warnings belong to the avatar, not risk badges.');
@@ -258,7 +274,7 @@ test('global pause controls work on internal tabs and expire through a persisten
   assert.equal(h.local.paused, false); assert.equal(h.alarms.has('muse-guard-resume'), false);
   assert.equal(h.alarms.get('muse-guard-protection-heartbeat').periodInMinutes, 0.5);
   await h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup);
-  h.advance(7200000); assert.equal((await h.api.config()).paused, true); assert.equal(h.alarms.size, 0);
+  h.advance(7200000); assert.equal((await h.api.config()).paused, true); assert.equal(h.alarms.has('muse-guard-resume'), false);
   await h.api.handle({ type: 'resume' }, h.popup); assert.equal((await h.api.config()).active, true);
 });
 
@@ -295,15 +311,6 @@ test('pause then resume invalidates an in-flight result instead of rehydrating i
   const fresh = await automaticResult(h,request); assert.equal(fresh.confirmed_extreme, true);
   assert.equal(h.sent.filter(value=>value.type==='assess').length,2);
   assert.ok(h.sent.some(value=>value.type==='cancel' && value.assessment_id===h.sent[0].id));
-});
-
-test('pause during metadata storage cannot return a late confirmed finding', async () => {
-  const h=harness(), release=h.blockNextSessionWrite();
-  const waiting=h.api.handle(h.automatic(),h.sender); await sentCount(h,1); h.answer(h.sent[0]);
-  await until(()=>h.session['result:7']);
-  await h.api.handle({type:'pause',duration_ms:0},h.popup); await h.api.handle({type:'resume'},h.popup);
-  release(); const result=await waiting;
-  assert.equal(result.confirmed_extreme,false); assert.equal(h.api.cache.size,0); assert.equal(h.api.receipts.size,0);
 });
 
 test('automatic jobs deduplicate and one global slot serves both proactive pages and intent', async () => {
@@ -629,7 +636,7 @@ test('protection heartbeats report only global connection state and renew period
   assert.equal(h.api.getActive(), null); assert.equal(h.api.cache.size, 0);
 });
 
-test('Pause, Resume, explicit Disable and external settings changes publish the final global state', async () => {
+test('Pause and Resume publish the final global state and retired Disable is rejected', async () => {
   const h = harness(); await h.api.syncProtectionState();
   await h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup); await h.api.syncProtectionState();
   assert.equal(h.heartbeats.at(-1).protection_enabled, false);
@@ -637,9 +644,8 @@ test('Pause, Resume, explicit Disable and external settings changes publish the 
   await h.api.handle({ type: 'resume' }, h.popup); await h.api.syncProtectionState();
   assert.equal(h.heartbeats.at(-1).protection_enabled, true);
   assert.equal(h.alarms.get('muse-guard-protection-heartbeat').periodInMinutes, 0.5);
-  await h.api.handle({ type: 'set-enabled', enabled: false }, h.popup); await h.api.syncProtectionState();
-  assert.equal(h.heartbeats.at(-1).protection_enabled, false);
-  assert.equal(h.alarms.has('muse-guard-protection-heartbeat'), false);
+  const retired = await h.api.handle({ type: 'set-enabled', enabled: false }, h.popup);
+  assert.equal(retired.ok, false);
   Object.assign(h.local, { enabled: true, paused: false, pauseUntil: 0 });
   h.events.storage({}, 'local'); await h.api.syncProtectionState();
   assert.equal(h.heartbeats.at(-1).protection_enabled, true);
@@ -710,7 +716,7 @@ test('returning to a Chrome window nudges its active tab without requiring a tab
 });
 
 test('configuration and assessment activity refresh an overdue heartbeat without flooding a tab burst', async () => {
-  const h = harness(); await h.api.syncProtectionState();
+  const h = harness(); await h.api.restoreMonitoring(); await h.api.syncProtectionState();
   const count = h.heartbeats.length;
   for (let n = 0; n < 10; n++) await h.api.handle({ type: 'configuration', nonce: 'nonce-a' }, h.sender);
   await h.api.syncProtectionState();
@@ -826,4 +832,71 @@ test('a context request expiring during snapshot collection is dropped before re
   h.advance(6001); release(); await pending;
   assert.equal(h.contextResults.length, 0);
   assert.equal(h.tabMessages.filter(value => value.type === 'snapshot').length, 1);
+});
+
+test('native Pause cancels in-flight inference and clears all-tab decisions before its acknowledgement', async () => {
+  const h = harness({}, { tabs: [{ id: 8, windowId: 2, url: 'https://second.test/', active: false }] });
+  await h.api.syncProtectionState();
+  const pending = h.api.handle(h.automatic(), h.sender); await sentCount(h, 1);
+  h.monitoring.paused = true; h.monitoring.pause_until = 0; h.monitoring.revision = 50;
+  await h.api.pollMonitoringState();
+  const config = await h.api.config();
+  assert.equal(config.active, false); assert.equal(config.monitoringRevision, 50);
+  assert.equal(h.api.cache.size, 0); assert.equal(h.api.receipts.size, 0);
+  assert.ok(h.sent.some(value => value.type === 'cancel' && value.assessment_id === h.sent[0].id));
+  for (const id of [7, 8]) assert.ok(h.tabMessages.some(value => value.tabId === id && value.type === 'configuration-changed'));
+  h.answer(h.sent[0]); const obsolete = await pending;
+  assert.equal(obsolete.confirmed_extreme, false);
+  await h.api.pollMonitoringState();
+  assert.equal(h.monitoringRequests.at(-1).monitoring_revision, 50);
+});
+
+test('revision ordering prevents a late native Pause from reverting a later Resume', async () => {
+  const h = harness(); await h.api.config();
+  await Promise.all([
+    h.api.applyMonitoringState({ paused: true, pause_until: 0, revision: 20 }),
+    h.api.applyMonitoringState({ paused: false, pause_until: 0, revision: 21 }),
+    h.api.applyMonitoringState({ paused: true, pause_until: 0, revision: 19 })
+  ]);
+  const state = await h.api.config();
+  assert.equal(state.monitoringRevision, 21); assert.equal(state.active, true);
+});
+
+test('a disconnected native app never receives a falsely successful global pause result', async () => {
+  const h = harness({}, { monitoringUnavailable: true }); await h.api.config();
+  const result = await h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup);
+  assert.equal(result.ok, false); assert.match(result.error, /Chrome is paused.*desktop checks/);
+  assert.equal((await h.api.config()).active, false);
+});
+
+test('metadata reconnect remains active while paused and retrieves a native Resume after disconnect', async () => {
+  const h = harness({ paused: true }); await h.api.restoreMonitoring(); await h.api.pollMonitoringState();
+  assert.equal(h.alarms.get('muse-guard-monitoring-sync').periodInMinutes, 0.5);
+  h.disconnect(); h.monitoring.paused = false; h.monitoring.pause_until = 0; h.monitoring.revision = 90;
+  h.events.alarm({ name: 'muse-guard-monitoring-sync' });
+  await until(() => h.local.monitoringRevision === 90);
+  assert.equal((await h.api.config()).active, true); assert.ok(h.connectionCount() >= 2);
+});
+
+test('overlapping popup Pause and Resume mutations are serialized and acknowledge the latest applied state', async () => {
+  const h = harness(); await h.api.restoreMonitoring(); await h.api.pollMonitoringState();
+  const [pause, resume] = await Promise.all([
+    h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup),
+    h.api.handle({ type: 'resume' }, h.popup)
+  ]);
+  assert.equal(pause.ok, true); assert.equal(resume.ok, true);
+  const commands = h.monitoringRequests.filter(value => value.type === 'monitoring-control');
+  assert.deepEqual(commands.map(value => value.monitoring_command), ['pause', 'resume']);
+  assert.equal(commands[1].monitoring_revision, commands[0].monitoring_revision + 1);
+  assert.equal((await h.api.config()).active, true);
+});
+
+test('a late Chrome pause cannot overwrite a newer native Resume', async () => {
+  const h = harness(); await h.api.syncProtectionState();
+  await h.api.applyMonitoringState({ paused: false, pause_until: 0, revision: 5 });
+  Object.assign(h.monitoring, { paused: false, pause_until: 0, revision: 6 });
+  const late = await h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup);
+  assert.equal(late.ok, false); assert.match(late.error, /newer setting/);
+  assert.equal(h.monitoring.revision, 6); assert.equal(h.monitoring.paused, false);
+  assert.equal((await h.api.config()).active, true);
 });

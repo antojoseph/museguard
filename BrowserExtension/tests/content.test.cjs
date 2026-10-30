@@ -157,7 +157,7 @@ test('a restored back/forward-cache page reconciles a pause made while it was fr
     h.trigger(link, 'pointerdown'); await h.settle(); assert.equal(h.checks.length, before + 1);
   } finally { h.close(); }
 });
-test('only a consistent stamped high/block can interrupt automatically; explicit checks retain avatar presentation', () => {
+test('only a consistent stamped high/block can interrupt automatically', () => {
   assert.equal(core.url('https://user:secret@example.test/path?otp=123#seed'), 'https://example.test/path');
   assert.equal(core.cleanText('Go https://user:secret@example.test/path?otp=123#seed now'), 'Go https://example.test/path now');
   const now = Date.now();
@@ -165,10 +165,6 @@ test('only a consistent stamped high/block can interrupt automatically; explicit
   for (const value of [null, result('high'), result('medium', { confirmed_extreme: true, expires_at: now + 1 }),
     result('high', { ok: false, confirmed_extreme: true, expires_at: now + 1 }), result('high', { confirmed_extreme: true, expires_at: now })]) assert.equal(core.isConfirmedExtreme(value, now), false);
   assert.equal(core.verdict(result('high', { decision: 'allow', confirmed_extreme: true, expires_at: now + 1 })).decision, 'review');
-  assert.equal(core.canPresentManual(result('high')), true);
-  assert.equal(core.canPresentManual(result('medium')), true);
-  assert.equal(core.canPresentManual(result('safe')), false);
-  assert.equal(core.canPresentManual(null), false);
   const publicSignature = core.publicSignature({ kind: 'link', url: 'https://user:secret@target.test/path?otp=secret', method: '', label: 'Open' }, ['PASSWORD']);
   assert.ok(!publicSignature.includes('secret')); assert.ok(publicSignature.includes('password')); assert.equal(JSON.parse(publicSignature)[0].method, 'GET');
 });

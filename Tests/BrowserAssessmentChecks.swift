@@ -84,8 +84,10 @@ private final class HeldModelFixture: URLProtocol {
         var presentations = 0
         var presented: [BrowserRequest] = []
         var protectionChanges: [Bool] = []
+        var paused = false
+        var activity: [(String, Bool)] = []
         var testNow = Date()
-        let coordinator = BrowserAssessmentCoordinator(analyzer: analyzer, modelReady: { true }, now: { testNow },
+        let coordinator = BrowserAssessmentCoordinator(analyzer: analyzer, modelReady: { true }, monitoringPaused: { paused }, onAssessment: { request, verdict, _, error in activity.append((request.id, verdict != nil && error == nil)) }, now: { testNow },
             onProtectionChanged: { protectionChanges.append($0) },
             onPresent: { request,_,snapshot in
                 presentations += 1; presented.append(request)
@@ -156,15 +158,14 @@ private final class HeldModelFixture: URLProtocol {
                afterHeartbeat.completedAssessments == beforeHeartbeat.completedAssessments)
         assert(ModelFixture.calls == callsBeforeHeartbeat && presentations == 0)
 
-        // Manual popup checks retain their page-only presentation path.
-        ModelFixture.risk = "medium"
-        let manual = await coordinator.handle(BrowserRequest(id:"manual-page",type:"assess",page:page))
-        assert(manual.ok && manual.decision == "review")
-        let manualShown = await present(coordinator,"manual-page")
-        assert(manualShown.ok && presented.last?.id == "manual-page")
-        let manualReplay = await present(coordinator,"manual-page")
-        assert(!manualReplay.ok)
-        let cleaned = try BrowserRequest(id:"clean",type:"assess",page:page).validated()
+        // Manual routes are retired; ordinary automatic text evidence remains redacted.
+        for request in [BrowserRequest(id:"manual-page",type:"assess",page:page),
+                        BrowserRequest(id:"manual-present",type:"present",assessmentID:"manual-page"),
+                        BrowserRequest(id:"manual-notice",type:"notice",page:page,reason:"unavailable")] {
+            let retired = await coordinator.handle(request)
+            assert(!retired.ok)
+        }
+        let cleaned = try BrowserRequest(id:"clean",type:"assess",page:page,purpose:"proactive").validated()
         let evidence = BrowserAssessmentCoordinator.snapshot(for:cleaned,page:cleaned.page!)
         assert(!evidence.text.contains("token=private") && !evidence.text.contains("#secret"))
         assert(evidence.appName == "Google Chrome")
@@ -190,34 +191,26 @@ private final class HeldModelFixture: URLProtocol {
 
         let successesBeforeFailure = coordinator.completedCount
         ModelFixture.malformed = true
-        let invalid = await coordinator.handle(BrowserRequest(id:"malformed",type:"assess",page:page))
+        let invalid = await coordinator.handle(BrowserRequest(id:"malformed",type:"assess",page:page,purpose:"proactive"))
         assert(!invalid.ok && invalid.decision == "review" && invalid.riskLevel == "unknown")
         let failureStatus = await coordinator.handle(BrowserRequest(id:"failure-status",type:"status"))
         assert(failureStatus.lastAssessment?.id == "malformed" && failureStatus.lastAssessment?.kind == "page")
         assert(failureStatus.lastAssessment?.ok == false && failureStatus.completedAssessments == successesBeforeFailure)
         let malformedShown = await present(coordinator,"malformed")
-        assert(!malformedShown.ok && presented.last?.id == "malformed", "An explicit failed popup check remains presentable by Muse.")
+        assert(!malformedShown.ok && activity.contains(where: { $0.0 == "malformed" && !$0.1 }), "Failed automatic assessments enter activity without a warning presentation.")
         ModelFixture.malformed = false
         let unavailable = BrowserAssessmentCoordinator(analyzer:analyzer,modelReady:{false})
-        let stopped = await unavailable.handle(BrowserRequest(id:"stopped",type:"assess",page:page))
+        let stopped = await unavailable.handle(BrowserRequest(id:"stopped",type:"assess",page:page,purpose:"proactive"))
         assert(!stopped.ok && stopped.decision == "review")
         let stoppedStatus = await unavailable.handle(BrowserRequest(id:"stopped-status",type:"status"))
         assert(stoppedStatus.modelReady == false && stoppedStatus.lastAssessment?.ok == false)
-        let denied = BrowserAssessmentCoordinator(analyzer:analyzer,modelReady:{true},isDenied:{_ in true})
-        let skipped = await denied.handle(BrowserRequest(id:"denied",type:"assess",page:page,purpose:"proactive"))
-        assert(!skipped.ok && skipped.decision == "review")
-        assert(!skipped.guidance.isEmpty)
-
+        paused = true; coordinator.cancelAll()
+        let pausedResult = await coordinator.handle(BrowserRequest(id:"paused",type:"assess",page:page,purpose:"proactive"))
+        assert(!pausedResult.ok && !activity.contains(where: { $0.0 == "paused" }))
+        let pausedPresentation = await coordinator.handle(BrowserRequest(id:"paused-display",type:"present-block",assessmentID:"cached-high"))
+        assert(!pausedPresentation.ok)
+        paused = false
         let callsBeforeNotices = ModelFixture.calls
-        for reason in ["changed","unavailable"] {
-            let id = "notice-"+reason
-            let result = await coordinator.handle(BrowserRequest(id:id,type:"notice",page:page,
-                action:.init(kind:"page",url:page.url,label:nil,method:"GET",sensitive:nil),reason:reason))
-            assert(!result.ok && result.decision == "review" && result.riskLevel == "unknown")
-            _ = await present(coordinator,id)
-            assert(presented.last?.reason == reason)
-        }
-        assert(ModelFixture.calls == callsBeforeNotices, "Connection notices never run inference.")
         for retired in [BrowserRequest(id:"retired-decision",type:"decision",assessmentID:"manual-page"),
                         BrowserRequest(id:"retired-finish",type:"finish-checking",assessmentID:"manual-page"),
                         BrowserRequest(id:"retired-checking",type:"notice",page:page,reason:"checking"),
@@ -231,22 +224,14 @@ private final class HeldModelFixture: URLProtocol {
         assert(ModelFixture.calls == callsBeforeNotices)
         let latestBeforeExpiry = await coordinator.handle(BrowserRequest(id:"latest-before-expiry",type:"status"))
         assert(latestBeforeExpiry.lastAssessment?.id == "malformed", "Notices, rejected protocols and presentation must not replace assessment diagnostics.")
-        _ = await coordinator.handle(BrowserRequest(id:"receipt-expiry",type:"notice",page:page,reason:"unavailable"))
-        testNow = testNow.addingTimeInterval(16)
-        let expiredReceipt = await present(coordinator,"receipt-expiry")
-        assert(!expiredReceipt.ok)
         let hidden = BrowserAssessmentCoordinator(analyzer:analyzer,modelReady:{true},onPresent:{_,_,_ in false})
-        _ = await hidden.handle(BrowserRequest(id:"hidden",type:"assess",page:page))
-        let hiddenPresentation = await present(hidden,"hidden")
+        _ = await hidden.handle(BrowserRequest(id:"hidden",type:"assess",page:page,purpose:"proactive"))
+        let hiddenPresentation = await hidden.handle(BrowserRequest(id:"hidden-display",type:"present-block",assessmentID:"hidden"))
         assert(!hiddenPresentation.ok)
         _ = await coordinator.handle(BrowserRequest(id:"high-expiry",type:"assess",page:page,action:action,purpose:"proactive"))
         testNow = testNow.addingTimeInterval(61)
         let expiredHigh = await coordinator.handle(BrowserRequest(id:"expired-high",type:"present-block",assessmentID:"high-expiry"))
         assert(!expiredHigh.ok)
-        _ = await coordinator.handle(BrowserRequest(id:"cancel-before-present",type:"notice",page:page,reason:"unavailable"))
-        _ = await coordinator.handle(BrowserRequest(id:"cancel-early",type:"cancel",assessmentID:"cancel-before-present"))
-        let cancelledPresentation = await present(coordinator,"cancel-before-present")
-        assert(!cancelledPresentation.ok)
 
         // Automatic destination prefetch must not interrupt an explicit user
         // check, even when its descriptor happens to be a form submission.
@@ -284,7 +269,7 @@ private final class HeldModelFixture: URLProtocol {
                         BrowserRequest(id:"automatic-sensitive",type:"assess",page:page,action:action,purpose:"proactive")] {
             assert(BrowserAssessmentCoordinator.priority(for:request) == .background)
         }
-        assert(BrowserAssessmentCoordinator.priority(for:BrowserRequest(id:"manual",type:"assess",page:page)) == .interactive)
+        assert(BrowserAssessmentCoordinator.priority(for:BrowserRequest(id:"page",type:"assess",page:page,purpose:"proactive")) == .background)
         let routineEvents = Events()
         let routine = Task {
             try await inferenceScheduler.run(priority:.background) {
@@ -393,6 +378,6 @@ private final class HeldModelFixture: URLProtocol {
         let freshStatus = await cancelling.handle(BrowserRequest(id:"fresh-status",type:"status"))
         assert(freshStatus.lastAssessment?.id == "fresh-after-cancel" && freshStatus.completedAssessments == 1)
 
-        print("PASS: browser risk routing, manual page presentation, fresh high findings, privacy, sensitive intent priority, HTTP/queued/caller cancellation and recovery")
+        print("PASS: automatic browser risk routing, retired manual routes, recent activity, global pause, fresh high findings, sensitive intent priority, HTTP/queued/caller cancellation and recovery")
     }
 }

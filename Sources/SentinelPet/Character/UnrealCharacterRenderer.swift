@@ -60,7 +60,6 @@ final class UnrealCharacterRenderer: ObservableObject {
     func ownsProcess(_ pid: pid_t) -> Bool { process?.processIdentifier == pid }
     func setBrowserProtectionActive(_ active: Bool) {
         guard browserProtectionActive != active else { return }
-        idleStartedAt = Date(); sleepRequested = false
         browserProtectionActive = active
         writeCommand()
     }
@@ -145,13 +144,15 @@ final class UnrealCharacterRenderer: ObservableObject {
         let mouse = NSEvent.mouseLocation
         let screen = NSScreen.screens.first { $0.frame.contains(mouse) } ?? NSScreen.main
         let gaze = screen.map { Double((mouse.x - $0.frame.midX) / ($0.frame.width / 2)) } ?? 0
-        var pose = previewState != "live" ? previewState : (state == "idle" ? GuardianIdlePolicy.pose(after:Date().timeIntervalSince(idleStartedAt),protectionActive:browserProtectionActive) : state)
+        let inactiveSeconds = CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!)
+        let idleSeconds = min(inactiveSeconds, Date().timeIntervalSince(idleStartedAt))
+        var pose = previewState != "live" ? previewState : (state == "idle" ? GuardianIdlePolicy.pose(after: idleSeconds) : state)
         if pose == "sleep", state == "idle", previewState == "live", prepareSleep != nil {
             pose="drowsy"
             if !sleepRequested {
                 sleepRequested=true
                 DispatchQueue.main.async { [weak self] in
-                    guard let self, self.state == "idle", self.previewState == "live", self.sleepRequested, !self.browserProtectionActive else { return }
+                    guard let self, self.state == "idle", self.previewState == "live", self.sleepRequested else { return }
                     self.prepareSleep?()
                 }
             }

@@ -25,8 +25,8 @@ final class AvatarDragView: NSView {
         setAccessibilityElement(true)
         setAccessibilityRole(.button)
         setAccessibilityLabel("Muse avatar")
-        setAccessibilityHelp("Drag to choose a resting spot. Click to chat. Right-click to hide.")
-        toolTip = "Drag to move · Click to chat · Right-click to hide"
+        setAccessibilityHelp("Drag to keep Muse here. Click to chat. Right-click for placement and visibility options.")
+        toolTip = "Drag to move · Click to chat · Right-click for options"
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
@@ -59,12 +59,17 @@ final class AvatarDragView: NSView {
         let menu = NSMenu()
         let hide = NSMenuItem(title: "Hide Muse", action: #selector(hideAvatar), keyEquivalent: "")
         hide.target = self; menu.addItem(hide)
-        let automatic = NSMenuItem(title:"Stay out of my way",action:#selector(toggleAutomatic),keyEquivalent:"")
+        let automatic = NSMenuItem(title:"Automatic placement",action:#selector(useAutomaticPlacement),keyEquivalent:"")
         automatic.target = self
         automatic.state = SentinelPetRuntime.shared.petViewModel.automaticallyPositions ? .on : .off
         menu.addItem(automatic)
+        let pinned = NSMenuItem(title:"Keep here",action:#selector(keepHere),keyEquivalent:"")
+        pinned.target = self
+        pinned.state = SentinelPetRuntime.shared.petViewModel.automaticallyPositions ? .off : .on
+        menu.addItem(pinned)
         NSMenu.popUpContextMenu(menu, with: event, for: self)
     }
-    @objc private func toggleAutomatic() { SentinelPetRuntime.shared.petViewModel.automaticallyPositions.toggle() }
+    @objc private func useAutomaticPlacement() { SentinelPetRuntime.shared.petViewModel.automaticallyPositions = true }
+    @objc private func keepHere() { SentinelPetRuntime.shared.petViewModel.automaticallyPositions = false }
     @objc private func hideAvatar() { SentinelPetRuntime.shared.toggleAvatarVisibility() }
 }

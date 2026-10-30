@@ -6,7 +6,9 @@ import Foundation
 final class BrowserAssessmentCoordinator {
     private let analyzer: LocalRiskAnalyzer
     private let modelReady: () -> Bool
-    private let isDenied: (ScreenSnapshot) -> Bool
+    private let monitoringPaused: () -> Bool
+    private let onAssessment: (BrowserRequest, RiskVerdict?, ScreenSnapshot?, String?) -> Void
+    private var generation = 0
     private let onPresent: (BrowserRequest, RiskVerdict, ScreenSnapshot) -> Bool
     private let onProtectionChanged: (Bool) -> Void
     private let statusDetail: () -> String
@@ -35,14 +37,21 @@ final class BrowserAssessmentCoordinator {
     private var lastAssessment: BrowserResponse.AssessmentMetadata?
 
     init(analyzer: LocalRiskAnalyzer = LocalRiskAnalyzer(), modelReady: @escaping () -> Bool,
-         isDenied: @escaping (ScreenSnapshot) -> Bool = { _ in false },
-         statusDetail: @escaping () -> String = { "Text checks stay on this Mac. Visual checks require the screenshot button." },
+         monitoringPaused: @escaping () -> Bool = { false },
+         onAssessment: @escaping (BrowserRequest, RiskVerdict?, ScreenSnapshot?, String?) -> Void = { _,_,_,_ in },
+         statusDetail: @escaping () -> String = { "Automatic checks stay on this Mac." },
          now: @escaping () -> Date = Date.init,
          onProtectionChanged: @escaping (Bool) -> Void = { _ in },
          onPresent: @escaping (BrowserRequest, RiskVerdict, ScreenSnapshot) -> Bool = { _,_,_ in true }) {
-        self.analyzer = analyzer; self.modelReady = modelReady; self.isDenied = isDenied
+        self.analyzer = analyzer; self.modelReady = modelReady; self.monitoringPaused = monitoringPaused; self.onAssessment = onAssessment
         self.statusDetail = statusDetail; self.now = now; self.onPresent = onPresent
         self.onProtectionChanged = onProtectionChanged
+    }
+
+    func cancelAll() {
+        generation += 1
+        activeChecks.values.forEach { $0.cancel() }
+        receipts.removeAll(); highFindings.removeAll(); presentedIDs.removeAll()
     }
 
     func handle(_ raw: BrowserRequest) async -> BrowserResponse {
@@ -57,7 +66,7 @@ final class BrowserAssessmentCoordinator {
         if request.type == "protection-state", let enabled = request.protectionEnabled {
             // Repeated true messages renew the native awake lease. This is
             // protection metadata, not a model operation or page assessment.
-            onProtectionChanged(enabled)
+            onProtectionChanged(enabled && !monitoringPaused())
             return BrowserResponse(id: request.id, ok: true, decision: "review", riskLevel: "unknown",
                 summary: enabled ? "Browser protection is active." : "Browser protection is paused.",
                 guidance: "Muse received the browser protection state.")
@@ -68,6 +77,9 @@ final class BrowserAssessmentCoordinator {
                 summary: ready ? "Muse Guard is connected to the local model." : "Muse Guard is connected; the model is still starting.",
                 guidance: statusDetail(), mode: request.mode, modelReady: ready,
                 lastAssessment: lastAssessment, completedAssessments: completedCount)
+        }
+        if ["assess", "present-block"].contains(request.type), monitoringPaused() {
+            return .failure(id: request.id, message: "All automatic monitoring is paused.")
         }
         if request.type == "present-block" {
             guard let id = request.assessmentID, let finding = highFindings[id],
@@ -103,20 +115,6 @@ final class BrowserAssessmentCoordinator {
             return BrowserResponse(id: request.id, ok: true, decision: "review", riskLevel: "unknown",
                 summary: "This browser check was cancelled.", guidance: "No browser action was cleared.")
         }
-        if request.type == "present" {
-            guard let id = request.assessmentID, presentedIDs[id] == nil,
-                  let receipt = receipts[id], receipt.request.purpose == nil,
-                  receipt.request.action == nil || receipt.request.action?.kind == "page" else {
-                return expired(request)
-            }
-            receipts.removeValue(forKey: id)
-            rememberPresentation(id)
-            guard onPresent(receipt.request, receipt.verdict, receipt.snapshot) else {
-                presentedIDs.removeValue(forKey: id)
-                return expired(request)
-            }
-            return response(request, receipt: receipt, elapsed: 0)
-        }
         guard let page = request.page else { return .failure(id: request.id, mode: request.mode, message: "The browser request has no page evidence.") }
         if request.type == "assess", cancelledChecks[request.id] != nil {
             return .failure(id: request.id, mode: request.mode, message: "This browser check was cancelled before it started. No action was cleared.")
@@ -126,31 +124,25 @@ final class BrowserAssessmentCoordinator {
               highFindings[request.id] == nil, presentedIDs[request.id] == nil else {
             return .failure(id: request.id, mode: request.mode, message: "A check with this identifier already exists.")
         }
-        if request.type == "notice" { return notice(request) }
         guard modelReady() else {
-            return rememberFailure(request, message: "The local model is not ready. Retry this check when Muse is ready.")
+            return rememberFailure(request, message: "The local model is not ready. Automatic checks resume when Muse is ready.")
         }
         guard activeIDs.count < 6 else {
             return rememberFailure(request, message: "The local queue is full. This content has not been assessed; retry shortly.")
         }
         let snapshot = Self.snapshot(for: request, page: page)
-        guard !isDenied(snapshot) else {
-            return rememberFailure(request, message: "This page matches your native privacy deny list and was not analyzed.")
-        }
         activeIDs.insert(request.id)
         defer { activeIDs.remove(request.id); activeChecks.removeValue(forKey: request.id) }
+        let stamp = generation
         let start = now()
         let priority = Self.priority(for: request)
         let check = Task { [analyzer] in
             try await withThrowingTaskGroup(of: RiskVerdict.self) { group in
                 group.addTask {
-                    if let screenshot = request.screenshot {
-                        return try await analyzer.analyze(snapshot: snapshot, screenshotDataURL: screenshot, model: LocalModelConfiguration.model, priority: priority)
-                    }
                     return try await analyzer.analyze(snapshot: snapshot, model: LocalModelConfiguration.model, priority: priority, directAnswer: true)
                 }
                 group.addTask {
-                    try await Task.sleep(nanoseconds: request.mode == "vision" ? 55_000_000_000 : 25_000_000_000)
+                    try await Task.sleep(nanoseconds: 25_000_000_000)
                     throw BrowserCheckError.timedOut
                 }
                 defer { group.cancelAll() }
@@ -161,7 +153,7 @@ final class BrowserAssessmentCoordinator {
         do {
             let verdict = try await withTaskCancellationHandler(operation: { try await check.value }, onCancel: { check.cancel() })
             try Task.checkCancellation()
-            guard !check.isCancelled else { throw CancellationError() }
+            guard !check.isCancelled, stamp == generation, !monitoringPaused() else { throw CancellationError() }
             let receipt = remember(request, verdict: verdict)
             if verdict.riskLevel == .high {
                 highFindings[request.id] = receipt
@@ -169,6 +161,7 @@ final class BrowserAssessmentCoordinator {
                     highFindings.removeValue(forKey: oldest)
                 }
             }
+            onAssessment(request, verdict, receipt.snapshot, nil)
             completedCount += 1
             return recordAssessment(request, response: response(request, receipt: receipt, elapsed: now().timeIntervalSince(start)))
         } catch {
@@ -183,31 +176,15 @@ final class BrowserAssessmentCoordinator {
     }
 
     static func priority(for request: BrowserRequest) -> LocalInferenceScheduler.Priority {
-        if request.purpose != nil {
-            // Real sensitive-field intent takes precedence over routine scans,
-            // but must not cancel an equally important ongoing user chat.
-            return request.purpose == "intent" && request.action?.kind == "submit" && request.action?.sensitive == true ? .interactive : .background
-        }
-        return .interactive
+        // Sensitive form intent takes precedence over routine scans, while
+        // an ongoing explicit user chat keeps its interactive slot.
+        request.purpose == "intent" && request.action?.kind == "submit" && request.action?.sensitive == true ? .interactive : .background
     }
 
-    private func notice(_ request: BrowserRequest) -> BrowserResponse {
-        let summary: String, guidance: String
-        switch request.reason {
-        case "changed":
-            summary = "The page changed before its check completed."
-            guidance = "Check the currently visible page again. No browser action was cleared."
-        default:
-            summary = "Muse could not finish this browser check."
-            guidance = "No assessment is available. Check the connection and try again."
-        }
-        let verdict = RiskVerdict(riskLevel: .unknown, summary: summary, guidance: guidance, categories: ["browser_"+(request.reason ?? "unavailable")])
-        let receipt = remember(request, verdict: verdict, error: guidance)
-        return response(request, receipt: receipt, elapsed: 0)
-    }
     private func rememberFailure(_ request: BrowserRequest, message: String) -> BrowserResponse {
         let verdict = RiskVerdict(riskLevel: .unknown, summary: "Muse could not complete this check.", guidance: message, categories: ["unassessed"])
         let receipt = remember(request, verdict: verdict, error: message)
+        onAssessment(request, nil, receipt.snapshot, message)
         return recordAssessment(request, response: response(request, receipt: receipt, elapsed: 0))
     }
     private func recordAssessment(_ request: BrowserRequest, response: BrowserResponse) -> BrowserResponse {
@@ -246,7 +223,7 @@ final class BrowserAssessmentCoordinator {
         if presentedIDs.count > 64, let oldest = presentedIDs.min(by: { $0.value < $1.value })?.key { presentedIDs.removeValue(forKey: oldest) }
     }
     private func expired(_ request: BrowserRequest) -> BrowserResponse {
-        .failure(id: request.id, mode: request.mode, message: "That browser finding has expired. Check the current page again.")
+        .failure(id: request.id, mode: request.mode, message: "That browser finding has expired. Muse needs fresh page evidence.")
     }
     static func snapshot(for request: BrowserRequest, page: BrowserRequest.Page) -> ScreenSnapshot {
         var evidence: [String: Any] = ["page_url": page.url, "page_title": page.title,
@@ -273,6 +250,6 @@ final class BrowserAssessmentCoordinator {
     }
     enum BrowserCheckError: LocalizedError {
         case timedOut
-        var errorDescription: String? { "The local check timed out. This content has not been assessed. Retry the check." }
+        var errorDescription: String? { "The local check timed out. This content has not been assessed; Muse will retry automatically." }
     }
 }

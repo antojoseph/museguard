@@ -1,7 +1,5 @@
 import Foundation
 import Darwin
-import ImageIO
-import CoreGraphics
 
 private func beginExchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = nil) throws -> Int32 {
     let fd = socket(AF_UNIX, SOCK_STREAM, 0)
@@ -62,12 +60,12 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
                 "type": "assess", "mode": "text",
                 "page": ["url": "https://example.test/", "title": "Chrome fixture", "text": "Documentation"],
                 "action": ["kind": kind, "url": "https://example.test/docs", "label": "", "method": "", "sensitive": false]]
-            if kind == "link" { wire["purpose"] = "intent" }
+            wire["purpose"] = kind == "link" ? "intent" : "proactive"
             let decoded = try JSONDecoder().decode(BrowserRequest.self, from: JSONSerialization.data(withJSONObject: wire))
             let chromeMethod = try decoded.validated().action?.method
             assert(chromeMethod == "GET")
             let missing = BrowserRequest(id: "missing-"+kind, type: "assess", page: page,
-                action: .init(kind: kind, url: page.url, label: nil, method: nil, sensitive: nil), purpose: kind == "link" ? "intent" : nil)
+                action: .init(kind: kind, url: page.url, label: nil, method: nil, sensitive: nil), purpose: kind == "link" ? "intent" : "proactive")
             let missingMethod = try missing.validated().action?.method
             assert(missingMethod == "GET")
         }
@@ -93,7 +91,6 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
                 fatalError("A non-Boolean protection state was accepted")
             } catch {}
         }
-        _ = try BrowserRequest(id: "present", type: "present", assessmentID: "one").validated()
         _ = try BrowserRequest(id: "repeat-high", type: "present-block", assessmentID: "one").validated()
         for purpose in ["proactive", "intent"] {
             let request = try BrowserRequest(id: "background-"+purpose, type: "assess", page: page,
@@ -102,11 +99,6 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
             assert(decoded.purpose == purpose)
         }
         _ = try BrowserRequest(id: "cancel", type: "cancel", assessmentID: "one").validated()
-        for reason in ["changed", "unavailable"] {
-            let notice = try BrowserRequest(id: "manual-"+reason, type: "notice", page: page,
-                action: .init(kind: "page", url: page.url, label: nil, method: nil, sensitive: nil), reason: reason).validated()
-            assert(notice.reason == reason && notice.page?.url == "https://example.test/login")
-        }
         let response = BrowserResponse(id: "manual", ok: true, decision: "review", riskLevel: "unknown",
             summary: "Synthetic", guidance: "Review this page")
         let responseWire = try JSONSerialization.jsonObject(with: JSONEncoder().encode(response)) as! [String: Any]
@@ -123,36 +115,8 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
         let decodedDiagnostic = try JSONDecoder().decode(BrowserResponse.self, from: diagnosticData)
         assert(decodedDiagnostic.lastAssessment?.kind == "submit" && decodedDiagnostic.lastAssessment?.ok == true)
         assert(decodedDiagnostic.completedAssessments == 3)
-        // This is a complete 1x1 RGBA PNG, not just its file signature.
-        let png = Data(base64Encoded: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP439DwHwAHgAL/OfPOjwAAAABJRU5ErkJggg==")!
-        func imageRequest(_ data: Data, mime: String = "png") -> BrowserRequest {
-            BrowserRequest(id: "image", type: "assess", mode: "vision", page: page,
-                screenshot: "data:image/\(mime);base64," + data.base64EncodedString())
-        }
-        _ = try imageRequest(png).validated()
-        let context = CGContext(data: nil, width: 1, height: 1, bitsPerComponent: 8,
-            bytesPerRow: 4, space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
-        let jpeg = NSMutableData()
-        let destination = CGImageDestinationCreateWithData(jpeg, "public.jpeg" as CFString, 1, nil)!
-        CGImageDestinationAddImage(destination, context.makeImage()!, nil)
-        assert(CGImageDestinationFinalize(destination))
-        _ = try imageRequest(jpeg as Data, mime: "jpeg").validated()
-        func oversizedPNG(width: UInt32, height: UInt32) -> Data {
-            var bytes = [UInt8](png)
-            for (offset, value) in [(16,width),(20,height)] {
-                for n in 0..<4 { bytes[offset+n] = UInt8((value >> ((3-n)*8)) & 255) }
-            }
-            var crc: UInt32 = 0xffffffff
-            for byte in bytes[12..<29] {
-                crc ^= UInt32(byte)
-                for _ in 0..<8 { crc = (crc & 1) == 1 ? (crc >> 1) ^ 0xedb88320 : crc >> 1 }
-            }
-            crc ^= 0xffffffff
-            for n in 0..<4 { bytes[29+n] = UInt8((crc >> ((3-n)*8)) & 255) }
-            return Data(bytes)
-        }
         let tooManyBytes = "a" + String(repeating: "\u{0301}", count: 17_000)
-        for invalid in [imageRequest(oversizedPNG(width: 4_097, height: 1)),
+        for invalid in [BrowserRequest(id: "manual-page", type: "assess", page: page),
                         BrowserRequest(id: "retired", type: "decision", assessmentID: "one"),
                         BrowserRequest(id: "retired", type: "finish-checking", assessmentID: "one"),
                         BrowserRequest(id: "retired", type: "notice", page: page, reason: "checking"),
@@ -176,10 +140,8 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
                         BrowserRequest(id: "x", type: "cancel", assessmentID: "one", protectionEnabled: true),
                         BrowserRequest(id: "x", type: "notice", page: page, reason: "checking", protectionEnabled: true),
                         BrowserRequest(id: "x", type: "finish-checking", assessmentID: "one", protectionEnabled: true),
-                        imageRequest(oversizedPNG(width: 4_096, height: 2_049)),
-                        imageRequest(Data([137,80,78,71,13,10,26,10])),
-                        BrowserRequest(id: "x", type: "assess", page: .init(url: "https://example.test", title: "", text: tooManyBytes)),
-                        BrowserRequest(id: "x", type: "assess", page: .init(url: "https://example.test", title: "a" + String(repeating: "\u{0301}", count: 700), text: "")),
+                        BrowserRequest(id: "x", type: "assess", page: .init(url: "https://example.test", title: "", text: tooManyBytes), purpose: "proactive"),
+                        BrowserRequest(id: "x", type: "assess", page: .init(url: "https://example.test", title: "a" + String(repeating: "\u{0301}", count: 700), text: ""), purpose: "proactive"),
                         BrowserRequest(id: "x", type: "assess", page: page, action: .init(kind: "link", url: page.url, label: "a" + String(repeating: "\u{0301}", count: 1_100), method: nil, sensitive: false), purpose: "intent"),
                         BrowserRequest(id: "x", type: "assess", page: page, action: .init(kind: "submit", url: page.url, label: nil, method: "", sensitive: false), purpose: "intent"),
                         BrowserRequest(id: "x", type: "assess", page: page, action: .init(kind: "submit", url: page.url, label: nil, method: "DELETE", sensitive: false), purpose: "intent"),
@@ -195,8 +157,8 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
                         BrowserRequest(id: "x", type: "notice", page: page, reason: "arbitrary-message"),
                         BrowserRequest(version: 2, id: "x", type: "status"),
                         BrowserRequest(id: "x", type: "present"),
-                        BrowserRequest(id: "x", type: "assess", page: .init(url: "file:///secret", title: "", text: "")),
-                        BrowserRequest(id: "x", type: "assess", page: .init(url: "https://example.test", title: "", text: String(repeating:"a", count:8001))),
+                        BrowserRequest(id: "x", type: "assess", page: .init(url: "file:///secret", title: "", text: ""), purpose: "proactive"),
+                        BrowserRequest(id: "x", type: "assess", page: .init(url: "https://example.test", title: "", text: String(repeating:"a", count:8001)), purpose: "proactive"),
                         BrowserRequest(id: "x", type: "assess", mode: "vision", page: page, screenshot: "data:image/png;base64,aW52YWxpZA=="),
                         BrowserRequest(id: "x", type: "assess", page: page, screenshot: "unexpected") ] {
             do { _ = try invalid.validated(); fatalError("Invalid request accepted") } catch {}
@@ -254,6 +216,6 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
         assert(Date().timeIntervalSince(stopTime) < 1)
         close(stopping)
         assert(!FileManager.default.fileExists(atPath: endpoint.path))
-        print("PASS browser URL redaction, request/image validation, UTF-8 limits and bounded image dimensions, private socket permissions, concurrent correlated half-closed replies, truncation/oversize rejection, peer-disconnect cancellation and shutdown cancellation")
+        print("PASS browser URL redaction, retired manual/image routes, UTF-8 limits, private socket permissions, concurrent correlated half-closed replies, truncation/oversize rejection, peer-disconnect cancellation and shutdown cancellation")
     }
 }

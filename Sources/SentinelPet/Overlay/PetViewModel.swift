@@ -37,14 +37,20 @@ struct GuardianWarningDetails: Equatable {
 /// Observable state shared between Muse and its speech bubble.
 @MainActor
 final class PetViewModel: ObservableObject {
-    @Published var isAvatarHidden = UserDefaults.standard.bool(forKey: "museAvatarHidden") {
+    private let defaults: UserDefaults
+    private var temporaryVisibilityChange = false
+    private var hiddenBeforeWarning: Bool?
+    @Published var isAvatarHidden: Bool {
         didSet {
-            UserDefaults.standard.set(isAvatarHidden, forKey: "museAvatarHidden")
+            if !temporaryVisibilityChange {
+                hiddenBeforeWarning = nil
+                defaults.set(isAvatarHidden, forKey: "museAvatarHidden")
+            }
             if isAvatarHidden { invalidateChatResponse() }
         }
     }
-    @Published var automaticallyPositions = (UserDefaults.standard.object(forKey: "museAutoPlacement") as? Bool) ?? true {
-        didSet { UserDefaults.standard.set(automaticallyPositions, forKey:"museAutoPlacement") }
+    @Published var automaticallyPositions: Bool {
+        didSet { defaults.set(automaticallyPositions, forKey:"museAutoPlacement") }
     }
     @Published var intervention: GuardianIntervention?
     @Published var mood: PetMood = .idle
@@ -59,6 +65,36 @@ final class PetViewModel: ObservableObject {
 
     private var clearTask: Task<Void, Never>?
     private var activeChatResponseID:UUID?
+
+    init(defaults: UserDefaults = .standard) {
+        self.defaults = defaults
+        isAvatarHidden = defaults.bool(forKey: "museAvatarHidden")
+        automaticallyPositions = (defaults.object(forKey: "museAutoPlacement") as? Bool) ?? true
+    }
+
+    /// A serious warning can reveal Muse without changing the user's lasting
+    /// preference, including when the app quits before acknowledgement.
+    func revealForWarning() {
+        guard isAvatarHidden else { return }
+        hiddenBeforeWarning = true
+        temporaryVisibilityChange = true
+        isAvatarHidden = false
+        temporaryVisibilityChange = false
+    }
+
+    func restoreVisibilityAfterWarning() {
+        guard let hidden = hiddenBeforeWarning else { return }
+        hiddenBeforeWarning = nil
+        temporaryVisibilityChange = true
+        isAvatarHidden = hidden
+        temporaryVisibilityChange = false
+    }
+
+    /// Explicit Show, Hide and Ask Muse choices supersede a temporary reveal.
+    func setAvatarHidden(_ hidden: Bool) {
+        hiddenBeforeWarning = nil
+        isAvatarHidden = hidden
+    }
 
     var bubbleText: String? {
         message
@@ -83,14 +119,12 @@ final class PetViewModel: ObservableObject {
 
     /// Display a message in the speech bubble, optionally auto-clearing it.
     func show(_ text: String, mood: PetMood = .idle, clearAfter seconds: Double? = nil) {
-        guard acknowledgment == nil else { return }
+        // Routine notices are weaker than an active conversation. They must
+        // neither close its panel nor invalidate a reply already streaming.
+        guard acknowledgment == nil, !isChatOpen else { return }
         clearTask?.cancel()
         self.message = text
         self.mood = mood
-        isChatOpen = false
-        invalidateChatResponse()
-        chatMessages.removeAll()
-        chatContextLabel = nil
 
         guard let seconds else { return }
         clearTask = Task { [weak self] in
@@ -124,6 +158,7 @@ final class PetViewModel: ObservableObject {
         guard acknowledgment?.id == id else { return false }
         acknowledgment = nil
         dismissBubble()
+        resetChat()
         return true
     }
 
@@ -155,8 +190,26 @@ final class PetViewModel: ObservableObject {
         mood = .idle
         isChatOpen = false
         invalidateChatResponse()
+    }
+
+    /// Closing is reversible: only an explicit new conversation clears history.
+    func closeChat() {
+        if acknowledgment != nil { returnToWarning() }
+        else { dismissBubble() }
+    }
+
+    /// Leave the explanation without granting an acknowledgement.
+    func returnToWarning() {
+        guard acknowledgment != nil else { closeChat(); return }
+        isChatOpen = false
+        invalidateChatResponse()
+    }
+
+    func resetChat() {
+        invalidateChatResponse()
         chatMessages.removeAll()
         chatContextLabel = nil
+        if acknowledgment == nil { message = nil; mood = .idle }
     }
 
     func appendUserChat(_ text: String) {

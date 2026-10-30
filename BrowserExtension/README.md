@@ -1,8 +1,8 @@
 # Muse Guard for Chrome
 
-This Manifest V3 extension connects Chrome to the Muse Guard desktop app. It provides automatic **text checks** of bounded visible page content and redacted destinations, plus an explicit **screenshot check** for visual context. Both use the model on this Mac. The extension never receives the model API key and has no cloud endpoint.
+This Manifest V3 extension connects Chrome to the Muse Guard desktop app. It automatically checks bounded visible page text and redacted destinations using the model on this Mac. The extension never receives the model API key and has no cloud endpoint.
 
-**Every risk explanation and warning control belongs to the native Muse avatar.** The extension injects no warning panel or blocking overlay into websites, shows no risk badge, and renders no model verdict in its popup. The popup contains connection status, global pause/resume controls and manual check buttons.
+**Every risk explanation and warning control belongs to the native Muse avatar.** The extension injects no warning panel or blocking overlay into websites, shows no risk badge, and renders no model verdict in its popup. The popup contains connection status and one global pause/resume control. There are no manual scan or screenshot buttons.
 
 ## Automatic protection
 
@@ -14,7 +14,7 @@ Visible sensitive-form focus or a press can interrupt unrelated routine inferenc
 
 Loading, updating or restarting the extension also attaches to already-open HTTP/HTTPS tabs across Chrome windows. New navigations use the declared content script; activation and restored tabs provide another attachment check. Duplicate attachment requests reuse the same live listener. Discarded tabs start when Chrome restores them, and a saved Pause or disabled setting is preserved.
 
-Tab and Chrome-window activation explicitly refreshes the current tab's protection settings, including recovery from a temporary connection failure. Hidden tabs keep their own watchers and receive background checks when relevant evidence changes. A metadata-only heartbeat reports the global protection state to Muse every 30 seconds, so changing tabs or finishing one inference does not trigger a nap or remove the on-duty glasses. Pause/Disable clears that state immediately; if Chrome disconnects, its native awake lease expires after 90 seconds. The model's real inference activity is tracked separately.
+Tab and Chrome-window activation explicitly refreshes the current tab's protection settings, including recovery from a temporary connection failure. Hidden tabs keep their own watchers and receive background checks when relevant evidence changes. A metadata-only heartbeat reports the global protection state to Muse every 30 seconds, so changing tabs does not end the browser protection session. Monitoring continues independently of Muse's idle animation. Pause clears the on-duty state; if Chrome disconnects, that state expires after 90 seconds. The model's real inference activity is tracked separately.
 
 Only a completed, still-current **high-risk** assessment calls Muse over or blocks a matching supported action. Low, medium, unknown and unavailable assessments stay quiet. Normal browsing also continues while an assessment is still running; that does not mean the content has been assessed as safe. A click made before a useful verdict is ready can proceed. This is proactive assistance with cached blocking, not an instantaneous network firewall.
 
@@ -24,21 +24,17 @@ The visible high-risk explanation stays with Muse until you choose **Got it**. B
 
 ### Pause and resume
 
-The toolbar popup offers:
+The toolbar popup and Mac menu share one monitoring switch. **Pause monitoring** supports 30 minutes or until resumed; **Resume monitoring** starts fresh checks. Pausing stops browser reads, cancels pending inference, clears cached blocking decisions across all tabs, and stops optional desktop screen checks. Questions explicitly asked in Muse chat remain available.
 
-- **Pause 30 minutes** — pauses automatic protection, then resumes automatically. Chrome's alarm and persisted expiry make the timed pause survive closing the popup or restarting the service worker.
-- **Pause until resumed** — keeps automatic protection paused until you choose **Resume protection**.
-- **Resume protection** — restores automatic checks and requests fresh page assessments.
+The Mac app persists the authoritative pause and expiry. Chrome mirrors revisioned state over its local connection, clears pending work and broadcasts changes before acknowledging the new revision. Polling normally applies a native menu change within one second. Timed pauses survive closing the popup or restarting the worker/app. A metadata-only reconnect alarm continues while paused so Chrome can recover after the companion restarts. An unavailable companion cannot be reported as a successful global change: the popup explains when only Chrome was paused and desktop confirmation failed.
 
-Pausing stops new automatic reads and clears cached decisions and pending extension-side protection state. Late results cannot trigger a warning after protection is paused. The popup shows the remaining time in plain language and refreshes it every 30 seconds while open. Pause and Resume remain available on Chrome internal pages and new tabs; manual check buttons are available only on supported websites. Explicit text and screenshot checks remain available while automatic protection is paused.
+The popup refreshes connection health and remaining pause time every two seconds. Pause and Resume work on Chrome internal pages and new tabs too.
 
 Existing development installs migrate to this global behavior. The old site allowlist is ignored. A previously disabled global setting stays paused until you explicitly resume it.
 
-## Manual checks and avatar warnings
+## Contextual chat and avatar warnings
 
 When a user asks Muse a chat question while Chrome is the source app, the desktop companion requests a fresh snapshot of the active tab. The extension polls a metadata-only mailbox over its existing local connection; it reads and sends page text only when that explicit one-time request exists. It checks the tab, window, URL, document and visible content again before replying, omits form values, and sends no automatic screenshot. This explicit chat path remains available while automatic protection is paused. The context is consumed once and expires after six seconds.
-
-**Check text** sends the current visible text and bounded destination metadata. **Check screenshot** captures the current visible tab for visual analysis. The popup shows only whether the check completed; findings are presented by Muse. Keep the real toolbar popup focused and open until a manual check finishes. Opening `popup.html` as an ordinary tab cannot capture or analyze content.
 
 A fresh, matching high-risk action result can stop that specific click or submission. Muse explains the concern, and the high-risk warning offers no override. Closing the warning does not release or replay the action. Clicking the same still-dangerous action again can bring the warning back, using a metadata-only reference to the recent native finding; it does not send the page evidence again merely to redisplay that warning.
 
@@ -51,16 +47,16 @@ The extension never copies form values, submits a form itself, or replays a clic
 - Text extraction skips inputs, textareas, selects, editable elements, hidden elements, scripts, embedded frames and areas marked `data-private` or `data-muse-private`. It never reads field `.value` properties. Nested private or hidden content is excluded from labels too.
 - Page titles, visible text, bounded link/form metadata and action labels may contain personal information shown by a website. Automatic checks apply globally; use Pause when you do not want visible content checked locally.
 - URL user information, query strings and fragments are stripped before analysis, including literal URLs in collected text. Complete navigation URLs remain inside Chrome so actions retain their original query parameters.
-- A requested screenshot includes **everything visible in that tab**, including visible form values. Chrome captures only that tab, then locally resizes the image to at most 1600 pixels on its long edge and a JPEG data URL below 2 MB. Images are not saved. No continuous screenshot monitoring is started by this extension.
-- Protection and pause settings use `chrome.storage.local`. Only check-completion metadata uses session storage. Raw page text, screenshots and short-lived receipts stay in memory; no browsing history is stored.
-- Assessments use [Chrome native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging). The service worker handles automatic requests; explicit checks communicate directly from the toolbar popup. The model credential stays in the native app.
+- The extension does not capture screenshots. Optional desktop screen checks are managed by the companion app.
+- The native app persists the monitoring switch; Chrome mirrors pause settings and a revision in `chrome.storage.local`. Page evidence and short-lived receipts stay in memory; no browser check history is stored.
+- Assessments use [Chrome native messaging](https://developer.chrome.com/docs/extensions/develop/concepts/native-messaging). The service worker handles automatic requests and explicit chat context; the toolbar popup never owns a model job. The model credential stays in the native app.
 - Native presentation, repeated high-risk warnings and cancellation use metadata-only routes. The extension rechecks current context before asking Muse to present a finding; stale results cannot rehydrate a paused cache or block a changed action.
 
 ## Install and update
 
 Build the desktop app and register the native host using the repository's browser-bridge setup instructions. Load **this folder** as an unpacked extension from `chrome://extensions`. Its public manifest key provides a stable development ID; the host installer derives its exact allowed origin from that key. No private extension signing key is included.
 
-After loading, open a normal website and the extension's toolbar popup. It should say **Muse is ready** once the desktop app and local model are available, and automatic protection should show **On** for **All websites**. No site approval button is needed. A preserved disabled setting instead shows **Paused** with Resume available.
+After loading, open a normal website and the extension's toolbar popup. It should say **Muse is ready** once the desktop app and local model are available, and monitoring should show **Active**. No site approval button is needed. A preserved disabled setting instead shows **Paused** with Resume available.
 
 **Reload the extension once after updating its files.** Reopening the popup does not load new worker code or manifest permissions. The updated extension attaches to existing web tabs without reloading their pages. If upgrading from a much older development version that injected warning panels or lacked listener cleanup, refreshing an affected tab once removes those old handlers and panels.
 
@@ -68,7 +64,7 @@ After loading, open a normal website and the extension's toolbar popup. It shoul
 
 This version operates in the main frame. It cannot guarantee interception of hostile page JavaScript, programmatic `form.submit()` or fetch requests, redirects, iframe actions, browser UI actions, context-menu navigation or independent downloads. Browser-native protections remain in place. Model judgments can be wrong, and automatic analysis can arrive after a user action. Unknown, incomplete and unavailable assessments are not safe verdicts, even though this quiet policy lets normal browsing continue.
 
-The implementation uses an [isolated content script](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts), a service worker and the toolbar popup. HTTP/HTTPS host access enables injection. It uses `nativeMessaging`, `storage`, `activeTab`, `alarms` and [`scripting`](https://developer.chrome.com/docs/extensions/reference/api/scripting) to attach the bundled scripts to already-open tabs; it requests no cookies, browsing-history, debugger or web-request permission. Chrome internal pages and other extension-restricted pages are excluded. Incognito requires Chrome's separate user-controlled allowance. Executable code is bundled locally.
+The implementation uses an [isolated content script](https://developer.chrome.com/docs/extensions/develop/concepts/content-scripts), a service worker and the toolbar popup. HTTP/HTTPS host access enables injection. It uses `nativeMessaging`, `storage`, `alarms` and [`scripting`](https://developer.chrome.com/docs/extensions/reference/api/scripting) to attach the bundled scripts to already-open tabs; it requests no cookies, browsing-history, debugger or web-request permission. Chrome internal pages and other extension-restricted pages are excluded. Incognito requires Chrome's separate user-controlled allowance. Executable code is bundled locally.
 
 ## Checks
 

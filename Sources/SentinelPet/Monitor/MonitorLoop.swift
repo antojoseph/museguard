@@ -5,7 +5,6 @@ enum MonitorLoopStatus: Equatable {
     case sampling
     case skippedDuplicate
     case skippedOwnApp
-    case skippedDeniedApp(String)
     case analyzingScreenshot(String)
     case sleeping
 
@@ -17,8 +16,6 @@ enum MonitorLoopStatus: Equatable {
             return "No screen change"
         case .skippedOwnApp:
             return "Waiting for another app"
-        case let .skippedDeniedApp(appName):
-            return "Skipping \(appName)"
         case let .analyzingScreenshot(appName):
             return "Analyzing screenshot for \(appName)"
         case .sleeping:
@@ -50,7 +47,6 @@ final class MonitorLoop {
 
     func start(
         model: String,
-        deniedAppNames: [String],
         intervalSeconds: Double = 10,
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
         onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Void,
@@ -65,14 +61,13 @@ final class MonitorLoop {
             while !Task.isCancelled {
                 await self.sampleOnce(
                     model: model,
-                    deniedAppNames: deniedAppNames,
                     onStatus: onStatus,
                     onVerdict: onVerdict,
                     onError: onError
                 )
 
                 guard !Task.isCancelled else { return }
-                onStatus(.sleeping)
+                if self.inferenceTasks.isEmpty { onStatus(.sleeping) }
                 try? await Task.sleep(nanoseconds: UInt64(intervalSeconds * 1_000_000_000))
             }
         }
@@ -87,7 +82,6 @@ final class MonitorLoop {
 
     private func sampleOnce(
         model: String,
-        deniedAppNames: [String],
         onStatus: @escaping @MainActor (MonitorLoopStatus) -> Void,
         onVerdict: @escaping @MainActor (RiskVerdict, ScreenSnapshot, Bool) -> Void,
         onError: @escaping @MainActor (Error, ScreenSnapshot?) -> Void
@@ -95,16 +89,11 @@ final class MonitorLoop {
         var snapshot: ScreenSnapshot?
 
         do {
-            onStatus(.sampling)
             // A local GPU serves one request at a time; never accumulate stale screen captures.
             guard inferenceTasks.isEmpty else { return }
+            onStatus(.sampling)
             let screenSnapshot = try currentScreenContext()
             snapshot = screenSnapshot
-
-            guard !PrivacyFilter.isDenied(snapshot: screenSnapshot, deniedAppNames: deniedAppNames) else {
-                onStatus(.skippedDeniedApp(screenSnapshot.appName))
-                return
-            }
 
             let screenshot = try screenshotCapture.capture()
             let fingerprint = Self.fingerprint(for: screenSnapshot, screenshot: screenshot)

@@ -69,8 +69,11 @@ struct PetMessageView: View {
                         SentinelPetRuntime.shared.askPetChat(question)
                     },
                     onDismiss: {
-                        SentinelPetRuntime.shared.dismissPetBubble()
+                        SentinelPetRuntime.shared.closePetChat()
                     },
+                    onStop: { SentinelPetRuntime.shared.stopPetChatReply() },
+                    onNewChat: { SentinelPetRuntime.shared.resetPetChat() },
+                    onBack: { SentinelPetRuntime.shared.returnToWarning() },
                     onAcknowledge: { id in
                         SentinelPetRuntime.shared.acknowledgeWarning(id: id)
                     }

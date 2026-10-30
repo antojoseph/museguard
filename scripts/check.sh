@@ -6,6 +6,8 @@ mkdir -p build
 python3 scripts/check-muse-mesh.py
 python3 scripts/check-guard-accessories.py
 sources=Sources/SentinelPet
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/menu-bar-state-checks Tests/MenuBarStateChecks.swift "$sources/App/MenuBarState.swift"
+./build/menu-bar-state-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/release-configuration-checks Tests/BuildConfigurationChecks.swift "$sources/App/BuildConfiguration.swift"
 ./build/release-configuration-checks --visual-test --expect-disabled
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -D MUSE_DEVELOPMENT -o build/development-configuration-checks Tests/BuildConfigurationChecks.swift "$sources/App/BuildConfiguration.swift"
@@ -31,6 +33,8 @@ xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/streaming-
 ./build/streaming-chat-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-chat-context-checks Tests/BrowserChatContextChecks.swift "$sources/Browser/BrowserProtocol.swift" "$sources/Browser/BrowserChatContextBroker.swift"
 ./build/browser-chat-context-checks
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/monitoring-control-checks Tests/MonitoringControlChecks.swift "$sources/App/MonitoringControl.swift" "$sources/Browser/BrowserProtocol.swift"
+./build/monitoring-control-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/response-checks Tests/ResponseChecks.swift "${shared[@]}"
 ./build/response-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-assessment-checks Tests/BrowserAssessmentChecks.swift "$sources/Browser/BrowserProtocol.swift" "$sources/Browser/BrowserAssessmentCoordinator.swift" "${shared[@]}"

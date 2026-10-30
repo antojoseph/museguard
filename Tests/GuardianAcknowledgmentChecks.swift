@@ -5,7 +5,10 @@ import SwiftUI
 /// stored visibility/placement preferences.
 @main struct GuardianAcknowledgmentChecks {
     @MainActor static func main() async throws {
-        let model = PetViewModel()
+        let domain = "MuseGuardAcknowledgmentChecks.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: domain)!
+        defer { defaults.removePersistentDomain(forName: domain) }
+        let model = PetViewModel(defaults: defaults)
         let warning = "This destination asks for your password and one-time code."
 
         // Let an ordinary message's timer start before a warning takes over.
@@ -42,6 +45,11 @@ import SwiftUI
         assert(model.isChatOpen && model.isChatThinking && model.chatMessages.count == 2)
         assert(model.acknowledgment?.id == "warning-one" && model.intervention?.id == interventionID,
             "Opening or generically closing chat does not acknowledge a warning.")
+        model.returnToWarning()
+        assert(!model.isChatOpen && !model.isChatThinking && model.chatMessages.count == 2)
+        assert(model.acknowledgment?.id == "warning-one" && model.intervention?.id == interventionID,
+            "Back leaves the warning pinned without acknowledging it.")
+        model.openChat()
 
         // Repeated transport deliveries cannot replace the message, chat or
         // identity of the warning awaiting the user's acknowledgement.
@@ -70,6 +78,44 @@ import SwiftUI
         assert(model.message == "Routine updates resume after acknowledgement" && model.bubbleIsDismissible)
         try await Task.sleep(nanoseconds: 25_000_000)
         assert(model.message == nil && model.intervention == nil && model.mood == .idle)
-        print("PASS: real guardian acknowledgement survives timers, routine updates, dismissal, chat and duplicate deliveries; only a matching explicit acknowledgement releases it")
+
+        model.openChat(); model.appendUserChat("Keep this conversation")
+        let response = UUID()
+        model.beginChatResponse(id: response)
+        model.show("A background check failed", mood: .alert, clearAfter: 0.001)
+        assert(model.isChatOpen && model.isChatThinking && model.chatMessages.count == 1,
+            "Routine notices must not interrupt a conversation or its active reply.")
+        model.chatContextLabel = "Current page"
+        model.closeChat()
+        assert(!model.isChatOpen && !model.isChatThinking && model.chatMessages.count == 1)
+        assert(model.chatContextLabel == "Current page")
+        model.show("A settings confirmation", clearAfter: 0.001)
+        model.openChat()
+        assert(model.chatMessages.count == 1 && model.chatMessages.first?.text == "Keep this conversation",
+            "Reopening preserves history and does not seed it with a routine notice.")
+        model.resetChat()
+        assert(model.isChatOpen && model.chatMessages.isEmpty && model.chatContextLabel == nil,
+            "Only New chat explicitly clears a normal conversation.")
+
+        model.setAvatarHidden(true)
+        model.revealForWarning()
+        assert(!model.isAvatarHidden && defaults.bool(forKey: "museAvatarHidden"),
+            "A temporary warning reveal must not overwrite the hidden preference.")
+        assert(PetViewModel(defaults: defaults).isAvatarHidden,
+            "Restarting before Got it must retain the user's hidden preference.")
+        model.restoreVisibilityAfterWarning()
+        assert(model.isAvatarHidden && defaults.bool(forKey: "museAvatarHidden"))
+        model.revealForWarning()
+        model.setAvatarHidden(false)
+        model.restoreVisibilityAfterWarning()
+        assert(!model.isAvatarHidden && !defaults.bool(forKey: "museAvatarHidden"),
+            "An explicit Show must override temporary restoration.")
+        model.setAvatarHidden(true)
+        model.revealForWarning()
+        model.setAvatarHidden(true)
+        model.restoreVisibilityAfterWarning()
+        assert(model.isAvatarHidden && defaults.bool(forKey: "museAvatarHidden"),
+            "An explicit Hide must remain in force.")
+        print("PASS: warnings require matching acknowledgement; Back, preserved conversations, routine notices and explicit New chat remain independent")
     }
 }

@@ -1,5 +1,4 @@
 import Foundation
-import ImageIO
 
 /// Page evidence is untrusted input. This protocol carries no model credential.
 struct BrowserRequest: Codable {
@@ -32,14 +31,18 @@ struct BrowserRequest: Codable {
     let tabID: Int?
     let windowID: Int?
     let documentID: String?
+    let monitoringCommand: String?
+    let pauseDurationMS: Int?
+    let monitoringRevision: Int64?
 
-    init(version: Int = 1, id: String, type: String, mode: String = "text", page: Page? = nil, action: Action? = nil, screenshot: String? = nil, assessmentID: String? = nil, reason: String? = nil, purpose: String? = nil, protectionEnabled: Bool? = nil, contextRequestID: String? = nil, contextError: String? = nil, tabID: Int? = nil, windowID: Int? = nil, documentID: String? = nil) {
+    init(version: Int = 1, id: String, type: String, mode: String = "text", page: Page? = nil, action: Action? = nil, screenshot: String? = nil, assessmentID: String? = nil, reason: String? = nil, purpose: String? = nil, protectionEnabled: Bool? = nil, contextRequestID: String? = nil, contextError: String? = nil, tabID: Int? = nil, windowID: Int? = nil, documentID: String? = nil, monitoringCommand: String? = nil, pauseDurationMS: Int? = nil, monitoringRevision: Int64? = nil) {
         self.version = version; self.id = id; self.type = type; self.mode = mode
         self.page = page; self.action = action; self.screenshot = screenshot; self.assessmentID = assessmentID; self.reason = reason
         self.purpose = purpose
         self.protectionEnabled = protectionEnabled
         self.contextRequestID = contextRequestID; self.contextError = contextError
         self.tabID = tabID; self.windowID = windowID; self.documentID = documentID
+        self.monitoringCommand = monitoringCommand; self.pauseDurationMS = pauseDurationMS; self.monitoringRevision = monitoringRevision
     }
     private enum CodingKeys: String, CodingKey {
         case version, id, type, mode, page, action, screenshot, reason, purpose
@@ -47,6 +50,7 @@ struct BrowserRequest: Codable {
         case protectionEnabled = "protection_enabled"
         case contextRequestID = "context_request_id", contextError = "context_error"
         case tabID = "tab_id", windowID = "window_id", documentID = "document_id"
+        case monitoringCommand = "monitoring_command", pauseDurationMS = "pause_duration_ms", monitoringRevision = "monitoring_revision"
     }
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -66,16 +70,31 @@ struct BrowserRequest: Codable {
         tabID = try values.decodeIfPresent(Int.self, forKey: .tabID)
         windowID = try values.decodeIfPresent(Int.self, forKey: .windowID)
         documentID = try values.decodeIfPresent(String.self, forKey: .documentID)
+        monitoringCommand = try values.decodeIfPresent(String.self, forKey: .monitoringCommand)
+        pauseDurationMS = try values.decodeIfPresent(Int.self, forKey: .pauseDurationMS)
+        monitoringRevision = try values.decodeIfPresent(Int64.self, forKey: .monitoringRevision)
     }
     func validated() throws -> BrowserRequest {
         guard version == 1, !id.isEmpty, id.utf8.count <= 128,
-              !id.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
-              ["status", "assess", "present", "present-block", "cancel", "notice", "protection-state", "chat-context-poll", "chat-context-result"].contains(type), ["text", "vision"].contains(mode) else {
-            throw BrowserProtocolError.invalidRequest
+              !id.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains), mode == "text",
+              ["status", "assess", "present-block", "cancel", "protection-state", "chat-context-poll", "chat-context-result", "monitoring-state", "monitoring-control"].contains(type),
+              screenshot == nil, reason == nil else { throw BrowserProtocolError.invalidRequest }
+        if ["monitoring-state", "monitoring-control"].contains(type) {
+            guard page == nil, action == nil, assessmentID == nil, purpose == nil, protectionEnabled == nil,
+                  contextRequestID == nil, contextError == nil, tabID == nil, windowID == nil, documentID == nil,
+                  monitoringRevision == nil || monitoringRevision! > 0 else { throw BrowserProtocolError.invalidRequest }
+            if type == "monitoring-state" {
+                guard monitoringCommand == nil, pauseDurationMS == nil else { throw BrowserProtocolError.invalidRequest }
+            } else {
+                guard ["pause", "resume"].contains(monitoringCommand ?? ""),
+                      monitoringCommand == "pause" ? [0, 1_800_000].contains(pauseDurationMS ?? -1) : pauseDurationMS == nil else { throw BrowserProtocolError.invalidRequest }
+            }
+            return self
         }
+        guard monitoringCommand == nil, pauseDurationMS == nil, monitoringRevision == nil else { throw BrowserProtocolError.invalidRequest }
         if type == "chat-context-result" {
-            guard mode == "text", let contextRequestID, UUID(uuidString: contextRequestID) != nil,
-                  action == nil, screenshot == nil, assessmentID == nil, reason == nil, purpose == nil, protectionEnabled == nil else { throw BrowserProtocolError.invalidRequest }
+            guard let contextRequestID, UUID(uuidString: contextRequestID) != nil,
+                  action == nil, assessmentID == nil, purpose == nil, protectionEnabled == nil else { throw BrowserProtocolError.invalidRequest }
             if let contextError {
                 guard !contextError.trimmingCharacters(in:.whitespacesAndNewlines).isEmpty, contextError.utf8.count <= 256,
                       !contextError.unicodeScalars.contains(where:CharacterSet.controlCharacters.contains),
@@ -89,66 +108,32 @@ struct BrowserRequest: Codable {
                 tabID:tabID,windowID:windowID,documentID:documentID)
         }
         guard contextRequestID == nil, contextError == nil, tabID == nil, windowID == nil, documentID == nil else { throw BrowserProtocolError.invalidRequest }
-        if type == "chat-context-poll" {
-            guard mode == "text", page == nil, action == nil, screenshot == nil, assessmentID == nil,
-                  reason == nil, purpose == nil, protectionEnabled == nil else { throw BrowserProtocolError.invalidRequest }
-            return self
-        }
         if type == "protection-state" {
-            guard mode == "text", protectionEnabled != nil, page == nil, action == nil,
-                  screenshot == nil, assessmentID == nil, reason == nil, purpose == nil else { throw BrowserProtocolError.invalidRequest }
+            guard protectionEnabled != nil, page == nil, action == nil, assessmentID == nil, purpose == nil else { throw BrowserProtocolError.invalidRequest }
             return self
         }
         guard protectionEnabled == nil else { throw BrowserProtocolError.invalidRequest }
-        if ["status", "present", "present-block", "cancel"].contains(type) {
-            guard page == nil, action == nil, screenshot == nil, reason == nil, purpose == nil else { throw BrowserProtocolError.invalidRequest }
-            if type != "status" {
+        if ["status", "chat-context-poll", "present-block", "cancel"].contains(type) {
+            guard page == nil, action == nil, purpose == nil else { throw BrowserProtocolError.invalidRequest }
+            if ["present-block", "cancel"].contains(type) {
                 guard let assessmentID, !assessmentID.isEmpty, assessmentID.utf8.count <= 128,
                       !assessmentID.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains) else { throw BrowserProtocolError.invalidRequest }
             } else if assessmentID != nil { throw BrowserProtocolError.invalidRequest }
             return self
         }
-        guard assessmentID == nil else { throw BrowserProtocolError.invalidRequest }
-        if let purpose {
-            guard type == "assess", mode == "text", ["proactive", "intent"].contains(purpose) else { throw BrowserProtocolError.invalidRequest }
-        }
-        if type == "notice" {
-            guard mode == "text", screenshot == nil, let reason,
-                  ["unavailable", "changed"].contains(reason) else { throw BrowserProtocolError.invalidRequest }
-        } else if reason != nil { throw BrowserProtocolError.invalidRequest }
-        // Explicit popup checks concern the visible page. Link/form evidence
-        // belongs to the proactive/intent path and never creates a held action.
-        if purpose == nil, let action, action.kind != "page" { throw BrowserProtocolError.invalidRequest }
-        guard let page else { throw BrowserProtocolError.invalidRequest }
+        guard assessmentID == nil, ["proactive", "intent"].contains(purpose ?? ""), let page else { throw BrowserProtocolError.invalidRequest }
         let cleanPage = try Self.validatedPage(page)
         var cleanAction: Action?
         if let action {
             guard ["page", "link", "submit"].contains(action.kind), (action.label?.count ?? 0) <= 512,
                   (action.label?.utf8.count ?? 0) <= 2_048,
                   (action.method?.count ?? 0) <= 16, (action.url?.utf8.count ?? 0) <= 4_096 else { throw BrowserProtocolError.invalidRequest }
-            // Background page/link descriptors may serialize an absent DOM
-            // method as an empty string. Navigations use GET; never infer POST.
-            let suppliedMethod = action.method?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-            let method = suppliedMethod == nil || (action.kind != "submit" && suppliedMethod == "") ? "GET" : suppliedMethod!
+            let supplied = action.method?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+            let method = supplied == nil || (action.kind != "submit" && supplied == "") ? "GET" : supplied!
             guard ["GET", "POST", "DIALOG"].contains(method) else { throw BrowserProtocolError.invalidRequest }
             cleanAction = Action(kind: action.kind, url: try action.url.map(Self.cleanURL), label: action.label.map(Self.cleanText), method: method, sensitive: action.sensitive)
         }
-        if mode == "vision" {
-            guard let screenshot, screenshot.utf8.count <= 2_000_000 else { throw BrowserProtocolError.invalidScreenshot }
-            let prefix = screenshot.hasPrefix("data:image/png;base64,") ? "data:image/png;base64," : "data:image/jpeg;base64,"
-            guard screenshot.hasPrefix(prefix), let data = Data(base64Encoded: String(screenshot.dropFirst(prefix.count))),
-                  data.count >= 8,
-                  (prefix.contains("png") ? data.starts(with: [137,80,78,71,13,10,26,10]) : data.starts(with: [255,216,255])) else { throw BrowserProtocolError.invalidScreenshot }
-            let options = [kCGImageSourceShouldCache: false] as CFDictionary
-            guard let source = CGImageSourceCreateWithData(data as CFData, options),
-                  CGImageSourceGetCount(source) == 1, CGImageSourceGetStatus(source) == .statusComplete,
-                  let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, options) as NSDictionary?,
-                  let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
-                  let height = properties[kCGImagePropertyPixelHeight] as? NSNumber else { throw BrowserProtocolError.invalidScreenshot }
-            let w = width.int64Value, h = height.int64Value
-            guard w > 0, h > 0, w <= 4_096, h <= 4_096, w*h <= 8_000_000 else { throw BrowserProtocolError.invalidScreenshot }
-        } else if screenshot != nil { throw BrowserProtocolError.invalidRequest }
-        return BrowserRequest(id: id, type: type, mode: mode, page: cleanPage, action: cleanAction, screenshot: screenshot, reason: reason, purpose: purpose)
+        return BrowserRequest(id: id, type: type, page: cleanPage, action: cleanAction, purpose: purpose)
     }
     private static func cleanText(_ value: String) -> String {
         String(value.unicodeScalars.filter { !CharacterSet.controlCharacters.contains($0) || $0 == "\n" || $0 == "\t" })
@@ -169,6 +154,12 @@ struct BrowserRequest: Codable {
 }
 
 struct BrowserResponse: Codable {
+    struct MonitoringState: Codable, Equatable {
+        let paused: Bool
+        let pauseUntil: Int64
+        let revision: Int64
+        enum CodingKeys: String, CodingKey { case paused, revision; case pauseUntil = "pause_until" }
+    }
     /// Status diagnostics deliberately exclude all page and action evidence.
     /// The coordinator retains only the most recently finished assessment.
     struct AssessmentMetadata: Codable {
@@ -198,18 +189,20 @@ struct BrowserResponse: Codable {
     let completedAssessments: Int?
     let contextRequestID: String?
     let contextExpiresAt: Int64?
+    let monitoring: MonitoringState?
     enum CodingKeys: String, CodingKey {
-        case version, id, ok, decision, summary, guidance, categories, mode, error
+        case version, id, ok, decision, summary, guidance, categories, mode, error, monitoring
         case riskLevel = "risk_level", durationMS = "duration_ms", modelReady = "model_ready"
         case lastAssessment = "last_assessment", completedAssessments = "completed_assessments"
         case contextRequestID = "context_request_id", contextExpiresAt = "context_expires_at"
     }
-    init(id: String, ok: Bool, decision: String, riskLevel: String, summary: String, guidance: String, categories: [String] = [], mode: String = "text", durationMS: Int = 0, error: String? = nil, modelReady: Bool? = nil, lastAssessment: AssessmentMetadata? = nil, completedAssessments: Int? = nil, contextRequestID: String? = nil, contextExpiresAt: Int64? = nil) {
+    init(id: String, ok: Bool, decision: String, riskLevel: String, summary: String, guidance: String, categories: [String] = [], mode: String = "text", durationMS: Int = 0, error: String? = nil, modelReady: Bool? = nil, lastAssessment: AssessmentMetadata? = nil, completedAssessments: Int? = nil, contextRequestID: String? = nil, contextExpiresAt: Int64? = nil, monitoring: MonitoringState? = nil) {
         self.id = id; self.ok = ok; self.decision = decision; self.riskLevel = riskLevel
         self.summary = summary; self.guidance = guidance; self.categories = categories; self.mode = mode
         self.durationMS = durationMS; self.error = error; self.modelReady = modelReady
         self.lastAssessment = lastAssessment; self.completedAssessments = completedAssessments
         self.contextRequestID = contextRequestID; self.contextExpiresAt = contextExpiresAt
+        self.monitoring = monitoring
     }
     static func failure(id: String, mode: String = "text", message: String) -> BrowserResponse {
         BrowserResponse(id: id, ok: false, decision: "review", riskLevel: "unknown", summary: "Muse could not complete this check.", guidance: message, mode: mode, error: message)
@@ -217,12 +210,11 @@ struct BrowserResponse: Codable {
 }
 
 enum BrowserProtocolError: LocalizedError {
-    case invalidRequest, invalidURL, invalidScreenshot, frameTooLarge, truncatedFrame, unavailable, socketPathTooLong, alreadyRunning
+    case invalidRequest, invalidURL, frameTooLarge, truncatedFrame, unavailable, socketPathTooLong, alreadyRunning
     var errorDescription: String? {
         switch self {
         case .invalidRequest: return "The browser request was not valid."
         case .invalidURL: return "Only HTTP and HTTPS page or action URLs can be checked."
-        case .invalidScreenshot: return "The screenshot was not a supported, bounded PNG or JPEG image."
         case .frameTooLarge: return "The browser message exceeded the local size limit."
         case .truncatedFrame: return "The browser connection ended before its message was complete."
         case .unavailable: return "Muse Guard is unavailable. Open the companion app and try again."

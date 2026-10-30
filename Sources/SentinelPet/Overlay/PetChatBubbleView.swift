@@ -1,13 +1,18 @@
 import SwiftUI
+import AppKit
 
 struct PetChatBubbleView: View {
     @ObservedObject var viewModel: PetViewModel
     var acknowledgmentAvailableSize: CGSize? = nil
     let onSend: (String) -> Void
     let onDismiss: () -> Void
+    let onStop: () -> Void
+    let onNewChat: () -> Void
+    let onBack: () -> Void
     var onAcknowledge: ((String) -> Void)?
 
     @State private var draft = ""
+    @State private var followsLatest = true
 
     private var acknowledgmentSize: CGSize? {
         guard viewModel.acknowledgment != nil, let acknowledgmentAvailableSize else { return nil }
@@ -34,7 +39,20 @@ struct PetChatBubbleView: View {
 
                 Spacer()
 
-                if viewModel.acknowledgment == nil {
+                if viewModel.acknowledgment != nil {
+                    Button(action: onBack) { Label("Back", systemImage: "chevron.backward") }
+                        .buttonStyle(.plain)
+                        .help("Back to warning without acknowledging it (Esc)")
+                        .keyboardShortcut(.cancelAction)
+                } else {
+                    Button {
+                        followsLatest = true
+                        draft = ""
+                        onNewChat()
+                    } label: { Text("New chat") }
+                        .buttonStyle(.plain)
+                        .font(.caption)
+                        .help("Start a new conversation")
                     Button(action: onDismiss) {
                         Image(systemName: "xmark")
                             .font(.caption.weight(.bold))
@@ -50,28 +68,40 @@ struct PetChatBubbleView: View {
             }
 
             ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 7) {
-                        ForEach(viewModel.chatMessages) { message in
-                            ChatRow(message: message)
-                                .id(message.id)
-                        }
-
-                        if viewModel.isChatThinking {
-                            HStack(spacing: 6) {
-                                ProgressView()
-                                    .scaleEffect(0.55)
-                                Text(viewModel.isChatStreaming ? "Replying…" : "Checking...")
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
+                ZStack(alignment: .bottomTrailing) {
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 7) {
+                            ForEach(viewModel.chatMessages) { message in
+                                ChatRow(message: message)
+                                    .id(message.id)
                             }
-                            .id("thinking")
+
+                            if viewModel.isChatThinking {
+                                HStack(spacing: 6) {
+                                    ProgressView()
+                                        .scaleEffect(0.55)
+                                    Text(viewModel.isChatStreaming ? "Replying…" : "Checking…")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+                            Color.clear.frame(height: 1).id("chat-latest")
                         }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(ChatScrollObserver { followsLatest = $0 })
                     }
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                    if !followsLatest {
+                        Button {
+                            followsLatest = true
+                            scrollToBottom(proxy, force: true)
+                        } label: { Label("Latest", systemImage: "arrow.down") }
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                    }
                 }
                 .frame(height: acknowledgmentTranscriptHeight)
                 .frame(maxHeight: viewModel.acknowledgment == nil ? 196 : 152)
+                .onAppear { scrollToBottom(proxy, force: true) }
                 .onChange(of: viewModel.chatMessages.count) { _ in
                     scrollToBottom(proxy)
                 }
@@ -94,10 +124,16 @@ struct PetChatBubbleView: View {
                     .disabled(viewModel.isChatThinking)
                     .onSubmit(send)
 
-                Button(action: send) {
-                    Image(systemName: "paperplane.fill")
+                if viewModel.isChatThinking {
+                    Button("Stop", action: onStop)
+                        .accessibilityLabel("Stop reply")
+                } else {
+                    Button(action: send) {
+                        Image(systemName: "paperplane.fill")
+                    }
+                    .accessibilityLabel("Send message")
+                    .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
-                .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || viewModel.isChatThinking)
             }
             .layoutPriority(viewModel.acknowledgment == nil ? 0 : 1)
         }
@@ -124,18 +160,66 @@ struct PetChatBubbleView: View {
         let question = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !question.isEmpty, !viewModel.isChatThinking else { return }
 
+        followsLatest = true
         draft = ""
         onSend(question)
     }
 
-    private func scrollToBottom(_ proxy: ScrollViewProxy) {
+    private func scrollToBottom(_ proxy: ScrollViewProxy, force: Bool = false) {
         DispatchQueue.main.async {
-            if viewModel.isChatThinking {
-                proxy.scrollTo("thinking", anchor: .bottom)
-            } else if let last = viewModel.chatMessages.last {
-                proxy.scrollTo(last.id, anchor: .bottom)
-            }
+            guard force || followsLatest else { return }
+            proxy.scrollTo("chat-latest", anchor: .bottom)
         }
+    }
+}
+
+/// Observe actual scrolling, rather than treating growing streamed text as a
+/// request to leave the bottom. The zero-sized anchor never receives input.
+private struct ChatScrollObserver: NSViewRepresentable {
+    var onFollowChanged: (Bool) -> Void
+    func makeCoordinator() -> Coordinator { Coordinator(onFollowChanged) }
+    func makeNSView(context: Context) -> Anchor {
+        let view = Anchor()
+        view.onConnect = { [weak coordinator = context.coordinator] anchor in coordinator?.connect(anchor) }
+        return view
+    }
+    func updateNSView(_ view: Anchor, context: Context) {
+        context.coordinator.onFollowChanged = onFollowChanged
+        view.connectLater()
+    }
+    final class Anchor: NSView {
+        var onConnect: ((NSView) -> Void)?
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); connectLater() }
+        func connectLater() { DispatchQueue.main.async { [weak self] in if let self { self.onConnect?(self) } } }
+    }
+    final class Coordinator {
+        var onFollowChanged: (Bool) -> Void
+        private weak var scrollView: NSScrollView?
+        private var observer: NSObjectProtocol?
+        private var previousOrigin = NSPoint.zero
+        init(_ callback: @escaping (Bool) -> Void) { onFollowChanged = callback }
+        func connect(_ anchor: NSView) {
+            var parent = anchor.superview
+            while let view = parent, !(view is NSScrollView) { parent = view.superview }
+            guard let scroll = parent as? NSScrollView, scroll !== scrollView else { return }
+            if let observer { NotificationCenter.default.removeObserver(observer) }
+            scrollView = scroll
+            previousOrigin = scroll.contentView.bounds.origin
+            scroll.contentView.postsBoundsChangedNotifications = true
+            observer = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification,
+                object: scroll.contentView, queue: .main) { [weak self] _ in self?.didScroll() }
+        }
+        private func didScroll() {
+            guard let scroll = scrollView, let document = scroll.documentView else { return }
+            let origin = scroll.contentView.bounds.origin
+            guard origin != previousOrigin else { return }
+            previousOrigin = origin
+            let visible = document.visibleRect
+            let distance = document.isFlipped ? document.bounds.maxY - visible.maxY : visible.minY - document.bounds.minY
+            onFollowChanged(distance <= 28)
+        }
+        deinit { if let observer { NotificationCenter.default.removeObserver(observer) } }
     }
 }
 

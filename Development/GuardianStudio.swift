@@ -53,7 +53,7 @@ private struct GuardianStudioView: View {
                 }
             Picker("Accessory", selection: Binding(get:{accessory},set:{renderer.accessory=$0})) {
                 Text("Guard").tag("guard")
-                Text("Focus").tag("focus")
+                Text("Headphones").tag("focus")
                 Text("Just Muse").tag("none")
             }.pickerStyle(.segmented)
             Picker("Animation", selection: Binding(get:{previewState},set:{renderer.previewState=$0})) {
@@ -75,13 +75,13 @@ private struct GuardianStudioView: View {
                 Text(status).font(.caption).foregroundStyle(.secondary)
             }
             HStack {
-                Toggle("Stay out of my way", isOn:$pet.automaticallyPositions).toggleStyle(.switch)
+                Toggle("Automatic placement", isOn:$pet.automaticallyPositions).toggleStyle(.switch)
                 Spacer()
                 Text(pet.automaticallyPositions ? "Avoids your active window and pointer." : "Pinned where you dragged it.")
                     .font(.caption).foregroundStyle(.secondary)
             }
             HStack {
-                Button("Nap in a quiet corner") { renderer.requestNap() }
+                Button("Preview nap") { renderer.requestNap() }
                     .disabled(!isReady || pet.isAvatarHidden || pet.acknowledgment != nil)
                 Spacer()
                 Text("Yawn, walk or climb, then settle into bed.")

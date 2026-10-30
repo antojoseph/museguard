@@ -1,110 +1,58 @@
 import SwiftUI
 import AppKit
+import Combine
 
-/// Contents of the menu-bar dropdown.
+/// Everyday actions stay here; setup and recovery live in Settings.
+@MainActor
 struct MenuBarContent: View {
-    @ObservedObject private var pet = SentinelPetRuntime.shared.petViewModel
-    @ObservedObject private var renderer = UnrealCharacterRenderer.shared
-    @ObservedObject private var localModel = LocalModelService.shared
-    @ObservedObject var runtime: SentinelPetRuntime = .shared
+    @StateObject private var menu: MenuBarState
+    private let runtime: SentinelPetRuntime
+
+    init() {
+        let runtime = SentinelPetRuntime.shared
+        self.runtime = runtime
+        #if MUSE_DEVELOPMENT
+        let rendererReady = UnrealCharacterRenderer.shared.$isReady.eraseToAnyPublisher()
+        #else
+        let rendererReady = Just(false).eraseToAnyPublisher()
+        #endif
+        _menu = StateObject(wrappedValue: MenuBarState(
+            status: runtime.$monitoringStatus.eraseToAnyPublisher(),
+            paused: runtime.$monitoringPaused.eraseToAnyPublisher(),
+            hidden: runtime.petViewModel.$isAvatarHidden.eraseToAnyPublisher(),
+            acknowledgment: runtime.petViewModel.$acknowledgment.map { $0 != nil }.eraseToAnyPublisher(),
+            rendererReady: rendererReady))
+    }
 
     var body: some View {
-        Text("Muse Guard")
-            .font(.headline)
-
-        Label(renderer.status, systemImage: "cube.transparent")
-        Button(pet.isAvatarHidden ? "Show Muse" : "Hide Muse") { runtime.toggleAvatarVisibility() }
-        Toggle("Stay out of my way", isOn:$pet.automaticallyPositions)
+        Text("Muse Guard").font(.headline)
+        Label(menu.snapshot.monitoringStatus, systemImage: menu.snapshot.monitoringPaused ? "pause.circle" : "shield.lefthalf.filled")
+        Button("Ask Muse…") { runtime.openPetChat() }
+        if menu.snapshot.monitoringPaused {
+            Button("Resume monitoring") { runtime.resumeMonitoring() }
+        } else {
+            Menu("Pause monitoring") {
+                Button("For 30 minutes") { runtime.pauseMonitoring(for: 30 * 60) }
+                Button("Until I resume") { runtime.pauseMonitoring(for: 0) }
+            }
+        }
+        Divider()
+        Button(menu.snapshot.avatarHidden ? "Show Muse" : "Hide Muse") { runtime.toggleAvatarVisibility() }
+        Button("Return Muse home") { runtime.returnMuseHome() }
+            .disabled(menu.snapshot.hasAcknowledgment)
+        Button("Recent activity…") { runtime.showAnalysisLogs() }
+        Button("Settings…") { runtime.showSettings() }
         #if MUSE_DEVELOPMENT
-        Button("Open Muse Studio…") { GuardianStudio.shared.show() }
-        Button("Preview guard intervention") { runtime.previewGuardianIntervention() }
-            .disabled(!renderer.isReady || pet.isAvatarHidden || pet.acknowledgment != nil)
+        Divider()
+        Menu("Development") {
+            Button("Open Muse Studio…") { GuardianStudio.shared.show() }
+            Button("Preview guard intervention") { runtime.previewGuardianIntervention() }
+                .disabled(!menu.snapshot.rendererReady || menu.snapshot.avatarHidden || menu.snapshot.hasAcknowledgment)
+            Button("Open mock lab…") { MockLab.shared.show() }
+        }
         #endif
-        Picker("Accessory", selection: $renderer.accessory) {
-            Text("Guard · cap & badge").tag("guard")
-            Text("Focus · headphones").tag("focus")
-            Text("Just Muse").tag("none")
-        }
-        Button("Return Muse home") { runtime.dismissPetBubble() }
-            .disabled(pet.acknowledgment != nil)
-        Menu("3D renderer") {
-            Button("Restart 3D renderer") { renderer.restart() }
-            Button("Open renderer logs") { renderer.showLogs() }
-        }
         Divider()
-
-        Label(
-            runtime.accessibilityTrusted ? "Accessibility enabled" : "Accessibility optional",
-            systemImage: runtime.accessibilityTrusted ? "checkmark.shield" : "accessibility"
-        )
-
-        Label(
-            runtime.screenCaptureTrusted ? "Screen Recording enabled" : "Screen Recording required",
-            systemImage: runtime.screenCaptureTrusted ? "checkmark.rectangle" : "camera.viewfinder"
-        )
-
-        Label(localModel.status, systemImage: "desktopcomputer")
-        Label(runtime.browserStatus, systemImage: "globe")
-        Button("Start local model") { localModel.start() }
-        Button("Open model logs") { localModel.showLogs() }
-
-        Label(
-            runtime.isMonitoring ? runtime.monitorStatus : "Monitoring paused",
-            systemImage: runtime.isMonitoring ? "eye" : "pause.circle"
-        )
-
-        Button(runtime.accessibilityTrusted ? "Check accessibility access" : "Enable accessibility access") {
-            runtime.requestAccessibilityPermission()
-        }
-
-        Button("Open Accessibility Settings") {
-            runtime.openAccessibilitySettings()
-        }
-
-        Button(runtime.screenCaptureTrusted ? "Check screen recording access" : "Enable screen recording access") {
-            runtime.requestScreenCapturePermission()
-        }
-
-        Button("Open Screen Recording Settings") {
-            runtime.openScreenRecordingSettings()
-        }
-
-        Button("Read focused window") {
-            runtime.scanFocusedContext()
-        }
-        .disabled(!runtime.accessibilityTrusted)
-
-        Button("Analyze focused window") {
-            runtime.analyzeFocusedContext()
-        }
-
-        Button("Analyze screenshot") {
-            runtime.analyzeScreenshot()
-        }
-
-        Divider()
-
-        Button(runtime.isMonitoring ? "Pause monitoring" : "Start monitoring") {
-            runtime.toggleMonitoring()
-        }
-
-        Button("View logs…") {
-            runtime.showAnalysisLogs()
-        }
-
-        #if MUSE_DEVELOPMENT
-        Button("Open mock lab…") { MockLab.shared.show() }
-        #endif
-
-        Button("Settings…") {
-            runtime.showSettings()
-        }
-
-        Divider()
-
-        Button("Quit Muse Guard") {
-            NSApplication.shared.terminate(nil)
-        }
-        .keyboardShortcut("q")
+        Button("Quit Muse Guard") { NSApplication.shared.terminate(nil) }
+            .keyboardShortcut("q")
     }
 }

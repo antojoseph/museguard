@@ -12,37 +12,55 @@ final class SentinelPetRuntime: ObservableObject {
     @Published private(set) var settings = AppSettingsStore.load()
     @Published private(set) var isMonitoring = false
     @Published private(set) var monitorStatus = "Monitoring paused"
+    @Published private(set) var monitoringPaused = MonitoringControl.shared.isPaused
+    @Published private(set) var monitoringStatus = "Starting monitoring…"
     @Published private(set) var analysisLogs: [AnalysisLogEntry] = []
-    @Published private(set) var isAnalyzing = false
     #if MUSE_DEVELOPMENT
+    @Published private(set) var isAnalyzing = false
     @Published private(set) var lastMockResult: String?
     #endif
     @Published private(set) var browserStatus = "Browser guard stopped"
     private let browserBridge = BrowserBridgeServer()
     private let browserChatContext = BrowserChatContextBroker()
+    private let monitoringControl = MonitoringControl.shared
     private lazy var browserAssessments: BrowserAssessmentCoordinator = BrowserAssessmentCoordinator(
         modelReady: { LocalModelService.shared.isReady },
-        isDenied: { [weak self] snapshot in self?.isDenied(snapshot) ?? true },
+        monitoringPaused: { [weak self] in self?.monitoringPaused ?? true },
+        onAssessment: { [weak self] request, verdict, snapshot, error in
+            guard let self else { return }
+            if let verdict, let snapshot {
+                self.logVerdict(verdict, source: .browserText, snapshot: snapshot,
+                    includesScreenshot: false, updatesChatContext: false)
+            } else if let error {
+                self.appendLog(AnalysisLogEntry(timestamp: Date(), source: .browserText,
+                    appName: snapshot?.appName ?? "Google Chrome", windowTitle: snapshot?.windowTitle,
+                    model: LocalModelConfiguration.model, includesScreenshot: false,
+                    verdict: nil, errorMessage: error))
+            }
+        },
         statusDetail: { [weak self] in self?.browserStatus ?? "Muse Guard is closing." },
-        onProtectionChanged: { [weak self] enabled in self?.browserProtection.update(enabled:enabled) },
+        onProtectionChanged: { [weak self] enabled in
+            guard let self else { return }
+            self.browserProtection.update(enabled: enabled && !self.monitoringPaused)
+        },
         onPresent: { [weak self] request, verdict, snapshot in
             guard let self else { return false }
+            guard !self.monitoringPaused, verdict.riskLevel == .high else { return false }
             guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.google.Chrome" else {
                 self.browserStatus = "Chrome warning received; avatar stayed home because Chrome was not foreground."
-                return false
-            }
-            guard !self.petViewModel.isAvatarHidden else {
-                self.browserStatus = "Chrome warning received; Muse is hidden."
                 return false
             }
             let warningContext = "browser:" + (request.page?.url ?? snapshot.windowTitle ?? snapshot.appName)
             if self.petViewModel.acknowledgment != nil {
                 // A repeated finding for the same page is already visible.
                 // Other findings remain retryable after the user acknowledges it.
-                return verdict.riskLevel == .high && self.acknowledgmentContext == warningContext
+                guard self.acknowledgmentContext == warningContext else { return false }
+                let wasHidden = self.petViewModel.isAvatarHidden
+                self.petViewModel.revealForWarning()
+                if wasHidden, let target = self.acknowledgmentTarget { self.petViewModel.intervene(at: target) }
+                return true
             }
-            self.logVerdict(verdict, source: request.mode == "vision" ? .browserVision : .browserText,
-                snapshot: snapshot, includesScreenshot: request.mode == "vision")
+            self.updateChatReport(verdict, source: .browserText, snapshot: snapshot)
             // Text-only browser protection needs no Screen Recording access.
             // If macOS withholds Chrome's window metadata, use the current
             // display center after verifying Chrome is foreground.
@@ -61,9 +79,9 @@ final class SentinelPetRuntime: ObservableObject {
     private lazy var monitorLoop = MonitorLoop(screenReader: screenReader, riskAnalyzer: riskAnalyzer, screenshotCapture: screenshotCapture)
     private let settingsWindowController = SettingsWindowController()
     private let analysisLogsWindowController = AnalysisLogsWindowController()
-    private var analysisTask: Task<Void, Never>?
     private var chatTask: Task<Void, Never>?
     #if MUSE_DEVELOPMENT
+    private var analysisTask: Task<Void, Never>?
     private var demoTask: Task<Void, Never>?
     #endif
     private var latestChatContext: RiskReportChatContext?
@@ -95,7 +113,26 @@ final class SentinelPetRuntime: ObservableObject {
         petViewModel.$isAvatarHidden.removeDuplicates().filter { $0 }.sink { [weak self] _ in
             guard let self else { return }
             self.cancelChat()
-            self.screenChatHistory.reset()
+        }.store(in: &browserSubscriptions)
+        monitoringControl.$state.sink { [weak self] state in
+            self?.applyMonitoringState(paused: state.paused)
+        }.store(in: &browserSubscriptions)
+        monitoringControl.$browserAcknowledgedRevision.removeDuplicates().sink { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in self?.refreshMonitoringStatus() }
+        }.store(in: &browserSubscriptions)
+        monitoringControl.$browserConnected.removeDuplicates().sink { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in self?.refreshMonitoringStatus() }
+        }.store(in: &browserSubscriptions)
+        LocalModelService.shared.$isReady.removeDuplicates().sink { [weak self] ready in
+            DispatchQueue.main.async { [weak self] in
+                guard let self else { return }
+                if ready { self.reconcileDesktopMonitoring() }
+                else { self.stopMonitoring() }
+                self.refreshMonitoringStatus()
+            }
+        }.store(in: &browserSubscriptions)
+        LocalModelService.shared.$status.removeDuplicates().sink { [weak self] _ in
+            DispatchQueue.main.async { [weak self] in self?.refreshMonitoringStatus() }
         }.store(in: &browserSubscriptions)
         petViewModel.$isChatOpen.removeDuplicates().filter { !$0 }.sink { [weak self] _ in
             self?.cancelChat()
@@ -106,8 +143,9 @@ final class SentinelPetRuntime: ObservableObject {
         do {
             try browserBridge.start { [weak self] request in
                 guard let self else { return .failure(id: request.id, mode: request.mode, message: "Muse Guard is closing.") }
+                if let controlReply = self.monitoringControl.handle(request) { return controlReply }
                 if let contextReply = self.browserChatContext.handle(request) { return contextReply }
-                if request.type == "assess", request.purpose != nil { self.browserProtection.refreshFromAutomaticCheck() }
+                if request.type == "assess", request.purpose != nil, !self.monitoringPaused { self.browserProtection.refreshFromAutomaticCheck() }
                 return await self.browserAssessments.handle(request)
             }
             browserStatus = "Browser guard · local connection ready"
@@ -118,16 +156,20 @@ final class SentinelPetRuntime: ObservableObject {
     func toggleAvatarVisibility() {
         if petViewModel.isAvatarHidden {
             dismissPetBubble()
-            petViewModel.isAvatarHidden = false
+            petViewModel.setAvatarHidden(false)
             if petViewModel.acknowledgment != nil, let target = acknowledgmentTarget { petViewModel.intervene(at: target) }
         } else {
-            petViewModel.isAvatarHidden = true
+            petViewModel.setAvatarHidden(true)
             dismissPetBubble()
         }
     }
 
     func refreshAccessibilityStatus() { accessibilityTrusted = AccessibilityPermissionController.isTrusted }
-    func refreshScreenCaptureStatus() { screenCaptureTrusted = ScreenCapturePermissionController.isTrusted }
+    func refreshScreenCaptureStatus() {
+        screenCaptureTrusted = ScreenCapturePermissionController.isTrusted
+        if screenCaptureTrusted { reconcileDesktopMonitoring() }
+        else { stopMonitoring() }
+    }
     func requestAccessibilityPermission() {
         accessibilityTrusted = AccessibilityPermissionController.requestAccess()
         petViewModel.show(accessibilityTrusted ? "Accessibility is enabled. I can read focused-window text." : "Enable Muse Guard in Privacy & Security → Accessibility, then restart the app.", mood: .idle, clearAfter: 8)
@@ -142,48 +184,7 @@ final class SentinelPetRuntime: ObservableObject {
     func showAnalysisLogs() { analysisLogsWindowController.show(runtime: self) }
     func clearAnalysisLogs() { analysisLogs.removeAll() }
 
-    func scanFocusedContext() {
-        refreshAccessibilityStatus()
-        guard accessibilityTrusted else { permissionMessage("Accessibility"); return }
-        do {
-            let snapshot = try screenReader.readFocusedContext()
-            guard !isDenied(snapshot) else { showDenied(snapshot); return }
-            petViewModel.show("\(snapshot.appName): \(snapshot.text.prefix(160))", clearAfter: 10)
-        } catch { petViewModel.show(error.localizedDescription, mood: .alert, clearAfter: 8) }
-    }
-    func analyzeFocusedContext() {
-        refreshAccessibilityStatus()
-        guard accessibilityTrusted else { permissionMessage("Accessibility"); return }
-        beginAnalysis(screenshot: false)
-    }
-    func analyzeScreenshot() {
-        refreshScreenCaptureStatus()
-        guard screenCaptureTrusted else { permissionMessage("Screen Recording"); return }
-        beginAnalysis(screenshot: true)
-    }
-    private func beginAnalysis(screenshot: Bool) {
-        guard modelReady() else { return }
-        analysisTask?.cancel()
-        analysisTask = Task { [weak self] in
-            guard let self else { return }
-            self.isAnalyzing = true
-            defer { self.isAnalyzing = false }
-            try? await Task.sleep(nanoseconds: 350_000_000)
-            guard !Task.isCancelled else { return }
-            var snapshot: ScreenSnapshot?
-            do {
-                let context = screenshot ? self.bestEffortContext() : try self.screenReader.readFocusedContext()
-                snapshot = context
-                guard !self.isDenied(context) else { self.showDenied(context); return }
-                let image = screenshot ? try self.screenshotCapture.capture().dataURL : nil
-                try await self.evaluate(context, image: image, source: screenshot ? .screenshot : .focusedWindow)
-            } catch {
-                guard !Task.isCancelled else { return }
-                self.logError(error, source: screenshot ? .screenshot : .focusedWindow, snapshot: snapshot)
-                self.petViewModel.show(error.localizedDescription, mood: .alert, clearAfter: 10)
-            }
-        }
-    }
+    #if MUSE_DEVELOPMENT
     private func evaluate(_ snapshot: ScreenSnapshot, image: String?, source: AnalysisLogSource, target: CGPoint? = nil) async throws {
         petViewModel.show("Checking locally with Muse Glimmer…", mood: .scanning)
         let verdict: RiskVerdict
@@ -193,18 +194,62 @@ final class SentinelPetRuntime: ObservableObject {
         logVerdict(verdict, source: source, snapshot: snapshot, includesScreenshot: image != nil)
         presentVerdict(verdict, snapshot: snapshot, target: target)
     }
-    func toggleMonitoring() { if isMonitoring { stopMonitoring(showMessage: true) } else { startMonitoring() } }
+    #endif
+
+    func pauseMonitoring(for seconds: TimeInterval = 0) { monitoringControl.pause(for: seconds) }
+    func resumeMonitoring() { monitoringControl.resume() }
+
+    private func applyMonitoringState(paused: Bool) {
+        monitoringPaused = paused
+        if paused {
+            stopMonitoring()
+            browserAssessments.cancelAll()
+            browserProtection.update(enabled: false)
+        } else {
+            reconcileDesktopMonitoring()
+        }
+        DispatchQueue.main.async { [weak self] in self?.refreshMonitoringStatus() }
+    }
+
+    private func refreshMonitoringStatus() {
+        let nextStatus: String
+        if monitoringControl.syncPending {
+            nextStatus = monitoringControl.browserConnected ?
+                (monitoringPaused ? "Pausing browser monitoring…" : "Resuming browser monitoring…") :
+                (monitoringPaused ? "Pause saved · waiting for Chrome" : "Waiting for Chrome")
+        }
+        else if monitoringPaused { nextStatus = "Monitoring paused" }
+        else if !LocalModelService.shared.isReady { nextStatus = LocalModelService.shared.status }
+        else if !monitoringControl.browserConnected { nextStatus = isMonitoring ? "Desktop checks on · Chrome disconnected" : "Chrome disconnected" }
+        else { nextStatus = "Monitoring on" }
+        if monitoringStatus != nextStatus { monitoringStatus = nextStatus }
+    }
+
+    private func reconcileDesktopMonitoring() {
+        guard settings.monitoringConsentGranted, !monitoringPaused,
+              ScreenCapturePermissionController.isTrusted, LocalModelService.shared.isReady else { return }
+        if !isMonitoring { startMonitoring() }
+    }
+
+    func setDesktopMonitoringEnabled(_ enabled: Bool) {
+        settings = AppSettings(monitoringConsentGranted: enabled)
+        AppSettingsStore.save(settings)
+        if enabled { reconcileDesktopMonitoring() }
+        else { stopMonitoring() }
+    }
+
     func startMonitoring() {
-        refreshScreenCaptureStatus()
-        guard settings.monitoringConsentGranted else { petViewModel.show("Enable local monitoring in Settings first.", clearAfter: 8); showSettings(); return }
-        guard screenCaptureTrusted else { permissionMessage("Screen Recording"); return }
-        guard modelReady() else { return }
+        screenCaptureTrusted = ScreenCapturePermissionController.isTrusted
+        guard !isMonitoring, !monitoringPaused, settings.monitoringConsentGranted,
+              screenCaptureTrusted, LocalModelService.shared.isReady else { return }
         lastMonitorErrorMessage = nil
-        monitorLoop.start(model: LocalModelConfiguration.model, deniedAppNames: settings.deniedAppNames,
+        monitorLoop.start(model: LocalModelConfiguration.model,
             onStatus: { [weak self] status in self?.monitorStatus = status.label },
             onVerdict: { [weak self] verdict, snapshot, screenshot in
                 guard let self else { return }
-                let interrupt = self.settings.alertSensitivity.shouldInterrupt(for: verdict.riskLevel)
+                guard !self.monitoringPaused, self.settings.monitoringConsentGranted else { return }
+                self.lastMonitorErrorMessage = nil
+                let interrupt = verdict.riskLevel == .high
                 self.monitorStatus = "Last local check: \(verdict.riskLevel.rawValue)"
                 self.logVerdict(verdict, source: .monitorScreenshot, snapshot: snapshot, includesScreenshot: screenshot, updatesChatContext: interrupt)
                 if interrupt { self.presentVerdict(verdict, snapshot: snapshot) }
@@ -213,42 +258,44 @@ final class SentinelPetRuntime: ObservableObject {
                 guard let self else { return }
                 self.monitorStatus = "Local analysis unavailable"
                 if error is ScreenshotCaptureError { self.stopMonitoring() }
+                self.logError(error, source: .monitorScreenshot, snapshot: snapshot)
                 guard error.localizedDescription != self.lastMonitorErrorMessage else { return }
                 self.lastMonitorErrorMessage = error.localizedDescription
-                self.logError(error, source: .monitorScreenshot, snapshot: snapshot)
                 self.petViewModel.show(error.localizedDescription, mood: .alert, clearAfter: 10)
             })
         isMonitoring = true
-        petViewModel.show("Local monitoring started. Screen analysis stays on this Mac.", clearAfter: 6)
+        refreshMonitoringStatus()
     }
-    func stopMonitoring(showMessage: Bool = false) {
+    private func stopMonitoring() {
         monitorLoop.stop(); isMonitoring = false; monitorStatus = "Monitoring paused"
-        if showMessage { petViewModel.show("Monitoring paused.", clearAfter: 4) }
-    }
-    func saveSettings(monitoringConsentGranted: Bool, alertSensitivity: AlertSensitivity, deniedAppNames: [String]) {
-        let restart = isMonitoring
-        stopMonitoring()
-        settings = AppSettings(monitoringConsentGranted: monitoringConsentGranted, alertSensitivity: alertSensitivity, deniedAppNames: deniedAppNames)
-        AppSettingsStore.save(settings)
-        petViewModel.show("Local model settings saved.", clearAfter: 4)
-        if restart && monitoringConsentGranted { startMonitoring() }
+        refreshMonitoringStatus()
     }
     func openPetChat() {
         rememberChatApplication()
+        if petViewModel.isAvatarHidden { petViewModel.setAvatarHidden(false) }
         let explainsWarning = petViewModel.acknowledgment != nil ||
             (petViewModel.mood == .alert && petViewModel.message != nil)
         let explanation = explainsWarning ? latestChatContext.map { "Why I flagged it:\n\($0.summary)\n\nWhat to do:\n\($0.guidance)" } : nil
         petViewModel.openChat(seedText: explanation)
-        if petViewModel.chatContextLabel == nil, let app = chatApplication() {
-            petViewModel.chatContextLabel = "Current app · \(app.localizedName ?? "selected app")"
-        }
+        petViewModel.chatContextLabel = chatApplication().map { "Current app · \($0.localizedName ?? "selected app")" } ?? "Context refreshes when you ask"
     }
     func dismissPetBubble() {
         cancelChat()
         guard petViewModel.acknowledgment == nil else { return }
         cancelDemo(); latestChatContext = nil
-        screenChatHistory.reset()
         petViewModel.dismissBubble()
+    }
+    func closePetChat() { cancelChat(); petViewModel.closeChat() }
+    func returnToWarning() { cancelChat(); petViewModel.returnToWarning() }
+    func stopPetChatReply() { cancelChat() }
+    func resetPetChat() {
+        cancelChat()
+        screenChatHistory.reset()
+        petViewModel.resetChat()
+    }
+    func returnMuseHome() {
+        guard petViewModel.acknowledgment == nil else { return }
+        petViewModel.intervention = nil
     }
     func acknowledgeWarning(id: String) {
         guard petViewModel.acknowledgment?.id == id else { return }
@@ -259,6 +306,7 @@ final class SentinelPetRuntime: ObservableObject {
         latestChatContext = nil
         screenChatHistory.reset()
         petViewModel.acknowledge(id: id)
+        petViewModel.restoreVisibilityAfterWarning()
         browserStatus = "Warning acknowledged."
     }
     func askPetChat(_ question: String) {
@@ -361,21 +409,17 @@ final class SentinelPetRuntime: ObservableObject {
     private func captureChatContext(app: NSRunningApplication?) async throws -> (context:ScreenChatContext,key:String,label:String) {
         guard let app, !app.isTerminated else { throw ScreenReaderError.noFrontmostApplication }
         let name = app.localizedName ?? "Current app"
-        guard !isDenied(ScreenSnapshot(appName:name,windowTitle:nil,text:"")) else { throw ChatScreenError.denied }
         if isChrome(app) {
             let fresh = try await browserChatContext.requestContext()
             try Task.checkCancellation()
             guard chatApplication()?.processIdentifier == app.processIdentifier else { throw ChatScreenError.changed }
             let snapshot = ScreenSnapshot(appName:name,windowTitle:fresh.page.title,text:fresh.page.text)
-            guard !isDenied(snapshot) else { throw ChatScreenError.denied }
             return (ScreenChatContext(snapshot:snapshot,sourceLabel:"Chrome extension · current visible page",url:fresh.page.url),
                 "chrome:\(fresh.tabID):\(fresh.documentID):\(fresh.page.url)","Using Chrome · \(fresh.page.title)")
         }
         let beforeWindow = chatWindow(for:app)
-        guard !isDenied(ScreenSnapshot(appName:name,windowTitle:beforeWindow?.title,text:"")) else { throw ChatScreenError.denied }
         var snapshot: ScreenSnapshot?
         if AccessibilityPermissionController.isTrusted { snapshot = try? screenReader.readContext(for:app) }
-        if let snapshot, isDenied(snapshot) { throw ChatScreenError.denied }
         var image: String?
         if (snapshot?.text.count ?? 0) < 80, ScreenCapturePermissionController.isTrusted, let beforeWindow {
             image = try? screenshotCapture.capture(windowID:CGWindowID(beforeWindow.id)).dataURL
@@ -427,6 +471,7 @@ final class SentinelPetRuntime: ObservableObject {
         demoTask?.cancel(); demoTask = nil
         #endif
     }
+    #if MUSE_DEVELOPMENT
     private func modelReady() -> Bool {
         guard LocalModelService.shared.isReady else {
             LocalModelService.shared.start()
@@ -435,13 +480,7 @@ final class SentinelPetRuntime: ObservableObject {
         }
         return true
     }
-    private func bestEffortContext() -> ScreenSnapshot {
-        if let snapshot = try? screenReader.readFocusedContext(maxCharacters: 3000) { return snapshot }
-        return ScreenSnapshot(appName: NSWorkspace.shared.frontmostApplication?.localizedName ?? "Screen", windowTitle: nil, text: "Screenshot only; accessible text was unavailable.")
-    }
-    private func isDenied(_ snapshot: ScreenSnapshot) -> Bool { PrivacyFilter.isDenied(snapshot: snapshot, deniedAppNames: settings.deniedAppNames) }
-    private func showDenied(_ snapshot: ScreenSnapshot) { petViewModel.show("Skipped \(snapshot.appName): it matches your privacy deny list.", clearAfter: 7) }
-    private func permissionMessage(_ name: String) { petViewModel.show("Enable \(name) access from the menu, then restart Muse Guard.", mood: .scanning, clearAfter: 8) }
+    #endif
     @discardableResult
     private func presentVerdict(_ verdict: RiskVerdict, snapshot: ScreenSnapshot, target: CGPoint? = nil,
         acknowledgmentID: String? = nil, acknowledgmentContext context: String? = nil) -> Bool {
@@ -454,6 +493,10 @@ final class SentinelPetRuntime: ObservableObject {
         let pinned = risky || verdict.riskLevel == .unknown
         if verdict.riskLevel == .high {
             cancelChat()
+            screenChatHistory.reset()
+            if petViewModel.isAvatarHidden {
+                petViewModel.revealForWarning()
+            }
             let text = "\(verdict.summary)\n\(verdict.guidance)\nI’ll stay here until you choose Got it."
             guard petViewModel.showAcknowledgment(id: acknowledgmentID ?? UUID().uuidString, text: text,
                 details: GuardianWarningDetails(summary: verdict.summary, guidance: verdict.guidance)) else { return false }
@@ -471,14 +514,20 @@ final class SentinelPetRuntime: ObservableObject {
         return true
     }
     private func logVerdict(_ verdict: RiskVerdict, source: AnalysisLogSource, snapshot: ScreenSnapshot, includesScreenshot: Bool, updatesChatContext: Bool = true) {
-        if updatesChatContext && petViewModel.acknowledgment == nil { latestChatContext = RiskReportChatContext(sourceLabel: source.label, appName: snapshot.appName, windowTitle: snapshot.windowTitle, riskLevel: verdict.riskLevel, summary: verdict.summary, guidance: verdict.guidance, categories: verdict.categories) }
+        if updatesChatContext { updateChatReport(verdict, source: source, snapshot: snapshot) }
         appendLog(AnalysisLogEntry(timestamp: Date(), source: source, appName: snapshot.appName, windowTitle: snapshot.windowTitle, model: LocalModelConfiguration.model, includesScreenshot: includesScreenshot, verdict: verdict, errorMessage: nil))
     }
     private func logError(_ error: Error, source: AnalysisLogSource, snapshot: ScreenSnapshot?) {
         appendLog(AnalysisLogEntry(timestamp: Date(), source: source, appName: snapshot?.appName ?? source.label, windowTitle: snapshot?.windowTitle, model: LocalModelConfiguration.model, includesScreenshot: false, verdict: nil, errorMessage: error.localizedDescription))
     }
+    private func updateChatReport(_ verdict: RiskVerdict, source: AnalysisLogSource, snapshot: ScreenSnapshot) {
+        guard petViewModel.acknowledgment == nil else { return }
+        latestChatContext = RiskReportChatContext(sourceLabel: source.label, appName: snapshot.appName,
+            windowTitle: snapshot.windowTitle, riskLevel: verdict.riskLevel, summary: verdict.summary,
+            guidance: verdict.guidance, categories: verdict.categories)
+    }
     private func appendLog(_ entry: AnalysisLogEntry) { analysisLogs.insert(entry, at: 0); if analysisLogs.count > 200 { analysisLogs.removeLast() } }
     deinit { inferenceActivityTask?.cancel() }
 }
 
-private enum ChatScreenError: Error { case changed, denied }
+private enum ChatScreenError: Error { case changed }

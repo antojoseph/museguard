@@ -4,19 +4,22 @@
 <body>
   <header><div class="mark" aria-hidden="true">✦</div><div><h1>Muse Guard</h1><p>Your little local guardian.</p></div><span class="local">On this Mac</span></header>
   <main>
-    <section class="connection"><span id="light" class="light"></span><div><strong id="connection">Connecting to Muse…</strong><p id="connection-detail">Checking the desktop app and local model.</p></div></section>
+    <section class="connection"><span id="light" class="light"></span><div><strong id="connection">Connecting to Muse…</strong><p id="connection-detail">Checking the desktop app.</p></div></section>
     <section class="protection">
-      <div class="protection-heading"><p class="eyebrow">Automatic protection</p><span id="protection-status" class="protection-status">Checking…</span></div>
-      <h2>All websites</h2>
-      <p id="protection-detail">Visible text is checked in normal web tabs. Muse speaks up only for high-risk findings.</p>
-      <div id="pause-controls" class="pause-controls"><button id="pause-30" disabled>Pause 30 minutes</button><button id="pause-until" disabled>Pause until resumed</button></div>
-      <button id="resume" class="primary" disabled hidden>Resume protection</button>
+      <div class="protection-heading"><p class="eyebrow">Monitoring</p><span id="protection-status" class="protection-status">Checking…</span></div>
+      <h2>Always looking out</h2>
+      <p id="protection-detail">Muse checks your Chrome tabs automatically and speaks up when something needs your attention.</p>
+      <div id="pause-controls" class="pause-controls">
+        <label class="sr-only" for="pause-duration">Pause duration</label>
+        <select id="pause-duration"><option value="1800000">30 minutes</option><option value="0">Until I resume</option></select>
+        <button id="pause" disabled>Pause monitoring</button>
+      </div>
+      <button id="resume" class="primary" disabled hidden>Resume monitoring</button>
     </section>
-    <p id="tab-detail" class="tab-detail">Open a website for a manual check.</p>
-    <div class="checks"><button id="text-check" disabled><span class="symbol">Aa</span><strong>Check text</strong><small>Fast local check</small></button><button id="vision-check" disabled><span class="symbol">◉</span><strong>Check screenshot</strong><small>Visual details, on request</small></button></div>
+    <p id="tab-detail" class="tab-detail"></p>
     <p id="notice" class="notice" aria-live="polite"></p>
-    <p class="privacy">Text checks skip form values, passwords and editable fields. Screenshots include everything visible in the tab and are checked only when you request one. Analysis stays on this Mac.</p>
+    <p class="privacy">Pause stops browser protection and desktop screen checks together. Questions you ask Muse still work. Page text is checked on this Mac; passwords and entered form values are skipped.</p>
   </main>
   <footer>No cloud connection. No browsing history stored.</footer>
-  <script src="shared.js"></script><script src="popup.js"></script>
+  <script src="popup.js"></script>
 </body></html>

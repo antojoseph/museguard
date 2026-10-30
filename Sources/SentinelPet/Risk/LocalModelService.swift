@@ -10,6 +10,7 @@ final class LocalModelService: ObservableObject {
     private var healthTask: Task<Void, Never>?
     private var startupID = UUID()
     private var log: FileHandle?
+    var canRestart: Bool { process?.isRunning == true }
     var isInstalled: Bool {
         let root = LocalModelConfiguration.directory
         return LocalModelConfiguration.requiredFiles.allSatisfy { FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path) }
@@ -24,7 +25,7 @@ final class LocalModelService: ObservableObject {
             guard !Task.isCancelled, self.startupID == id else { return }
             if existing == .ready { self.status = "Muse Glimmer · on this Mac"; self.isReady = true; return }
             self.isReady = false
-            if existing == .incompatible { self.status = "The running model uses older settings. Stop it and reopen Muse Guard to apply the update."; return }
+            if existing == .incompatible { self.status = self.canRestart ? "Restart the local model to apply the current settings." : "Another model server uses different settings. Close it, then retry."; return }
             guard self.isInstalled else { self.status = "Run scripts/setup-local-model.sh to install Muse Glimmer and its draft model"; return }
             guard self.process == nil else {
                 self.status = "Muse Glimmer is not responding yet; check model logs"
@@ -68,7 +69,37 @@ final class LocalModelService: ObservableObject {
         try? log?.close(); log = nil
         isReady = false; status = "Local model stopped"
     }
-    func showLogs() { NSWorkspace.shared.open(LocalModelConfiguration.directory) }
+    /// Only restart a server launched by this app. An externally managed
+    /// server may share the endpoint, but never becomes ours to terminate.
+    func restart() {
+        guard let owned = process, owned.isRunning else { start(); return }
+        stop()
+        let id = UUID(); startupID = id
+        status = "Restarting the local model…"
+        healthTask = Task { [weak self] in
+            guard let self else { return }
+            for _ in 0..<50 {
+                guard !Task.isCancelled, self.startupID == id else { return }
+                if !owned.isRunning {
+                    self.healthTask = nil
+                    self.start()
+                    return
+                }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            guard !Task.isCancelled, self.startupID == id else { return }
+            self.healthTask = nil
+            self.status = "The model has not stopped yet. Try again shortly."
+        }
+    }
+    func showLogs() {
+        let file = LocalModelConfiguration.directory.appendingPathComponent("server.log")
+        guard FileManager.default.fileExists(atPath: file.path) else {
+            status = "No model log yet. Start the local model first."
+            return
+        }
+        NSWorkspace.shared.open(file)
+    }
     private enum ServerState { case ready, loading, incompatible, unavailable }
     private func waitUntilReady(startupID id: UUID, owned: Process? = nil) async {
         for _ in 0..<180 {
@@ -77,8 +108,8 @@ final class LocalModelService: ObservableObject {
             let state = await checkServer()
             guard !Task.isCancelled, startupID == id else { return }
             if state == .ready { isReady = true; status = "Muse Glimmer · on this Mac"; return }
-            if state == .incompatible { status = "The running model uses older settings. Stop it and reopen Muse Guard to apply the update."; return }
-            if owned == nil, state == .unavailable { status = "The local model stopped responding. Choose Start local model to retry."; return }
+            if state == .incompatible { status = canRestart ? "Restart the local model to apply the current settings." : "Another model server uses different settings. Close it, then retry."; return }
+            if owned == nil, state == .unavailable { status = "The local model stopped responding. Choose Retry local model."; return }
             try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
         guard !Task.isCancelled, startupID == id else { return }

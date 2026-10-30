@@ -120,10 +120,6 @@ final class PetOverlayController {
                 self.cancelBedtime();UnrealCharacterRenderer.shared.previewState=preview
             }
         }.store(in:&subscriptions)
-        UnrealCharacterRenderer.shared.$browserProtectionActive.removeDuplicates().sink { [weak self] active in
-            guard active else { return }
-            DispatchQueue.main.async { [weak self] in self?.wakeForBrowserProtection() }
-        }.store(in:&subscriptions)
         UnrealCharacterRenderer.shared.$latestFrame.compactMap { $0?.isDesktopScene }.removeDuplicates().sink { [weak self] onStage in
             guard let self, !self.viewModel.isAvatarHidden else { return }
             if onStage {
@@ -417,6 +413,10 @@ final class PetOverlayController {
         guard now.timeIntervalSince(lastActivitySample) >= 1 else { return }
         lastActivitySample = now
         guard !viewModel.isAvatarHidden else { return }
+        if UnrealCharacterRenderer.shared.frameIsSleeping,
+           CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: CGEventType(rawValue: UInt32.max)!) < 1.5 {
+            wakeForUserActivity()
+        }
         let pointer = NSEvent.mouseLocation
         recentPointers.append((pointer,now))
         recentPointers.removeAll { now.timeIntervalSince($0.1)>30 }
@@ -456,9 +456,9 @@ final class PetOverlayController {
         }
     }
 
-    private func wakeForBrowserProtection() {
+    private func wakeForUserActivity() {
         let renderer = UnrealCharacterRenderer.shared
-        guard renderer.browserProtectionActive, !viewModel.isAvatarHidden,
+        guard !viewModel.isAvatarHidden,
               viewModel.acknowledgment == nil, !away, !viewModel.isChatOpen else { return }
         cancelBedtime()
         guard !moving, dragStartAnchor == nil, renderer.previewState == "live" else { return }
@@ -486,7 +486,8 @@ final class PetOverlayController {
         var obstacles=GuardianActivityGeometry.activeWindowBounds()
         // Keep recent activity useful while the user previews bedtime in Studio.
         if obstacles.isEmpty { obstacles=activityBounds }
-        let destination=GuardianSleepPlacement.destination(current:start,screen:screen,obstacles:obstacles,recentPointers:recentPointers.map(\.0)+[NSEvent.mouseLocation])
+        let destination = viewModel.automaticallyPositions ?
+            GuardianSleepPlacement.destination(current:start,screen:screen,obstacles:obstacles,recentPointers:recentPointers.map(\.0)+[NSEvent.mouseLocation]) : start
         let reduced=NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
         let wakeDelay=renderer.wakeForInteraction()
         motion=Task { [weak self] in

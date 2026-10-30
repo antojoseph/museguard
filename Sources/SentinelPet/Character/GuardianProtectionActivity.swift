@@ -1,7 +1,7 @@
 import Foundation
 
 /// Browser protection is an on-duty session, separate from model inference.
-/// A bounded lease lets Chrome closing/disconnecting eventually release it.
+/// A bounded lease clears the on-duty indicator after Chrome disconnects.
 @MainActor
 final class GuardianProtectionActivity {
     private(set) var isActive = false

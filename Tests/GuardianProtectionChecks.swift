@@ -21,9 +21,11 @@ import Foundation
         assert(lease.isActive)
         lease.update(enabled:false)
         for seconds in [0.0,28,55,600,3600] {
-            assert(GuardianIdlePolicy.pose(after:seconds,protectionActive:true) == "idle")
+            let expected = seconds >= 55 ? "sleep" : (seconds >= 28 ? "drowsy" : "idle")
+            assert(GuardianIdlePolicy.pose(after:seconds) == expected,
+                "The protection lease does not prevent inactivity naps.")
         }
         assert(GuardianIdlePolicy.pose(after:55) == "sleep")
-        print("PASS: browser protection stays awake across heartbeat renewals, honors Pause, expires disconnects and blocks automatic naps")
+        print("PASS: browser protection survives heartbeat renewals, honors Pause and disconnects, independently of inactivity naps")
     }
 }

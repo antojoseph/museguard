@@ -24,10 +24,11 @@ python3 scripts/install-browser-host.py --install
 This does not load or enable the extension. Chrome's **Load unpacked** step is
 separate. The companion must be running; unavailable, malformed or oversized
 requests remain unassessed and produce a review response, never a safe verdict.
-Text snapshots exclude passwords and entered form values. An explicit screenshot
-check includes the visible tab's pixels, which can contain visible form values.
-The native app removes URL user information, query strings and fragments from
-text before analysis.
+Text snapshots exclude passwords and entered form values. Browser checks are
+automatic and text-only; the extension has no manual screenshot route. The
+native app removes URL user information, query strings and fragments from text
+before analysis. Metadata-only monitoring controls synchronize one persisted
+Pause/Resume state across Chrome and optional desktop checks.
 Raw browser content is not logged by this host.
 
 Closing Chrome's native connection cancels queued forwarding and closes active
