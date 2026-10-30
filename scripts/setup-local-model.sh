@@ -28,7 +28,16 @@ if not (runtime/'llama-server').exists():
 key=root/'api-key'
 if not key.exists():key.write_text(secrets.token_urlsafe(32))
 key.chmod(0o600)
-(root/'manifest.json').write_text(json.dumps({'runtime':tag,'repository':'meta-models/Muse-Glimmer-30B-GGUF','revision':'b44f1072cf75e918a1b82a3a17b45c4389b076e7','model':'Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf','vision':'mmproj-Muse-Glimmer-30B-Q4_K_M.gguf'},indent=2))
 PY
-hf download meta-models/Muse-Glimmer-30B-GGUF --revision b44f1072cf75e918a1b82a3a17b45c4389b076e7 --local-dir "$MUSE_MODEL_HOME/weights" --include 'Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf' --include 'mmproj-Muse-Glimmer-30B-Q4_K_M.gguf'
-echo 'Muse Glimmer and its vision projector are installed locally.'
+hf download meta-models/Muse-Glimmer-30B-GGUF --revision b44f1072cf75e918a1b82a3a17b45c4389b076e7 --local-dir "$MUSE_MODEL_HOME/weights" --include 'Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf' --include 'mmproj-Muse-Glimmer-30B-Q4_K_M.gguf' --include 'dflash-Muse-Glimmer-30B-Q4_K_M.gguf'
+python3 - "$MUSE_MODEL_HOME" <<'PY'
+import hashlib,json,pathlib,sys
+root=pathlib.Path(sys.argv[1]);draft='dflash-Muse-Glimmer-30B-Q4_K_M.gguf'
+expected='b2e808bf656086fe86bd0d0bd990f01d33e377537a07c02d45371517c8b264ef'
+digest=hashlib.sha256()
+with (root/'weights'/draft).open('rb') as f:
+    for chunk in iter(lambda:f.read(8*1024*1024),b''):digest.update(chunk)
+assert digest.hexdigest()==expected, 'DFlash draft checksum mismatch'
+(root/'manifest.json').write_text(json.dumps({'runtime':'b11946','repository':'meta-models/Muse-Glimmer-30B-GGUF','revision':'b44f1072cf75e918a1b82a3a17b45c4389b076e7','model':'Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf','vision':'mmproj-Muse-Glimmer-30B-Q4_K_M.gguf','draft':draft,'draft_sha256':expected,'speculative_type':'draft-dflash','draft_tokens':3},indent=2)+'\n')
+PY
+echo 'Muse Glimmer Q4_K_M, its vision projector, and DFlash draft model are installed locally.'

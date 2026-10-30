@@ -6,6 +6,8 @@ mkdir -p build
 python3 scripts/check-muse-mesh.py
 python3 scripts/check-guard-accessories.py
 sources=Sources/SentinelPet
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/local-model-configuration-checks Tests/LocalModelConfigurationChecks.swift "$sources/Risk/LocalModelConfiguration.swift"
+./build/local-model-configuration-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/character-checks Tests/CharacterChecks.swift "$sources/Character/GuardianMotion.swift" "$sources/Character/GuardianPlacement.swift" "$sources/Character/GuardianWorkActivity.swift" "$sources/Character/UnrealCharacterRenderer.swift"
 ./build/character-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/guardian-work-activity-checks Tests/GuardianWorkActivityChecks.swift "$sources/Character/GuardianWorkActivity.swift"

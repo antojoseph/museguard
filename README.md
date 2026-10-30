@@ -44,7 +44,7 @@ Original STLs and attribution are in `Assets/Source/MuseJolly`. The source and d
 
 ## Run
 
-Development requirements: Apple Silicon Mac, Xcode command-line tools, Unreal Engine 5.8, Python 3, and the Hugging Face `hf` CLI. Tested on an M5 Max with 128 GB RAM and Unreal 5.8.4. The model and vision projector occupy about 18 GB; runtime memory is higher. The current renderer uses the installed Unreal editor runtime, so this is a development build, not a standalone distributable.
+Development requirements: Apple Silicon Mac, Xcode command-line tools, Unreal Engine 5.8, Python 3, and the Hugging Face `hf` CLI. Tested on an M5 Max with 128 GB RAM and Unreal 5.8.4. The Q4_K_M model, vision projector and DFlash draft occupy about 20 GB; runtime memory is higher. The current renderer uses the installed Unreal editor runtime, so this is a development build, not a standalone distributable.
 
 ```sh
 # One-time download from official llama.cpp and Meta model releases:
@@ -58,6 +58,8 @@ Development requirements: Apple Silicon Mac, Xcode command-line tools, Unreal En
 ```
 
 The app starts the local model automatically. Wait for “Muse Glimmer · on this Mac,” then choose an example in Mock Lab and click **Analyze example**. Mock Lab needs no Accessibility or Screen Recording permission. It exercises the same analyzer, verdict presentation, logs, and jump/stop/return path used by real analysis. Studio switches **Guard / Focus / Just Muse**, offers **Live / Idle / Looking / Stretch / Sleep / Guard / Explain** animation previews, and runs the complete desktop jump-and-stop sequence. Real app events take priority over preview poses. Reduce Motion suppresses ambient body motion and shortens desktop travel.
+
+Local launches retain the Q4_K_M target and vision projector, and use the matching DFlash draft from the same pinned model revision with at most three draft tokens. Both models run on Metal. Setup verifies the draft checksum; app readiness checks the running server's target path and live speculative slot, so an older non-DFlash server is not silently accepted. The launch arguments fix DFlash mode and the three-token limit. After upgrading, stop any separately started local server and reopen Muse Guard; the app only stops server processes it owns.
 
 `MUSE_UNREAL_ROOT` can override `/Users/Shared/Epic Games/UE_5.8`. The approved renderer project is staged in `~/Library/Application Support/MuseGuard/Renderer`; weights and llama.cpp live in `~/Library/Application Support/MuseGuard/LocalModel`. Default builds do not alter the source avatar repository. Model weights, build products, and credentials are excluded from Git. The native bundle remains `build/Run/SentinelPet.app` to preserve its existing permission identity.
 

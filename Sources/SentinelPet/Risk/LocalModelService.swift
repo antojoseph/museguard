@@ -8,21 +8,31 @@ final class LocalModelService: ObservableObject {
     @Published private(set) var status = "Local model stopped"
     private var process: Process?
     private var healthTask: Task<Void, Never>?
+    private var startupID = UUID()
     private var log: FileHandle?
     var isInstalled: Bool {
         let root = LocalModelConfiguration.directory
-        return ["runtime/llama-server", "weights/Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf", "weights/mmproj-Muse-Glimmer-30B-Q4_K_M.gguf", "api-key"].allSatisfy { FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path) }
+        return LocalModelConfiguration.requiredFiles.allSatisfy { FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path) }
     }
     func start() {
         guard healthTask == nil else { return }
+        let id = UUID(); startupID = id
         healthTask = Task { [weak self] in
             guard let self else { return }
-            if await self.checkHealth() { self.status = "Muse Glimmer · on this Mac"; self.isReady = true; self.healthTask = nil; return }
+            defer { if self.startupID == id { self.healthTask = nil } }
+            let existing = await self.checkServer()
+            guard !Task.isCancelled, self.startupID == id else { return }
+            if existing == .ready { self.status = "Muse Glimmer · on this Mac"; self.isReady = true; return }
             self.isReady = false
-            guard self.isInstalled else { self.status = "Run scripts/setup-local-model.sh to install Muse Glimmer"; self.healthTask = nil; return }
+            if existing == .incompatible { self.status = "The running model uses older settings. Stop it and reopen Muse Guard to apply the update."; return }
+            guard self.isInstalled else { self.status = "Run scripts/setup-local-model.sh to install Muse Glimmer and its draft model"; return }
             guard self.process == nil else {
                 self.status = "Muse Glimmer is not responding yet; check model logs"
-                self.healthTask = nil
+                return
+            }
+            if existing == .loading {
+                self.status = "Waiting for the local model…"
+                await self.waitUntilReady(startupID: id)
                 return
             }
             self.status = "Loading Muse Glimmer locally…"
@@ -30,15 +40,11 @@ final class LocalModelService: ObservableObject {
             do {
                 let task = Process()
                 task.executableURL = root.appendingPathComponent("runtime/llama-server")
-                task.arguments = ["-m", root.appendingPathComponent("weights/Muse-Glimmer-30B-KQuant-17GB-Q4_K_M.gguf").path,
-                                  "--mmproj", root.appendingPathComponent("weights/mmproj-Muse-Glimmer-30B-Q4_K_M.gguf").path,
-                                  "--alias", LocalModelConfiguration.model, "--host", "127.0.0.1", "--port", "8787",
-                                  "--api-key-file", root.appendingPathComponent("api-key").path,
-                                  "-ngl", "99", "-c", "16384", "-np", "1", "--jinja", "--no-webui",
-                                  "--chat-template-kwargs", "{\"reasoning_strength\":\"low\"}", "--reasoning-budget", "256"]
+                task.arguments = LocalModelConfiguration.serverArguments(directory: root)
                 let logURL = root.appendingPathComponent("server.log")
                 FileManager.default.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600])
                 self.log = try FileHandle(forWritingTo: logURL)
+                try self.log?.truncate(atOffset: 0)
                 task.standardOutput = self.log; task.standardError = self.log
                 task.terminationHandler = { [weak self] process in
                     Task { @MainActor in
@@ -48,32 +54,51 @@ final class LocalModelService: ObservableObject {
                     }
                 }
                 self.process = task
+                guard !Task.isCancelled, self.startupID == id else { self.process = nil; return }
                 try task.run()
-                for _ in 0..<180 {
-                    guard !Task.isCancelled, task.isRunning else { break }
-                    if await self.checkHealth() { self.isReady = true; self.status = "Muse Glimmer · on this Mac"; break }
-                    try? await Task.sleep(nanoseconds: 1_000_000_000)
-                }
-                if !self.isReady && task.isRunning { self.status = "Model is still loading; check model status or logs" }
+                await self.waitUntilReady(startupID: id, owned: task)
             } catch { self.process = nil; self.status = "Local model could not start: \(error.localizedDescription)" }
-            self.healthTask = nil
         }
     }
     func stop() {
         healthTask?.cancel(); healthTask = nil
+        startupID = UUID()
         let owned = process; process = nil
         if owned?.isRunning == true { owned?.terminate() }
         try? log?.close(); log = nil
         isReady = false; status = "Local model stopped"
     }
     func showLogs() { NSWorkspace.shared.open(LocalModelConfiguration.directory) }
-    private func checkHealth() async -> Bool {
-        var request = LocalModelConfiguration.request(path: "v1/models")
+    private enum ServerState { case ready, loading, incompatible, unavailable }
+    private func waitUntilReady(startupID id: UUID, owned: Process? = nil) async {
+        for _ in 0..<180 {
+            guard !Task.isCancelled, startupID == id else { return }
+            if let owned, !owned.isRunning { return }
+            let state = await checkServer()
+            guard !Task.isCancelled, startupID == id else { return }
+            if state == .ready { isReady = true; status = "Muse Glimmer · on this Mac"; return }
+            if state == .incompatible { status = "The running model uses older settings. Stop it and reopen Muse Guard to apply the update."; return }
+            if owned == nil, state == .unavailable { status = "The local model stopped responding. Choose Start local model to retry."; return }
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
+        guard !Task.isCancelled, startupID == id else { return }
+        status = "Model is still loading; check model status or logs"
+    }
+    private func checkServer() async -> ServerState {
+        var request = LocalModelConfiguration.request(path: "props")
         request.timeoutInterval = 2
         guard let (data, response) = try? await URLSession.shared.data(for: request),
-              (response as? HTTPURLResponse)?.statusCode == 200,
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let models = json["data"] as? [[String: Any]] else { return false }
-        return models.contains { $0["id"] as? String == LocalModelConfiguration.model }
+              let response = response as? HTTPURLResponse else { return .unavailable }
+        if response.statusCode == 503 { return .loading }
+        guard response.statusCode == 200,
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return .incompatible }
+        var slotsRequest = LocalModelConfiguration.request(path: "slots")
+        slotsRequest.timeoutInterval = 2
+        guard let (slotsData, slotsResponse) = try? await URLSession.shared.data(for: slotsRequest),
+              let slotsResponse = slotsResponse as? HTTPURLResponse else { return .unavailable }
+        if slotsResponse.statusCode == 503 { return .loading }
+        guard slotsResponse.statusCode == 200,
+              let slots = try? JSONSerialization.jsonObject(with: slotsData) as? [[String: Any]] else { return .incompatible }
+        return LocalModelConfiguration.matchesServerProperties(json, slots: slots) ? .ready : .incompatible
     }
 }
