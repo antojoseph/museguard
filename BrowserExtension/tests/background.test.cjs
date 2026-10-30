@@ -15,7 +15,7 @@ function harness(settings = {}, options = {}) {
   const tabs = new Map([[7, tab], ...(options.tabs || []).map(value => [value.id, value])]), alarms = new Map(), events = {};
   const monitoringTabs = new Set(options.readyTabs || []), injectionFailures = new Set(options.injectionFailures || []);
   const snapshot = { nonce: 'nonce-a', revision: 0, page: { url: 'https://shop.example.test/account', title: 'Shop', text: 'Visible original context' } };
-  let focused = true, now = Date.now(), nextGetGate = null, sessionSetGate = null, injectionGate = null;
+  let focused = true, now = Date.now(), nextGetGate = null, sessionSetGate = null, injectionGate = null, windowReadGate = null;
   let autoHeartbeatReply = options.autoHeartbeatReply !== false;
   let lastFocusedWindow = options.lastFocusedWindow || 2, snapshotReply = null, connections = 0;
   const listen = name => ({ addListener(fn) { events[name] = fn; } });
@@ -57,7 +57,10 @@ function harness(settings = {}, options = {}) {
         if (message.type === 'snapshot' && snapshotReply) return snapshotReply(id);
         return structuredClone(snapshot); },
       async create(value) { opened.push(value); }, onUpdated: listen('updated'), onRemoved: listen('removed'), onActivated: listen('activated') },
-    windows: { async get() { return { focused }; }, async create(value) { opened.push(value); }, onFocusChanged: listen('window-focused') },
+    windows: { async get() {
+      if (windowReadGate) { const gate=windowReadGate; windowReadGate=null; gate.entered(); await gate.wait; }
+      return { focused };
+    }, async create(value) { opened.push(value); }, onFocusChanged: listen('window-focused') },
     alarms: { async get(name) { return alarms.get(name); }, async create(name, value) { alarms.set(name, { name, scheduledTime: value.when, periodInMinutes: value.periodInMinutes }); },
       async clear(name) { return alarms.delete(name); }, onAlarm: listen('alarm') },
     action: { async setBadgeText(value) { badges.push(structuredClone(value)); } }
@@ -68,7 +71,7 @@ function harness(settings = {}, options = {}) {
     if (injectionGate) await injectionGate;
     monitoringTabs.add(value.target.tabId); return [{ frameId: 0 }];
   } };
-  const sandbox = vm.createContext({ chrome, crypto: { randomUUID }, URL, console, structuredClone,
+  const sandbox = vm.createContext({ chrome, crypto: { randomUUID }, URL, console, structuredClone, AbortController,
     Date: class extends Date { static now() { return now; } },
     setTimeout: (fn, time) => { const handle = setTimeout(fn, time); handle.unref(); return handle; }, clearTimeout });
   sandbox.importScripts = file => vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), sandbox);
@@ -100,6 +103,12 @@ function harness(settings = {}, options = {}) {
     addTab(id, active = false) { const value = { id, active, windowId: 2, url: 'https://tab'+id+'.test/page' }; tabs.set(id, value); return value; },
     blockNextRead() { let release; nextGetGate = new Promise(resolve => { release = resolve; }); return release; },
     blockNextSessionWrite() { let release; sessionSetGate = new Promise(resolve => { release = resolve; }); return release; },
+    blockNextWindowRead() {
+      let release, entered;
+      const began=new Promise(resolve=>{ entered=resolve; });
+      windowReadGate={wait:new Promise(resolve=>{ release=resolve; }),entered};
+      return { began, release };
+    },
     blockInjections() { let release; injectionGate = new Promise(resolve => { release = () => { injectionGate = null; resolve(); }; }); return release; },
     heartbeatReplies(value) { autoHeartbeatReply = value; },
     answerHeartbeat(request, value = {}) { for (const listener of onNative) listener({ version: 1, id: request.id, ok: true, protection_enabled: request.protection_enabled, ...value }); },
@@ -447,7 +456,9 @@ test('pause then resume invalidates an in-flight result instead of rehydrating i
   await h.api.handle({ type:'resume' }, h.popup);
   h.answer(h.sent[0]); const result = await waiting;
   assert.equal(result.confirmed_extreme, false); assert.equal(h.api.cache.size, 0); assert.equal(h.api.receipts.size, 0);
-  const fresh = await automaticResult(h,request); assert.equal(fresh.confirmed_extreme, true); assert.equal(h.sent.length,2);
+  const fresh = await automaticResult(h,request); assert.equal(fresh.confirmed_extreme, true);
+  assert.equal(h.sent.filter(value=>value.type==='assess').length,2);
+  assert.ok(h.sent.some(value=>value.type==='cancel' && value.assessment_id===h.sent[0].id));
 });
 
 test('pause during metadata storage cannot return a late confirmed finding', async () => {
@@ -470,26 +481,28 @@ test('automatic jobs deduplicate and one global slot serves both proactive pages
   assert.equal(ra.id,rd.id); assert.equal(rb.confirmed_extreme,true);
 });
 
-test('latest queued snapshot replaces its slot while returning to the active snapshot reuses it', async () => {
+test('a changed active snapshot cancels native work and late completion cannot create a finding', async () => {
   const h=harness(), first=h.automatic();
   const a=h.api.handle(first,h.sender); await sentCount(h,1);
   const changed=structuredClone(first); changed.page.text='New public copy';
-  const b=h.api.handle(changed,h.sender); await until(()=>h.api.automaticQueue.size===1);
-  const again=h.api.handle(first,h.sender); await until(()=>h.api.automaticQueue.size===0);
-  const superseded=await b; assert.equal(superseded.confirmed_extreme,false); assert.equal(superseded.retry_after_ms,15000);
-  h.answer(h.sent[0]); const [ra,rr]=await Promise.all([a,again]);
-  assert.equal(ra.id,rr.id); assert.equal(ra.confirmed_extreme,true); assert.equal(h.sent.length,1);
+  const b=h.api.handle(changed,h.sender); await sentCount(h,3);
+  assert.equal(h.sent[1].type,'cancel'); assert.equal(h.sent[1].assessment_id,h.sent[0].id);
+  assert.equal(h.sent[2].type,'assess'); assert.equal(h.sent[2].page.text,'New public copy');
+  const obsolete=await a; assert.equal(obsolete.confirmed_extreme,false); assert.equal(obsolete.ok,false);
+  h.answer(h.sent[0]); await turn(); assert.equal(h.api.receipts.size,0);
+  h.answer(h.sent[2]); const replacement=await b; assert.equal(replacement.confirmed_extreme,true);
+  assert.equal(h.api.receipts.has(h.sent[0].id),false);
 });
 
 test('the automatic queue remains bounded and keeps separate page, sensitive-form and hover slots', async () => {
-  const h=harness(), jobs=[];
-  jobs.push(h.api.handle(h.automatic(),h.sender)); await sentCount(h,1);
-  const sensitive=h.automatic('submit'); sensitive.action.sensitive=true;
+  const h=harness(), jobs=[]; h.addTab(8);
+  jobs.push(h.api.handle(h.automatic('page','proactive',8),h.senderFor(8))); await sentCount(h,1);
+  const sensitive=h.automatic('submit','proactive'); sensitive.action.sensitive=true;
   sensitive.public_signature=h.api.core.publicSignature(sensitive.action,['password']);
   jobs.push(h.api.handle(sensitive,h.sender)); jobs.push(h.api.handle(h.automatic('link'),h.sender));
   const newer=h.automatic(); newer.page.text='Latest page'; jobs.push(h.api.handle(newer,h.sender));
   await until(()=>h.api.automaticQueue.size===3);
-  for(let id=8;id<43;id++){ h.addTab(id); jobs.push(h.api.handle(h.automatic('page','proactive',id),h.senderFor(id))); }
+  for(let id=9;id<44;id++){ h.addTab(id); jobs.push(h.api.handle(h.automatic('page','proactive',id),h.senderFor(id))); }
   await until(()=>h.api.automaticQueue.size===32);
   assert.ok(h.api.automaticQueue.size<=32);
   await h.api.handle({type:'pause',duration_ms:0},h.popup); h.answer(h.sent[0]);
@@ -523,6 +536,86 @@ test('exact cached results retain their original expiry and never authorize a di
   const sender={...h.sender,url:h.tab.url,tab:{...h.tab}};
   await automaticResult(h,request,{},sender); assert.equal(h.sent.length,4);
   h.advance(30001); await automaticResult(h,request,{},sender); assert.equal(h.sent.length,5);
+});
+test('non-high exact evidence reuses model work for five minutes without gaining blocking authority', async () => {
+  const h=harness(), request=h.automatic('link'), first=await automaticResult(h,request,{risk_level:'safe'});
+  h.advance(30001);
+  const reused=await h.api.handle(request,h.sender);
+  assert.equal(reused.id,first.id); assert.equal(h.sent.length,1);
+  assert.equal(reused.confirmed_extreme,false); assert.equal(reused.expires_at,first.expires_at);
+  assert.equal((await h.api.handle(blockMessage(request,reused.id),h.sender)).ok,false);
+  h.advance(h.api.core.ASSESSMENT_REUSE_MS);
+  const fresh=await automaticResult(h,request,{risk_level:'safe'});
+  assert.notEqual(fresh.id,first.id); assert.equal(h.sent.length,2);
+});
+test('navigation aborts the active native request and ignores a late high response', async () => {
+  const h=harness(), waiting=h.api.handle(h.automatic(),h.sender); await sentCount(h,1);
+  const original=h.sent[0]; h.api.forget(7); await sentCount(h,2);
+  assert.equal(h.sent[1].type,'cancel'); assert.equal(h.sent[1].assessment_id,original.id);
+  assert.deepEqual(Object.keys(h.sent[1]).sort(),['assessment_id','id','type','version']);
+  const result=await waiting; assert.equal(result.ok,false); assert.equal(result.confirmed_extreme,false);
+  h.answer(original); await turn(); assert.equal(h.api.cache.size,0); assert.equal(h.api.receipts.size,0);
+  assert.equal(h.api.pending.has(original.id),false);
+});
+test('a replacement document cancels an old same-URL scan even without a navigation event', async () => {
+  const h=harness(), waiting=h.api.handle(h.automatic(),h.sender); await sentCount(h,1);
+  const next=h.automatic(); next.nonce='new-document-nonce';
+  const replacement=h.api.handle(next,{...h.sender,documentId:'document-b'}); await sentCount(h,3);
+  assert.equal(h.sent[1].type,'cancel'); assert.equal(h.sent[1].assessment_id,h.sent[0].id);
+  assert.equal((await waiting).ok,false);
+  h.answer(h.sent[0]); await turn(); assert.equal(h.api.receipts.size,0);
+  h.answer(h.sent[2],{risk_level:'safe'}); assert.equal((await replacement).risk_level,'safe');
+});
+test('focused sensitive intent promotes its queued prefetch and cancels unrelated routine work', async () => {
+  const h=harness(); h.addTab(8);
+  const background=h.api.handle(h.automatic('page','proactive',8),h.senderFor(8)); await sentCount(h,1);
+  const prefetch=h.automatic('submit','proactive'); prefetch.action.sensitive=true; prefetch.action.method='POST';
+  prefetch.public_signature=h.api.core.publicSignature(prefetch.action,['password']);
+  const prefetched=h.api.handle(prefetch,h.sender); await until(()=>h.api.automaticQueue.size===1);
+  assert.equal(h.sent.length,1,'Automatic sensitive-form discovery cannot interrupt another scan.');
+  const intended=h.api.handle({...prefetch,purpose:'intent'},h.sender); await sentCount(h,3);
+  assert.equal(h.sent[1].type,'cancel'); assert.equal(h.sent[1].assessment_id,h.sent[0].id);
+  assert.equal(h.sent[2].type,'assess'); assert.equal(h.sent[2].purpose,'intent'); assert.equal(h.sent[2].action.sensitive,true);
+  assert.equal((await background).ok,false);
+  h.answer(h.sent[0]); await turn(); assert.equal(h.api.receipts.size,0);
+  h.answer(h.sent[2]); const [a,b]=await Promise.all([prefetched,intended]);
+  assert.equal(a.id,b.id,'Promotion shares one exact model result.');
+  assert.equal(h.sent.filter(item=>item.type==='assess').length,2);
+});
+test('a sensitive intent from an unfocused window cannot preempt routine work', async () => {
+  const h=harness(); h.addTab(8); h.focus(false);
+  const a=h.api.handle(h.automatic('page','proactive',8),h.senderFor(8)); await sentCount(h,1);
+  const intent=h.automatic('submit'); intent.action.sensitive=true; intent.public_signature=h.api.core.publicSignature(intent.action,['password']);
+  const b=h.api.handle(intent,h.sender); await until(()=>h.api.automaticQueue.size===1);
+  assert.equal(h.sent.length,1); h.answer(h.sent[0],{risk_level:'safe'}); await sentCount(h,2);
+  assert.equal(h.sent[1].type,'assess'); h.answer(h.sent[1]); await Promise.all([a,b]);
+});
+test('an old sensitive intent cannot cancel newer work after a deferred focus query', async () => {
+  for (const race of ['pause-resume','forget-reattach']) {
+    const h=harness(); h.addTab(8); h.addTab(9);
+    const original=h.api.handle(h.automatic('page','proactive',8),h.senderFor(8)); await sentCount(h,1);
+    const blocked=h.blockNextWindowRead(), intent=h.automatic('submit');
+    intent.action.sensitive=true; intent.public_signature=h.api.core.publicSignature(intent.action,['password']);
+    const obsolete=h.api.handle(intent,h.sender); await blocked.began;
+    if (race==='pause-resume') {
+      await h.api.handle({type:'pause',duration_ms:0},h.popup);
+      await h.api.handle({type:'resume'},h.popup);
+      assert.equal((await original).ok,false);
+    } else {
+      h.api.forget(7);
+      await h.api.handle({type:'configuration',nonce:'nonce-a'},h.sender);
+      h.answer(h.sent[0],{risk_level:'safe'}); await original;
+    }
+    const newer=h.api.handle(h.automatic('page','proactive',9),h.senderFor(9));
+    await until(()=>h.sent.some(item=>item.type==='assess' && item.page.url==='https://tab9.test/page'));
+    const active=h.api.getActive(), request=h.sent.find(item=>item.type==='assess' && item.page.url==='https://tab9.test/page');
+    const cancellations=h.sent.filter(item=>item.type==='cancel').length;
+    blocked.release(); assert.equal((await obsolete).ok,false); await turn();
+    assert.equal(h.api.getActive(),active,race);
+    assert.equal(active.controller.signal.aborted,false,race);
+    assert.equal(h.sent.filter(item=>item.type==='cancel').length,cancellations,race);
+    h.answer(request,{risk_level:'safe'}); assert.equal((await newer).ok,true,race);
+  }
 });
 
 test('action methods, field metadata and public page evidence are part of the exact cache proof', async () => {

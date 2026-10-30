@@ -121,8 +121,13 @@ final class SentinelPetRuntime: ObservableObject {
             }
         }.store(in: &browserSubscriptions)
         petViewModel.$isAvatarHidden.removeDuplicates().filter { $0 }.sink { [weak self] _ in
-            guard let self, self.petViewModel.browserAction != nil else { return }
-            self.dismissPetBubble()
+            guard let self else { return }
+            self.cancelChat()
+            self.screenChatHistory.reset()
+            if self.petViewModel.browserAction != nil { self.dismissPetBubble() }
+        }.store(in: &browserSubscriptions)
+        petViewModel.$isChatOpen.removeDuplicates().filter { !$0 }.sink { [weak self] _ in
+            self?.cancelChat()
         }.store(in: &browserSubscriptions)
     }
 
@@ -308,8 +313,9 @@ final class SentinelPetRuntime: ObservableObject {
         }
     }
     func dismissPetBubble() {
+        cancelChat()
         guard petViewModel.acknowledgment == nil else { return }
-        demoTask?.cancel(); chatTask?.cancel(); latestChatContext = nil
+        demoTask?.cancel(); latestChatContext = nil
         browserChoiceTask?.cancel()
         browserPresentation = nil
         screenChatHistory.reset()
@@ -320,7 +326,7 @@ final class SentinelPetRuntime: ObservableObject {
         // Acknowledgement dismisses this explanation, never the browser's
         // high-risk block and never a Continue/allow grant.
         browserAssessments.resolve(assessmentID: id, continueOnce: false)
-        demoTask?.cancel(); chatTask?.cancel(); browserChoiceTask?.cancel()
+        demoTask?.cancel(); cancelChat(); browserChoiceTask?.cancel()
         acknowledgmentContext = nil; acknowledgmentTarget = nil
         latestChatContext = nil; browserPresentation = nil
         screenChatHistory.reset()
@@ -333,10 +339,13 @@ final class SentinelPetRuntime: ObservableObject {
         rememberChatApplication()
         let app = chatApplication()
         if petViewModel.chatMessages.isEmpty { screenChatHistory.reset() }
-        petViewModel.openChat(); petViewModel.appendUserChat(question); petViewModel.setChatThinking(true)
-        petViewModel.chatContextLabel = isChrome(app) ? "Reading current Chrome page…" : "Reading \(app?.localizedName ?? "current app")…"
-        chatTask?.cancel()
+        if petViewModel.isChatThinking, let previous = chatRequestID {
+            petViewModel.interruptAssistantChat(id:previous,message:"Reply stopped.")
+        }
+        cancelChat()
         let requestID = UUID(); chatRequestID = requestID
+        petViewModel.openChat(); petViewModel.appendUserChat(question); petViewModel.beginChatResponse(id:requestID)
+        petViewModel.chatContextLabel = isChrome(app) ? "Reading current Chrome page…" : "Reading \(app?.localizedName ?? "current app")…"
         let context = petViewModel.acknowledgment != nil ? latestChatContext : nil
         chatTask = Task { [weak self] in
             guard let self else { return }
@@ -348,26 +357,57 @@ final class SentinelPetRuntime: ObservableObject {
                 var sourceKey = "unavailable:\(app?.processIdentifier ?? -1)"
                 do {
                     let fresh = try await self.captureChatContext(app:app)
+                    guard self.chatRequestID == requestID, self.petViewModel.isChatOpen, !self.petViewModel.isAvatarHidden else { throw CancellationError() }
                     screen = fresh.context; sourceKey = fresh.key
                     self.petViewModel.chatContextLabel = fresh.label
                 } catch is CancellationError { throw CancellationError() }
                 catch {
+                    guard self.chatRequestID == requestID, self.petViewModel.isChatOpen, !self.petViewModel.isAvatarHidden else { throw CancellationError() }
                     self.petViewModel.chatContextLabel = self.isChrome(app) ?
                         "Chrome page unavailable · check the Muse Guard extension" : "\(app?.localizedName ?? "Current app") unavailable · check screen access"
                 }
                 try Task.checkCancellation()
-                guard self.chatRequestID == requestID else { return }
+                guard self.chatRequestID == requestID, self.petViewModel.isChatOpen, !self.petViewModel.isAvatarHidden else { return }
                 let scopedHistory = self.screenChatHistory.history(for:sourceKey)
                 let answer = try await self.riskAnalyzer.answerQuestion(question, context:context,
-                    screenContext:screen,history:scopedHistory,model:self.settings.modelName)
-                guard !Task.isCancelled, self.chatRequestID == requestID else { return }
-                self.petViewModel.appendAssistantChat(answer)
+                    screenContext:screen,history:scopedHistory,model:self.settings.modelName,
+                    directAnswer:screen?.screenshotDataURL == nil,
+                    onVisibleAnswer: { [weak self] answer in
+                        try Task.checkCancellation()
+                        guard let self else { throw CancellationError() }
+                        let accepted = await self.applyStreamedChatAnswer(answer,requestID:requestID)
+                        guard accepted else { throw CancellationError() }
+                    })
+                guard !Task.isCancelled, self.chatRequestID == requestID, self.petViewModel.isChatOpen,
+                      !self.petViewModel.isAvatarHidden else { return }
+                self.petViewModel.updateAssistantChat(id:requestID,text:answer)
                 self.screenChatHistory.append(question:question,answer:answer,sourceKey:sourceKey)
             } catch {
-                guard !Task.isCancelled, self.chatRequestID == requestID else { return }
-                self.petViewModel.appendAssistantChat(error.localizedDescription)
+                guard !Task.isCancelled, self.chatRequestID == requestID, self.petViewModel.isChatOpen,
+                      !self.petViewModel.isAvatarHidden else { return }
+                if !self.petViewModel.interruptAssistantChat(id:requestID,message:"This reply was interrupted. Please retry.") {
+                    let cancelled = error is CancellationError || (error as? URLError)?.code == .cancelled
+                    self.petViewModel.appendAssistantChat(cancelled ? LocalRiskAnalyzerError.interruptedChat.localizedDescription : error.localizedDescription)
+                }
             }
         }
+    }
+
+    private func applyStreamedChatAnswer(_ answer:String,requestID:UUID) -> Bool {
+        guard chatRequestID == requestID, petViewModel.isChatOpen, !petViewModel.isAvatarHidden else { return false }
+        return petViewModel.updateAssistantChat(id:requestID,text:answer)
+    }
+
+    /// Invalidate before cancelling: a token callback may already have passed
+    /// its task cancellation check and be waiting to enter the main actor.
+    private func cancelChat() {
+        let previous = chatRequestID
+        chatRequestID = nil
+        if let previous, petViewModel.isChatStreaming {
+            petViewModel.interruptAssistantChat(id:previous,message:"Reply stopped.")
+        }
+        chatTask?.cancel(); chatTask = nil
+        petViewModel.invalidateChatResponse()
     }
 
     private func rememberChatApplication() {
@@ -478,7 +518,7 @@ final class SentinelPetRuntime: ObservableObject {
         let risky = verdict.riskLevel == .medium || verdict.riskLevel == .high
         let pinned = risky || verdict.riskLevel == .unknown
         if verdict.riskLevel == .high {
-            chatTask?.cancel()
+            cancelChat()
             let text = "\(verdict.summary)\n\(verdict.guidance)\nI’ll stay here until you choose Got it."
             guard petViewModel.showAcknowledgment(id: acknowledgmentID ?? UUID().uuidString, text: text,
                 details: GuardianWarningDetails(summary: verdict.summary, guidance: verdict.guidance)) else { return false }

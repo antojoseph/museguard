@@ -6,7 +6,7 @@ const RESUME_ALARM = 'muse-guard-resume';
 const PROTECTION_HEARTBEAT_ALARM = 'muse-guard-protection-heartbeat';
 const PROTECTION_HEARTBEAT_INTERVAL = 25000;
 const CHAT_CONTEXT_POLL_INTERVAL = 1000;
-const CACHE_TTL = C.EXTREME_TTL_MS || 30000;
+const EXTREME_TTL = C.EXTREME_TTL_MS || 30000;
 const MAX_QUEUED = 32;
 let port = null, alarmKey = null;
 let settingsTail = Promise.resolve();
@@ -27,11 +27,25 @@ function beginAction(tabId) {
 function endAction(tabId) { activeActions.set(tabId, Math.max(0, (activeActions.get(tabId) || 1) - 1)); }
 function quietFailure(message) { return { ...C.failure(message), confirmed_extreme: false, retry_after_ms: 15000 }; }
 
-function nativeRequest(payload, timeout = 35000, expectedPort = null) {
+function nativeRequest(payload, timeout = 35000, expectedPort = null, signal = null) {
   return new Promise(resolve => {
     const request = { ...payload, version: 1, id: crypto.randomUUID() };
-    const finish = value => { clearTimeout(pending.get(request.id)?.timer); pending.delete(request.id); resolve(value); };
+    let finished = false, sentPort = null;
+    const finish = value => {
+      if (finished) return;
+      finished = true; signal?.removeEventListener('abort', abort);
+      clearTimeout(pending.get(request.id)?.timer); pending.delete(request.id); resolve(value);
+    };
+    const abort = () => {
+      if (finished) return;
+      finish(quietFailure('This scan was replaced by a newer or higher-priority check.'));
+      // Release queued/native model work, not just the eventual local answer.
+      if (request.type === 'assess' && sentPort && port === sentPort)
+        void nativeRequest({ type: 'cancel', assessment_id: request.id }, 1500, sentPort);
+    };
     try {
+      if (signal?.aborted) { abort(); return; }
+      signal?.addEventListener('abort', abort, { once: true });
       if (expectedPort && port !== expectedPort) { finish(C.failure('The Muse app disconnected.')); return; }
       if (!port) {
         const connected = chrome.runtime.connectNative(HOST);
@@ -46,8 +60,11 @@ function nativeRequest(payload, timeout = 35000, expectedPort = null) {
         });
         scheduleChatContextPoll(connected);
       }
-      const timer = setTimeout(() => finish(C.failure('The local check timed out. This action has not been cleared.', request.id)), timeout);
-      pending.set(request.id, { finish, timer }); port.postMessage(request);
+      const timer = setTimeout(() => {
+        if (request.type === 'assess') abort();
+        else finish(C.failure('The local check timed out. This action has not been cleared.', request.id));
+      }, timeout);
+      pending.set(request.id, { finish, timer }); sentPort = port; port.postMessage(request);
     } catch (error) { finish(C.failure(error.message, request.id)); }
   });
 }
@@ -270,7 +287,7 @@ function exactKey(ctx, request, signature, fingerprint = null) {
   return JSON.stringify([ctx.tabId, ctx.documentId || null, ctx.nonce, ctx.rawURL, C.assessmentKey(request.page, request.action), signature, fingerprint]);
 }
 function slotKey(ctx, request, purpose) {
-  const lane = purpose === 'proactive' ? 'page' : request.action.kind === 'submit' && request.action.sensitive ? 'sensitive' : 'intent';
+  const lane = request.action.kind === 'page' ? 'page' : request.action.kind === 'submit' && request.action.sensitive ? 'sensitive' : 'intent';
   return JSON.stringify([ctx.tabId, ctx.documentId || null, ctx.nonce, lane]);
 }
 function cachedResult(key, generation) {
@@ -283,16 +300,17 @@ async function performAssessment(job) {
   if (job.generation !== protectionGeneration) return quietFailure('Automatic protection was paused.');
   const payload = { ...job.request };
   if (job.explicitPurpose) payload.purpose = job.purpose;
-  const raw = await nativeRequest(payload), result = C.verdict(raw);
+  const raw = await nativeRequest(payload, 35000, null, job.controller.signal), result = C.verdict(raw);
+  if (job.controller.signal.aborted) return quietFailure('This scan was replaced by a newer or higher-priority check.');
   if (job.generation !== protectionGeneration || !await allowed(job.ctx.rawURL) || !await current(job.ctx, job.legacyHeld) ||
       latestSlots.get(job.slot) !== job.key) return quietFailure('A newer page or protection setting replaced this check.');
   if (job.legacyHeld === false && job.purpose === 'proactive' && (actionEpochs.get(job.ctx.tabId) || 0) !== job.actionEpoch)
     return quietFailure('A newer action check took priority.');
   if (job.generation !== protectionGeneration) return quietFailure('Protection settings changed during this check.');
-  const expiresAt = Date.now() + CACHE_TTL;
   // Never turn a corrected/inconsistent result into a confirmed extreme.
   const extreme = raw?.ok === true && raw.decision === 'block' && raw.risk_level === 'high' && result.ok === true &&
     result.decision === 'block' && typeof result.id === 'string' && result.id.length > 0;
+  const expiresAt = Date.now() + (result.risk_level === 'high' ? EXTREME_TTL : C.ASSESSMENT_REUSE_MS);
   const stamped = { ...result, confirmed_extreme: extreme, expires_at: expiresAt };
   if (result.id) saveReceipt(result.id, { ctx: job.ctx, result: stamped, kind: job.request.action.kind, manual: false,
     purpose: job.explicitPurpose ? job.purpose : null, extreme, key: job.key, signature: job.signature,
@@ -305,7 +323,19 @@ async function performAssessment(job) {
   if (job.generation !== protectionGeneration) return quietFailure('Protection settings changed during this check.');
   return stamped;
 }
-function enqueueAssessment(job) {
+function sensitiveIntent(job) { return job?.purpose === 'intent' && job.request.action.kind === 'submit' && job.request.action.sensitive; }
+async function preemptForSensitiveIntent(job) {
+  const candidate = activeAutomatic;
+  if (!sensitiveIntent(job) || !candidate || candidate.legacyHeld || sensitiveIntent(candidate) ||
+      job.generation !== protectionGeneration || automaticQueue.get(job.slot) !== job) return;
+  const focused = await current(job.ctx, true);
+  // The focus query yields to Pause, navigation, queue replacement and native
+  // completion. Only this still-owned intent may interrupt the captured job.
+  if (focused && job.generation === protectionGeneration && automaticQueue.get(job.slot) === job &&
+      latestSlots.get(job.slot) === job.key && activeAutomatic === candidate)
+    candidate.controller.abort();
+}
+async function enqueueAssessment(job) {
   const earlier = automaticQueue.get(job.slot);
   latestSlots.set(job.slot, job.key);
   const saved = cachedResult(job.key, job.generation);
@@ -317,21 +347,34 @@ function enqueueAssessment(job) {
     if (earlier && earlier.key !== job.key) { automaticQueue.delete(job.slot); earlier.resolve(quietFailure('A newer snapshot replaced this queued check.')); }
     return activeAutomatic.promise;
   }
-  if (earlier?.key === job.key && earlier.generation === job.generation) return earlier.promise;
+  if (earlier?.key === job.key && earlier.generation === job.generation) {
+    // A real focus/press can promote its already-queued form preflight without
+    // duplicating the same model request or allowing incidental hover to win.
+    if (sensitiveIntent(job)) { earlier.purpose = 'intent'; earlier.explicitPurpose = true; }
+    await preemptForSensitiveIntent(earlier);
+    return earlier.promise;
+  }
   if (earlier) earlier.resolve(quietFailure('A newer snapshot replaced this queued check.'));
   job.sequence = ++queueSequence;
+  job.controller = new AbortController();
   job.promise = new Promise(resolve => { job.resolve = resolve; });
   automaticQueue.set(job.slot, job); latestSlots.set(job.slot, job.key);
   if (automaticQueue.size > MAX_QUEUED) {
     const oldest = [...automaticQueue.values()].sort((a,b) => a.sequence-b.sequence)[0];
     automaticQueue.delete(oldest.slot); oldest.resolve(quietFailure('The local queue is full. Muse will retry quietly.'));
   }
+  if (activeAutomatic && (activeAutomatic.slot === job.slot && activeAutomatic.key !== job.key ||
+      activeAutomatic.ctx.tabId === job.ctx.tabId && (activeAutomatic.ctx.rawURL !== job.ctx.rawURL ||
+        activeAutomatic.ctx.nonce !== job.ctx.nonce || activeAutomatic.ctx.documentId !== job.ctx.documentId))) activeAutomatic.controller.abort();
+  await preemptForSensitiveIntent(job);
   void pumpAutomatic(); return job.promise;
 }
 async function pickNext() {
   let focused = new Set();
   try { focused = new Set((await chrome.tabs.query({ active: true, lastFocusedWindow: true })).filter(tab => tab.active).map(tab => tab.id)); } catch {}
   const jobs = [...automaticQueue.values()];
+  const sensitive = jobs.filter(job => sensitiveIntent(job) && focused.has(job.ctx.tabId));
+  if (sensitive.length) return sensitive.sort((a,b) => a.sequence-b.sequence)[0];
   const background = jobs.filter(job => job.purpose === 'proactive' && !focused.has(job.ctx.tabId));
   const foreground = jobs.filter(job => job.purpose === 'intent' || focused.has(job.ctx.tabId));
   let pool;
@@ -487,6 +530,7 @@ async function broadcastConfiguration() {
 }
 function clearAutomaticState(message = 'Protection settings changed.') {
   protectionGeneration++; cache.clear(); latestSlots.clear();
+  activeAutomatic?.controller.abort();
   for (const job of automaticQueue.values()) job.resolve(quietFailure(message));
   automaticQueue.clear();
   for (const [id, receipt] of [...receipts].sort((a,b) => b[1].time-a[1].time)) if (receipt.presented) void nativeRequest({ type: 'cancel', assessment_id: id }, 1500);
@@ -551,6 +595,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => { handle(messag
 chrome.storage.onChanged.addListener((_, area) => { if (area === 'local') void protectionChanged(); });
 function forget(tabId) {
   documents.delete(tabId); actionEpochs.delete(tabId); activeActions.delete(tabId);
+  if (activeAutomatic?.ctx.tabId === tabId) activeAutomatic.controller.abort();
   for (const [slot, job] of automaticQueue) if (job.ctx.tabId === tabId) { automaticQueue.delete(slot); latestSlots.delete(slot); job.resolve(quietFailure('The tab navigated.')); }
   for (const [id, receipt] of receipts) if (receipt.ctx.tabId === tabId) { receipts.delete(id); if (receipt.presented) void nativeRequest({ type: 'cancel', assessment_id: id }, 1500); }
   for (const key of cache.keys()) { try { if (JSON.parse(key)[0] === tabId) cache.delete(key); } catch { cache.delete(key); } }

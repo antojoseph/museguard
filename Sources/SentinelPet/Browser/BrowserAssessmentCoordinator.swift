@@ -36,6 +36,10 @@ final class BrowserAssessmentCoordinator {
     private var highFindings: [String: Receipt] = [:]
     private var decisions: [String: PendingDecision] = [:]
     private var activeIDs = Set<String>()
+    private var activeChecks: [String: Task<RiskVerdict, Error>] = [:]
+    // Independent native-host connections can deliver a cancellation just
+    // before its original assessment. Keep only bounded, short-lived IDs.
+    private var cancelledChecks: [String: Date] = [:]
     private(set) var completedCount = 0
     private var lastAssessment: BrowserResponse.AssessmentMetadata?
 
@@ -71,7 +75,7 @@ final class BrowserAssessmentCoordinator {
         do { request = try raw.validated() }
         catch { return .failure(id: raw.id, mode: raw.mode, message: error.localizedDescription) }
         let result = await handleValidated(request)
-        if request.type == "assess" {
+        if request.type == "assess", result.actionState != "stay" {
             lastAssessment = BrowserResponse.AssessmentMetadata(id: request.id,
                 kind: request.action?.kind ?? "page", riskLevel: result.riskLevel,
                 ok: result.ok, completedAt: Int64(now().timeIntervalSince1970 * 1_000))
@@ -133,10 +137,22 @@ final class BrowserAssessmentCoordinator {
         }
         if request.type == "cancel" {
             guard let id = request.assessmentID else { return expired(request) }
+            if let check = activeChecks[id] {
+                // Cancelling a document also releases queued scheduler work
+                // and its HTTP request. It never dismisses a native warning
+                // or turns an unfinished assessment into permission to act.
+                rememberCancellation(id)
+                check.cancel()
+                return BrowserResponse(id: request.id, ok: true, decision: "review", riskLevel: "unknown",
+                    summary: "This browser check was cancelled.", guidance: "No browser action was cleared.", actionState: "stay")
+            }
             if let receipt = receipts.removeValue(forKey: id) {
                 return response(request, receipt: receipt, elapsed: 0, actionState: "stay")
             }
-            guard var decision = decisions[id] else { return expired(request) }
+            guard var decision = decisions[id] else {
+                rememberCancellation(id)
+                return expired(request)
+            }
             // An explicit browser cancellation revokes an unread choice. A
             // native UI dismissal uses resolve(false), which cannot do this.
             decision.state = .stay; decisions[id] = decision
@@ -157,6 +173,9 @@ final class BrowserAssessmentCoordinator {
             return response(request, receipt: receipt, elapsed: 0, actionState: receipt.isAction ? "pending" : nil)
         }
         guard let page = request.page else { return .failure(id: request.id, mode: request.mode, message: "The browser request has no page evidence.") }
+        if request.type == "assess", cancelledChecks[request.id] != nil {
+            return .failure(id: request.id, mode: request.mode, message: "This browser check was cancelled before it started. No action was cleared.", actionState: "stay")
+        }
         // Never replace another request's receipt, decision or in-flight ID.
         guard !activeIDs.contains(request.id), receipts[request.id] == nil, decisions[request.id] == nil else {
             return .failure(id: request.id, mode: request.mode, message: "A check with this identifier already exists.")
@@ -173,13 +192,12 @@ final class BrowserAssessmentCoordinator {
             return rememberFailure(request, page: page, message: "This page matches your native privacy deny list and was not analyzed.")
         }
         activeIDs.insert(request.id)
-        defer { activeIDs.remove(request.id) }
+        defer { activeIDs.remove(request.id); activeChecks.removeValue(forKey: request.id) }
         let start = now()
-        do {
-            let priority: LocalInferenceScheduler.Priority = request.purpose != nil ? .background :
-                (request.action?.kind == "link" || request.action?.kind == "submit" ? .browserAction : .interactive)
-            let verdict = try await withThrowingTaskGroup(of: RiskVerdict.self) { group in
-                group.addTask { [analyzer] in
+        let priority = Self.priority(for: request)
+        let check = Task { [analyzer] in
+            try await withThrowingTaskGroup(of: RiskVerdict.self) { group in
+                group.addTask {
                     if let screenshot = request.screenshot {
                         return try await analyzer.analyze(snapshot: snapshot, screenshotDataURL: screenshot, model: LocalModelConfiguration.model, priority: priority)
                     }
@@ -192,7 +210,12 @@ final class BrowserAssessmentCoordinator {
                 defer { group.cancelAll() }
                 return try await group.next()!
             }
+        }
+        activeChecks[request.id] = check
+        do {
+            let verdict = try await withTaskCancellationHandler(operation: { try await check.value }, onCancel: { check.cancel() })
             try Task.checkCancellation()
+            guard !check.isCancelled else { throw CancellationError() }
             let receipt = remember(request, verdict: verdict)
             if verdict.riskLevel == .high {
                 highFindings[request.id] = receipt
@@ -203,11 +226,23 @@ final class BrowserAssessmentCoordinator {
             completedCount += 1
             return response(request, receipt: receipt, elapsed: now().timeIntervalSince(start))
         } catch {
-            let message = error is CancellationError || (error as? URLError)?.code == .cancelled
-                ? "This scan was superseded by a higher-priority check. This action has not been cleared."
-                : error.localizedDescription
-            return rememberFailure(request, page: page, message: message)
+            if check.isCancelled || error is CancellationError || (error as? URLError)?.code == .cancelled {
+                // No receipt/high finding, completion counter or last-result
+                // diagnostic is created for obsolete, cancelled evidence.
+                return .failure(id: request.id, mode: request.mode,
+                    message: "This scan was cancelled or superseded. No browser action was cleared.", actionState: "stay")
+            }
+            return rememberFailure(request, page: page, message: error.localizedDescription)
         }
+    }
+
+    static func priority(for request: BrowserRequest) -> LocalInferenceScheduler.Priority {
+        if request.purpose != nil {
+            // Real sensitive-field intent takes precedence over routine scans,
+            // but must not cancel an equally important ongoing user chat.
+            return request.purpose == "intent" && request.action?.kind == "submit" && request.action?.sensitive == true ? .interactive : .background
+        }
+        return request.action?.kind == "link" || request.action?.kind == "submit" ? .browserAction : .interactive
     }
 
     private func notice(_ request: BrowserRequest, page: BrowserRequest.Page) -> BrowserResponse {
@@ -256,6 +291,13 @@ final class BrowserAssessmentCoordinator {
         receipts = receipts.filter { date.timeIntervalSince($0.value.date) < 15 }
         highFindings = highFindings.filter { date.timeIntervalSince($0.value.date) < 60 }
         decisions = decisions.filter { date.timeIntervalSince($0.value.date) < 120 }
+        cancelledChecks = cancelledChecks.filter { date.timeIntervalSince($0.value) < 120 }
+    }
+    private func rememberCancellation(_ id: String) {
+        cancelledChecks[id] = now()
+        if cancelledChecks.count > 128, let oldest = cancelledChecks.min(by: { $0.value < $1.value })?.key {
+            cancelledChecks.removeValue(forKey: oldest)
+        }
     }
     private func boundDecisions() {
         if decisions.count > 64, let oldest = decisions.min(by: { $0.value.date < $1.value.date })?.key { decisions.removeValue(forKey: oldest) }

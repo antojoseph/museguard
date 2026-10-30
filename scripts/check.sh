@@ -14,11 +14,15 @@ xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/guardian-p
 ./build/guardian-protection-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/local-inference-activity-checks Tests/LocalInferenceActivityChecks.swift "$sources/Risk/LocalInferenceScheduler.swift"
 ./build/local-inference-activity-checks
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/inference-metrics-checks Tests/InferenceMetricsChecks.swift "$sources/Risk/LocalInferenceScheduler.swift"
+./build/inference-metrics-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/guardian-acknowledgment-checks Tests/GuardianAcknowledgmentChecks.swift "$sources/Overlay/PetViewModel.swift" "$sources/Character/GuardianMotion.swift"
 ./build/guardian-acknowledgment-checks
 shared=("$sources/Risk/LocalRiskAnalyzer.swift" "$sources/Risk/LocalInferenceScheduler.swift" "$sources/Risk/LocalModelConfiguration.swift" "$sources/Risk/RiskVerdict.swift" "$sources/Accessibility/ScreenReader.swift" "$sources/Accessibility/AccessibilityPermissionController.swift")
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/screen-chat-checks Tests/ScreenChatChecks.swift "${shared[@]}"
 ./build/screen-chat-checks
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/streaming-chat-checks Tests/StreamingChatChecks.swift "${shared[@]}" "$sources/Overlay/PetViewModel.swift" "$sources/Character/GuardianMotion.swift"
+./build/streaming-chat-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/browser-chat-context-checks Tests/BrowserChatContextChecks.swift "$sources/Browser/BrowserProtocol.swift" "$sources/Browser/BrowserChatContextBroker.swift"
 ./build/browser-chat-context-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/response-checks Tests/ResponseChecks.swift "${shared[@]}"

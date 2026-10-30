@@ -262,8 +262,8 @@ test('private action fingerprints prevent query-only link/form changes from reus
 test('HTTP documents without SubtleCrypto use a stable opaque token for each exact local intent', async () => {
   const h = await harness('<a id="go" href="https://destination.test/path?token=first">Continue</a>', { noSubtle: true });
   try {
-    const link = h.w.document.getElementById('go'), first = await preflight(h, link, result('unknown'));
-    const again = await preflight(h, link, result('unknown'));
+    const link = h.w.document.getElementById('go'), first = await preflight(h, link, result('unknown', { ok: false }));
+    const again = await preflight(h, link, result('unknown', { ok: false }));
     assert.match(first.message.action_fingerprint, /^[0-9a-f]{64}$/); assert.equal(first.message.action_fingerprint, again.message.action_fingerprint);
     link.href = 'https://destination.test/path?token=second';
     const second = await preflight(h, link, result('unknown')); assert.notEqual(second.message.action_fingerprint, first.message.action_fingerprint);
@@ -378,14 +378,14 @@ test('a native presentation completing after Pause is immediately cancelled', as
     assert.ok(h.messages.some(x => x.type === 'cancel' && x.assessment_id === 'late-ui'));
   } finally { h.close(); }
 });
-test('unchanged page findings refresh after TTL; queue-pressure failures retry using the bounded hint', async () => {
+test('successful unchanged pages do not poll the model; queue-pressure failures still retry', async () => {
   for (const first of ['high','unknown','pressure']) {
     const h = await harness('<p>Unchanged page context</p>');
     try {
       await h.advance(100); assert.equal(h.checks.length, 1);
       h.checks[0].resolve(first === 'high' ? h.extreme() : first === 'pressure' ? result('unknown', { ok: false, retry_after_ms: 15000 }) : result('unknown')); await h.settle();
-      await h.advance(first === 'pressure' ? 14999 : 29999); assert.equal(h.checks.length, 1, first);
-      await h.advance(first === 'pressure' ? 1 : 12); assert.equal(h.checks.length, 2, first);
+      await h.advance(first === 'pressure' ? 14999 : 300000); assert.equal(h.checks.length, 1, first);
+      if (first === 'pressure') { await h.advance(1); assert.equal(h.checks.length, 2, first); }
     } finally { h.close(); }
   }
 });
@@ -396,6 +396,18 @@ test('hidden tabs are scanned quietly and a fresh page-high warns on activation 
     h.checks[0].resolve(h.extreme()); await h.settle(); assert.equal(h.messages.some(x => x.type === 'present-block'), false);
     await h.foreground(); assert.equal(h.messages.filter(x => x.type === 'present-block').length, 1);
     await h.advance(100); assert.equal(h.checks.length, 1);
+  } finally { h.close(); }
+});
+test('an expired hidden high finding refreshes on activation instead of disappearing into the scheduling cache', async () => {
+  const h = await harness('<p>Suspicious public page</p>', { hidden:true });
+  try {
+    await h.advance(100); h.checks[0].resolve(h.extreme()); await h.settle();
+    await h.advance(60000); assert.equal(h.checks.length,1,'A hidden unchanged page does not run recurring inference.');
+    await h.foreground(); await h.advance(100);
+    assert.equal(h.checks.length,2,'Activation refreshes a high finding whose warning receipt expired.');
+    assert.equal(h.messages.some(item=>item.type==='present-block'),false,'The expired receipt is never presented.');
+    h.checks[1].resolve(h.extreme({id:'refreshed-high'})); await h.settle();
+    assert.equal(h.messages.filter(item=>item.type==='present-block').length,1);
   } finally { h.close(); }
 });
 test('explicit tab activation recovers a live listener after its initial configuration request failed', async () => {
@@ -427,7 +439,7 @@ test('explicit tab activation reconciles a missed global Pause and Resume withou
     await h.advance(100); assert.equal(h.checks.length, before + 1);
   } finally { h.close(); }
 });
-test('switching between two monitored tabs preserves both checks and background refresh without DOM activation events', async () => {
+test('switching monitored tabs preserves checks without periodically repeating unchanged model work', async () => {
   const first = await harness('<p>Public content in the first tab</p>');
   const second = await harness('<p>Public content in the second tab</p>', { hidden: true });
   try {
@@ -442,7 +454,12 @@ test('switching between two monitored tabs preserves both checks and background 
     await first.settle(); await second.settle();
     assert.equal(first.messages.some(message => message.type === 'cancel'), false);
     await first.advance(30000); await second.advance(30000);
-    assert.equal(first.checks.length, 2, 'The previous tab continues refreshing while hidden.');
+    assert.equal(first.checks.length, 1, 'A hidden tab stays watched without repeating unchanged inference.');
+    assert.equal(second.checks.length, 1);
+    first.w.document.querySelector('p').textContent = 'Changed public content in the first tab';
+    second.w.document.querySelector('p').textContent = 'Changed public content in the second tab';
+    await first.settle(); await second.settle(); await first.advance(1200); await second.advance(1200);
+    assert.equal(first.checks.length, 2, 'Relevant hidden-tab changes still get a fresh assessment.');
     assert.equal(second.checks.length, 2);
     assert.ok(first.checks[1].message.page.text.includes('first tab'));
     assert.ok(second.checks[1].message.page.text.includes('second tab'));
@@ -461,6 +478,75 @@ test('explicit tab activation keeps a fresh exact action finding without renewin
     assert.equal(h.trigger(link).defaultPrevented, false, 'Activation cannot extend a completed finding beyond its original TTL.');
     assert.equal(h.checks.length, before);
   } finally { h.close(); }
+});
+test('successful unchanged intent evidence is reused without turning an old finding into a block', async () => {
+  const h = await harness('<a id="go" href="https://destination.test/path">Continue</a>');
+  try {
+    const link = h.w.document.getElementById('go'); await preflight(h, link, result('unknown'));
+    h.trigger(link, 'pointerdown'); await h.settle();
+    assert.equal(h.checks.length, 1, 'Repeated exact intent reuses the completed non-high assessment.');
+    assert.equal(h.trigger(link).defaultPrevented, false);
+    h.elapse(core.ASSESSMENT_REUSE_MS + 1);
+    const next = await preflight(h, link, h.extreme());
+    assert.equal(h.checks.length, 2); assert.equal(h.trigger(link).defaultPrevented, true);
+    h.elapse(30001); assert.equal(h.trigger(link).defaultPrevented, false);
+    h.trigger(link, 'pointerdown'); await h.settle();
+    assert.equal(h.checks.length, 3, 'High-risk action findings are never reused past thirty seconds.');
+    assert.notEqual(next.message.action.kind, 'page');
+  } finally { h.close(); }
+});
+test('content reuse cannot renew an older worker assessment beyond its original expiry', async () => {
+  const h=await harness('<a id="go" href="https://destination.test/path">Continue</a>');
+  try {
+    const link=h.w.document.getElementById('go');
+    await preflight(h,link,result('safe',{expires_at:h.now()+1000}));
+    h.elapse(1001); h.trigger(link,'pointerdown'); await h.settle();
+    assert.equal(h.checks.length,2,'Local reuse must honor the remaining lifetime of a worker cache hit.');
+  } finally { h.close(); }
+});
+test('unchanged page reuse expires only on a later event and changed public content refreshes immediately', async () => {
+  const h = await harness('<p>First public state</p>');
+  try {
+    await h.advance(100); h.checks[0].resolve(result('safe')); await h.settle();
+    await h.advance(core.ASSESSMENT_REUSE_MS + 1000); assert.equal(h.checks.length, 1);
+    await h.message({ type: 'monitor-activated' }); await h.advance(100);
+    assert.equal(h.checks.length, 2, 'A later activation may refresh an old unchanged assessment.');
+    h.checks[1].resolve(result('safe')); await h.settle();
+    h.w.document.querySelector('p').textContent = 'Second public state'; await h.settle(); await h.advance(1200);
+    assert.equal(h.checks.length, 3); assert.ok(h.checks[2].message.page.text.includes('Second public state'));
+  } finally { h.close(); }
+});
+test('scrolling into different visible content triggers inference while repeated same-view scroll events reuse it', async () => {
+  const h = await harness('<section id="first"><p>First viewport</p></section><section id="second"><p>Second viewport</p></section>');
+  try {
+    let shown = 'first';
+    h.w.HTMLElement.prototype.getBoundingClientRect = function () {
+      const section = this.closest('#first,#second');
+      return section && section.id !== shown ? { top:-200,bottom:-100,left:0,right:200,width:200,height:100 } :
+        { top:0,bottom:100,left:0,right:200,width:200,height:100 };
+    };
+    await h.advance(100); h.checks[0].resolve(result('safe')); await h.settle();
+    h.w.dispatchEvent(new h.w.Event('scroll')); await h.advance(400); assert.equal(h.checks.length, 1);
+    shown = 'second'; h.w.dispatchEvent(new h.w.Event('scroll')); await h.advance(400);
+    assert.equal(h.checks.length, 2); assert.ok(h.checks[1].message.page.text.includes('Second viewport'));
+    assert.ok(!h.checks[1].message.page.text.includes('First viewport'));
+  } finally { h.close(); }
+});
+test('automatic form prefetch and sensitive hover stay background; a real visible press or focus is intent', async () => {
+  for (const event of ['pointerover','pointerdown','focusin']) {
+    const h = await harness('<form action="https://signin.test/check"><input id="field" type="email"><button>Sign in</button></form>');
+    try {
+      const field = h.w.document.getElementById('field'); field.type = 'password'; h.trigger(field, event); await h.settle();
+      if (event === 'pointerover') await h.advance(200);
+      const formCheck = h.checks.find(item => item.message.action.kind === 'submit');
+      assert.ok(formCheck, event); assert.equal(formCheck.message.purpose, event === 'pointerover' ? 'proactive' : 'intent', event);
+    } finally { h.close(); }
+  }
+  const hidden = await harness('<form action="https://signin.test/check"><input id="field" type="password"><button>Sign in</button></form>', { hidden:true });
+  try {
+    hidden.trigger(hidden.w.document.getElementById('field'), 'focusin'); await hidden.settle();
+    assert.ok(hidden.checks.filter(item => item.message.action.kind === 'submit').every(item => item.message.purpose === 'proactive'));
+  } finally { hidden.close(); }
 });
 test('a rejected native warning is retried on focus using the same fresh high finding', async () => {
   const h = await harness('<p>Suspicious public page</p>');

@@ -14,9 +14,13 @@ enum PetChatRole: Equatable {
 }
 
 struct PetChatMessage: Identifiable {
-    let id = UUID()
+    let id: UUID
     let role: PetChatRole
-    let text: String
+    var text: String
+
+    init(id:UUID = UUID(),role:PetChatRole,text:String) {
+        self.id = id; self.role = role; self.text = text
+    }
 }
 
 /// A pending Chrome action that can be resolved only from Muse's native UI.
@@ -40,7 +44,10 @@ struct GuardianWarningDetails: Equatable {
 @MainActor
 final class PetViewModel: ObservableObject {
     @Published var isAvatarHidden = UserDefaults.standard.bool(forKey: "museAvatarHidden") {
-        didSet { UserDefaults.standard.set(isAvatarHidden, forKey: "museAvatarHidden") }
+        didSet {
+            UserDefaults.standard.set(isAvatarHidden, forKey: "museAvatarHidden")
+            if isAvatarHidden { invalidateChatResponse() }
+        }
     }
     @Published var automaticallyPositions = (UserDefaults.standard.object(forKey: "museAutoPlacement") as? Bool) ?? true {
         didSet { UserDefaults.standard.set(automaticallyPositions, forKey:"museAutoPlacement") }
@@ -50,6 +57,7 @@ final class PetViewModel: ObservableObject {
     @Published var message: String?
     @Published var isChatOpen = false
     @Published var isChatThinking = false
+    @Published private(set) var isChatStreaming = false
     @Published var chatMessages: [PetChatMessage] = []
     @Published var chatContextLabel: String?
     @Published var browserAction: BrowserAvatarAction?
@@ -57,6 +65,7 @@ final class PetViewModel: ObservableObject {
     @Published private(set) var warningDetails: GuardianWarningDetails?
 
     private var clearTask: Task<Void, Never>?
+    private var activeChatResponseID:UUID?
 
     var bubbleText: String? {
         message
@@ -87,7 +96,7 @@ final class PetViewModel: ObservableObject {
         self.message = text
         self.mood = mood
         isChatOpen = false
-        isChatThinking = false
+        invalidateChatResponse()
         chatMessages.removeAll()
         chatContextLabel = nil
 
@@ -113,7 +122,7 @@ final class PetViewModel: ObservableObject {
         message = text
         mood = .alert
         isChatOpen = false
-        isChatThinking = false
+        invalidateChatResponse()
         chatMessages.removeAll()
         chatContextLabel = nil
         return true
@@ -156,7 +165,7 @@ final class PetViewModel: ObservableObject {
         message = nil
         mood = .idle
         isChatOpen = false
-        isChatThinking = false
+        invalidateChatResponse()
         chatMessages.removeAll()
         chatContextLabel = nil
     }
@@ -169,8 +178,43 @@ final class PetViewModel: ObservableObject {
         chatMessages.append(PetChatMessage(role: .assistant, text: text))
     }
 
+    func beginChatResponse(id:UUID) {
+        activeChatResponseID = id
+        setChatThinking(true)
+    }
+
+    func invalidateChatResponse() {
+        activeChatResponseID = nil
+        isChatThinking = false
+        isChatStreaming = false
+    }
+
+    /// A stable row avoids creating one transcript message per model token.
+    @discardableResult
+    func updateAssistantChat(id:UUID,text:String) -> Bool {
+        guard isChatOpen, !isAvatarHidden, activeChatResponseID == id, !text.isEmpty else { return false }
+        if let index = chatMessages.firstIndex(where: { $0.id == id && $0.role == .assistant }) {
+            chatMessages[index].text = text
+        } else {
+            chatMessages.append(PetChatMessage(id:id,role:.assistant,text:text))
+        }
+        isChatStreaming = true
+        return true
+    }
+
+    @discardableResult
+    func interruptAssistantChat(id:UUID,message:String) -> Bool {
+        guard isChatOpen, activeChatResponseID == id,
+              let index = chatMessages.firstIndex(where: { $0.id == id && $0.role == .assistant }) else { return false }
+        chatMessages[index].text += "\n\n" + message
+        isChatStreaming = false
+        return true
+    }
+
     func setChatThinking(_ isThinking: Bool) {
         isChatThinking = isThinking
+        isChatStreaming = false
+        if !isThinking { activeChatResponseID = nil }
     }
 
     func intervene(at target: CGPoint) {

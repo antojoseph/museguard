@@ -62,7 +62,7 @@ struct PetChatBubbleView: View {
                             HStack(spacing: 6) {
                                 ProgressView()
                                     .scaleEffect(0.55)
-                                Text("Checking...")
+                                Text(viewModel.isChatStreaming ? "Replying…" : "Checking...")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
@@ -74,6 +74,9 @@ struct PetChatBubbleView: View {
                 .frame(height: acknowledgmentTranscriptHeight)
                 .frame(maxHeight: viewModel.browserAction == nil && viewModel.acknowledgment == nil ? 196 : 152)
                 .onChange(of: viewModel.chatMessages.count) { _ in
+                    scrollToBottom(proxy)
+                }
+                .onChange(of: viewModel.chatMessages.last?.text) { _ in
                     scrollToBottom(proxy)
                 }
                 .onChange(of: viewModel.isChatThinking) { _ in
@@ -150,12 +153,17 @@ private struct ChatRow: View {
 
             Text(message.text)
                 .font(.system(size: 12, weight: .medium, design: .rounded))
+                .fixedSize(horizontal: false, vertical: true)
                 .foregroundStyle(.primary)
                 .padding(.horizontal, 9)
                 .padding(.vertical, 6)
                 .background(backgroundColor)
                 .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .textSelection(.enabled)
+                // AppKit's selectable SwiftUI text can retain its initial
+                // value while a stable transcript row streams new content.
+                // Refresh the text child, retaining the row's message ID.
+                .id(message.text)
 
             if message.role == .assistant {
                 Spacer(minLength: 22)

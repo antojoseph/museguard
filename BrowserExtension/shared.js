@@ -2,6 +2,9 @@
   'use strict';
   const LIMIT = 6000;
   const EXTREME_TTL_MS = 30000;
+  // Reuse unchanged, non-high assessments for scheduling only. This lifetime
+  // never extends the short receipt required to interrupt a browser action.
+  const ASSESSMENT_REUSE_MS = 5 * 60 * 1000;
   function url(value, base) {
     try {
       const parsed = new URL(value, base);
@@ -50,7 +53,7 @@
       ['allow', 'block', 'review'].includes(result.decision) && ['medium', 'high', 'unknown'].includes(result.risk_level);
     return isConfirmedExtreme(result);
   }
-  const api = { LIMIT, EXTREME_TTL_MS, url, origin, cleanText, failure, verdict, normalizeAction, assessmentKey, publicSignature, isConfirmedExtreme, canPresent };
+  const api = { LIMIT, EXTREME_TTL_MS, ASSESSMENT_REUSE_MS, url, origin, cleanText, failure, verdict, normalizeAction, assessmentKey, publicSignature, isConfirmedExtreme, canPresent };
   root.MuseGuardCore = api;
   if (typeof module !== 'undefined' && module.exports) module.exports = api;
 })(globalThis);

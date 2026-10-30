@@ -18,7 +18,7 @@ private final class StubProtocol: URLProtocol {
     static func main() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [StubProtocol.self]
-        let analyzer = LocalRiskAnalyzer(session: URLSession(configuration: config))
+        let analyzer = LocalRiskAnalyzer(session: URLSession(configuration: config), scheduler: LocalInferenceScheduler())
         let snapshot = ScreenSnapshot(appName: "Test", windowTitle: nil, text: "synthetic")
         let good = "{\"risk_level\":\"high\",\"summary\":\"Lookalike domain\",\"guidance\":\"Close this page\",\"categories\":[\"phishing\"]}"
         func set(_ content: String?, reason: String? = "stop") throws {

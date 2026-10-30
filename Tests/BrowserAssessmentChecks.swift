@@ -41,11 +41,46 @@ private actor Events {
     func contains(_ value: String) -> Bool { values.contains(value) }
 }
 
+/// Hold actual URLSession requests so cancellation tests exercise the HTTP
+/// task and shared scheduler rather than only cancelling a synthetic delay.
+private final class HeldModelFixture: URLProtocol {
+    private static let lock = NSLock()
+    private static var loading: [HeldModelFixture] = []
+    private static var startedCount = 0
+    private static var stoppedCount = 0
+    static var counts: (started: Int, stopped: Int) {
+        lock.lock(); defer { lock.unlock() }
+        return (startedCount, stoppedCount)
+    }
+    static func finish() {
+        lock.lock(); let requests = loading; loading.removeAll(); lock.unlock()
+        for request in requests {
+            let content = #"{"risk_level":"high","summary":"Synthetic sensitive destination.","guidance":"Stay here.","categories":["credential_theft"]}"#
+            let body: [String: Any] = ["choices": [["message": ["content": content], "finish_reason": "stop"]]]
+            let response = HTTPURLResponse(url: request.request.url!, statusCode: 200, httpVersion: "HTTP/1.1", headerFields: ["Content-Type":"application/json"])!
+            request.client?.urlProtocol(request, didReceive: response, cacheStoragePolicy: .notAllowed)
+            request.client?.urlProtocol(request, didLoad: try! JSONSerialization.data(withJSONObject: body))
+            request.client?.urlProtocolDidFinishLoading(request)
+        }
+    }
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+    override func startLoading() {
+        Self.lock.lock(); defer { Self.lock.unlock() }
+        Self.startedCount += 1; Self.loading.append(self)
+    }
+    override func stopLoading() {
+        Self.lock.lock(); defer { Self.lock.unlock() }
+        Self.stoppedCount += 1; Self.loading.removeAll { $0 === self }
+    }
+}
+
 @main struct BrowserAssessmentChecks {
     @MainActor static func main() async throws {
         let config = URLSessionConfiguration.ephemeral
         config.protocolClasses = [ModelFixture.self]
-        let analyzer = LocalRiskAnalyzer(session: URLSession(configuration: config))
+        let inferenceScheduler = LocalInferenceScheduler()
+        let analyzer = LocalRiskAnalyzer(session: URLSession(configuration: config), scheduler: inferenceScheduler)
         var presentations = 0
         var presented: [BrowserRequest] = []
         var protectionChanges: [Bool] = []
@@ -300,7 +335,7 @@ private actor Events {
         let priorityEvents = Events()
         let manualWork = Task {
             do {
-                return try await LocalInferenceScheduler.shared.run(priority: .interactive) {
+                return try await inferenceScheduler.run(priority: .interactive) {
                     await priorityEvents.add("manual-start")
                     while !(await priorityEvents.contains("release")) {
                         try await Task.sleep(nanoseconds: 5_000_000)
@@ -322,6 +357,124 @@ private actor Events {
         let automaticResult = await automatic.value
         assert(manualResult == "manual-complete" && automaticResult.ok)
 
+        // Sensitive intent now interrupts a routine scan, while ordinary hover
+        // intent stays background and an explicit held action keeps top priority.
+        let ordinaryAction = BrowserRequest.Action(kind:"submit",url:page.url,label:"Search",method:"GET",sensitive:false)
+        let linkAction = BrowserRequest.Action(kind:"link",url:page.url,label:"Read",method:"GET",sensitive:true)
+        for request in [BrowserRequest(id:"hover-link",type:"assess",page:page,action:linkAction,purpose:"intent"),
+                        BrowserRequest(id:"ordinary-submit",type:"assess",page:page,action:ordinaryAction,purpose:"intent"),
+                        BrowserRequest(id:"automatic-sensitive",type:"assess",page:page,action:action,purpose:"proactive")] {
+            assert(BrowserAssessmentCoordinator.priority(for:request) == .background)
+        }
+        assert(BrowserAssessmentCoordinator.priority(for:BrowserRequest(id:"held",type:"assess",page:page,action:action)) == .browserAction)
+        let routineEvents = Events()
+        let routine = Task {
+            try await inferenceScheduler.run(priority:.background) {
+                await routineEvents.add("started")
+                try await Task.sleep(nanoseconds:5_000_000_000)
+                return "obsolete scan"
+            }
+        }
+        while !(await routineEvents.contains("started")) { await Task.yield() }
+        let sensitiveStart = Date()
+        let sensitiveIntent = await coordinator.handle(BrowserRequest(id:"sensitive-intent",type:"assess",page:page,action:action,purpose:"intent"))
+        assert(sensitiveIntent.ok && Date().timeIntervalSince(sensitiveStart) < 1,
+            "Meaningful sensitive intent must not wait behind a routine scan.")
+        do { _ = try await routine.value; assertionFailure("Sensitive intent did not interrupt routine work") }
+        catch is CancellationError {} catch { assertionFailure("Unexpected routine cancellation: \(error)") }
+
+        let heldConfig = URLSessionConfiguration.ephemeral
+        heldConfig.protocolClasses = [HeldModelFixture.self]
+        let heldAnalyzer = LocalRiskAnalyzer(session:URLSession(configuration:heldConfig),scheduler:inferenceScheduler)
+        let cancelling = BrowserAssessmentCoordinator(analyzer:heldAnalyzer,modelReady:{true})
+        func waitForHTTP(_ count: Int) async throws {
+            for _ in 0..<1000 {
+                if HeldModelFixture.counts.started >= count { return }
+                try await Task.sleep(nanoseconds:1_000_000)
+            }
+            fatalError("The held model request never started")
+        }
+        func assertNoCancelledReceipt(_ id: String) async {
+            let stalePresent = await present(cancelling,id)
+            let staleBlock = await cancelling.handle(BrowserRequest(id:UUID().uuidString,type:"present-block",assessmentID:id))
+            assert(stalePresent.actionState == "expired" && staleBlock.actionState == "expired",
+                "Cancelled model work cannot create a native verdict or high finding.")
+        }
+        let callsBeforeEarlyCancel = HeldModelFixture.counts.started
+        _ = await cancelling.handle(BrowserRequest(id:"early-cancel",type:"cancel",assessmentID:"cancel-before-dispatch"))
+        let neverStarted = await cancelling.handle(BrowserRequest(id:"cancel-before-dispatch",type:"assess",page:page,purpose:"proactive"))
+        assert(!neverStarted.ok && neverStarted.actionState == "stay" && HeldModelFixture.counts.started == callsBeforeEarlyCancel,
+            "A cancellation delivered before its assessment must prevent stale work from starting.")
+        await assertNoCancelledReceipt("cancel-before-dispatch")
+        let activeBefore = HeldModelFixture.counts
+        let activeCheck = Task { @MainActor in
+            await cancelling.handle(BrowserRequest(id:"obsolete-active",type:"assess",page:page,purpose:"proactive"))
+        }
+        try await waitForHTTP(activeBefore.started+1)
+        let cancelActive = await cancelling.handle(BrowserRequest(id:"cancel-active",type:"cancel",assessmentID:"obsolete-active"))
+        assert(cancelActive.ok && cancelActive.actionState == "stay" && cancelActive.decision == "review" && cancelActive.riskLevel == "unknown")
+        let activeResult = await activeCheck.value
+        assert(!activeResult.ok && activeResult.actionState == "stay" && activeResult.riskLevel == "unknown")
+        assert(HeldModelFixture.counts.stopped > activeBefore.stopped,"Cancellation reaches the actual HTTP task.")
+        await assertNoCancelledReceipt("obsolete-active")
+        let cancelledStatus = await cancelling.handle(BrowserRequest(id:"cancelled-status",type:"status"))
+        assert(cancelledStatus.completedAssessments == 0 && cancelledStatus.lastAssessment == nil,
+            "Obsolete work does not replace completed-result diagnostics.")
+
+        // Cancellation must remove a scheduler-queued assessment before its
+        // HTTP request begins, without disturbing an unrelated manual task.
+        let queuedEvents = Events()
+        let manualBlocker = Task {
+            try await inferenceScheduler.run(priority:.interactive) {
+                await queuedEvents.add("manual")
+                while !(await queuedEvents.contains("release")) { try await Task.sleep(nanoseconds:1_000_000) }
+                return "manual intact"
+            }
+        }
+        while !(await queuedEvents.contains("manual")) { await Task.yield() }
+        let callsBeforeQueued = HeldModelFixture.counts.started
+        let queuedCheck = Task { @MainActor in
+            await cancelling.handle(BrowserRequest(id:"obsolete-queued",type:"assess",page:page,purpose:"proactive"))
+        }
+        try await Task.sleep(nanoseconds:20_000_000)
+        let cancelQueued = await cancelling.handle(BrowserRequest(id:"cancel-queued",type:"cancel",assessmentID:"obsolete-queued"))
+        assert(cancelQueued.ok && cancelQueued.actionState == "stay")
+        let queuedResult = await queuedCheck.value
+        assert(!queuedResult.ok && queuedResult.actionState == "stay")
+        await queuedEvents.add("release")
+        let manualBlockerResult = try await manualBlocker.value
+        assert(manualBlockerResult == "manual intact")
+        assert(HeldModelFixture.counts.started == callsBeforeQueued,"A cancelled queued assessment must never reach HTTP.")
+        await assertNoCancelledReceipt("obsolete-queued")
+
+        // Cancelling the original caller also propagates through the owned
+        // task. A subsequent fresh assessment still completes and presents.
+        let callsBeforeCaller = HeldModelFixture.counts.started
+        let callerCheck = Task { @MainActor in
+            await cancelling.handle(BrowserRequest(id:"cancelled-caller",type:"assess",page:page,purpose:"proactive"))
+        }
+        try await waitForHTTP(callsBeforeCaller+1)
+        callerCheck.cancel()
+        let callerResult = await callerCheck.value
+        assert(!callerResult.ok && callerResult.actionState == "stay")
+        await assertNoCancelledReceipt("cancelled-caller")
+        let callsBeforeFresh = HeldModelFixture.counts.started
+        let freshCheck = Task { @MainActor in
+            await cancelling.handle(BrowserRequest(id:"fresh-after-cancel",type:"assess",page:page,action:action,purpose:"intent"))
+        }
+        try await waitForHTTP(callsBeforeFresh+1)
+        HeldModelFixture.finish()
+        let freshResult = await freshCheck.value
+        assert(freshResult.ok && freshResult.riskLevel == "high" && cancelling.completedCount == 1)
+        let freshShown = await present(cancelling,"fresh-after-cancel")
+        assert(freshShown.ok && freshShown.actionState == "pending")
+        _ = await cancelling.handle(BrowserRequest(id:"late-obsolete-cancel",type:"cancel",assessmentID:"obsolete-active"))
+        let freshPending = await poll(cancelling,"fresh-after-cancel")
+        assert(freshPending.actionState == "pending" && !cancelling.canContinue(assessmentID:"fresh-after-cancel"),
+            "An obsolete cancellation cannot dismiss or clear a newer high finding.")
+        let freshStatus = await cancelling.handle(BrowserRequest(id:"fresh-status",type:"status"))
+        assert(freshStatus.lastAssessment?.id == "fresh-after-cancel" && freshStatus.completedAssessments == 1)
+
         // Explicit text/vision checks and legacy held actions can both cancel
         // a background job instead of waiting behind ambient inference.
         for priority in [LocalInferenceScheduler.Priority.interactive, .browserAction] {
@@ -341,6 +494,6 @@ private actor Events {
             do { _ = try await background.value; assertionFailure("Background inference was not cancelled") }
             catch is CancellationError {} catch { assertionFailure("Unexpected cancellation: \(error)") }
         }
-        print("PASS: browser risk routing, native action decisions, one-use terminal choices, failure/notice receipts, hidden rejection, expiry, privacy and action-priority cancellation")
+        print("PASS: browser risk routing, native decisions, privacy, sensitive intent priority, HTTP/queued/caller cancellation, no stale receipts and fresh-result recovery")
     }
 }

@@ -13,9 +13,10 @@
   const PRIVATE = 'input,textarea,select,option,script,style,noscript,template,svg,canvas,iframe,[contenteditable]:not([contenteditable="false"]),[hidden],[aria-hidden="true"],[data-private],[data-muse-private],muse-guard-panel';
   let active = false, generation = 0, configurationSequence = 0, edits = 0, lastURL = location.href;
   let pageTimer, hoverTimer, mutationTimer, resumeTimer, lastPageKey = '', lastPageAttempt = 0, retryFailures = 0;
+  let lastSuccessfulPageKey = '', lastSuccessfulPageUntil = 0, lastSuccessfulPageRisk = null;
   let disposed = false, observer, routeTimer, runtimeMessage, instance;
   const removals = [];
-  const cache = new Map(), inflight = new Map(), presentations = new Set(), localProofs = new Map();
+  const cache = new Map(), assessmentReuse = new Map(), inflight = new Map(), presentations = new Set(), localProofs = new Map();
   function dispose() {
     if (disposed) return;
     disposed = true; active = false; generation++; configurationSequence++;
@@ -23,7 +24,7 @@
     clearInterval(routeTimer); observer?.disconnect();
     for (const remove of removals.splice(0)) remove();
     try { if (runtimeMessage) runtime.onMessage.removeListener?.(runtimeMessage); } catch { /* Already invalidated. */ }
-    cache.clear(); inflight.clear(); presentations.clear(); localProofs.clear();
+    cache.clear(); assessmentReuse.clear(); inflight.clear(); presentations.clear(); localProofs.clear();
     if (window[INSTANCE_KEY] === instance) delete window[INSTANCE_KEY];
   }
   function usable() {
@@ -192,6 +193,10 @@
     value.candidate = candidate; value.proof = { ...proof, action_fingerprint: value.proof.action_fingerprint };
     return value;
   }
+  function reuseUntil(result) {
+    const limit = Date.now() + C.ASSESSMENT_REUSE_MS;
+    return result.risk_level !== 'high' && Number.isFinite(result.expires_at) ? Math.min(limit, result.expires_at) : limit;
+  }
   function cancelWarnings() {
     for (const id of presentations) send({ type: 'cancel', assessment_id: id }).catch(() => {});
     presentations.clear();
@@ -223,6 +228,9 @@
     if (!active || (candidate && !candidate.element.isConnected)) return null;
     const proof = material(candidate), existing = cache.get(proof.key);
     if (existing && C.isConfirmedExtreme(existing.result) && existing.until > Date.now()) { void warn(existing); return existing.result; }
+    const reused = assessmentReuse.get(proof.key);
+    if (reused && reused.until > Date.now()) return reused.result;
+    assessmentReuse.delete(proof.key);
     if (inflight.has(proof.key)) return inflight.get(proof.key);
     if (inflight.size >= (purpose === 'intent' ? 4 : 3)) return null;
     const stamp = generation;
@@ -238,7 +246,13 @@
           const entry = { result, proof, candidate, warned: false, until: Math.min(result.expires_at, Date.now() + C.EXTREME_TTL_MS) };
           cache.set(proof.key, entry); if (cache.size > 40) cache.delete(cache.keys().next().value);
           void warn(entry);
-        } else cache.delete(proof.key);
+        } else {
+          cache.delete(proof.key);
+          if (result.ok === true && result.risk_level !== 'high') {
+            assessmentReuse.set(proof.key, { result, until: reuseUntil(result) });
+            if (assessmentReuse.size > 40) assessmentReuse.delete(assessmentReuse.keys().next().value);
+          }
+        }
         return result;
       } catch { return null; }
       finally { if (inflight.get(proof.key) === task) inflight.delete(proof.key); }
@@ -248,17 +262,18 @@
   function prefetchForms() {
     if (!active) return;
     for (const form of [...document.forms].filter(form => sensitive(form) && visibleForm(form)).slice(0, 2)) {
-      const candidate = describeForm(form, defaultSubmitter(form)); if (candidate) void assess(candidate, 'intent');
+      const candidate = describeForm(form, defaultSubmitter(form)); if (candidate) void assess(candidate, 'proactive');
     }
   }
   async function scanPage() {
     if (!active || !usable()) return;
     const key = C.assessmentKey(snapshot()), fresh = cached(null);
     if (fresh) {
-      void warn(fresh); prefetchForms(); schedulePage(Math.max(250, fresh.until - Date.now() + 10)); return;
+      void warn(fresh); prefetchForms(); return;
     }
-    // Coalesce repeated mutations without permanently skipping unchanged pages
-    // after an unavailable model, full queue, or a previous non-extreme result.
+    // Successful unchanged pages need no recurring inference. DOM/viewport,
+    // activation and route events still watch every tab; failures retry below.
+    if (key === lastSuccessfulPageKey && Date.now() < lastSuccessfulPageUntil) { prefetchForms(); return; }
     if (key === lastPageKey && Date.now() - lastPageAttempt < 5000) { schedulePage(5000); return; }
     lastPageKey = key; lastPageAttempt = Date.now();
     prefetchForms();
@@ -266,8 +281,12 @@
     if (!active || stamp !== generation) return;
     prefetchForms();
     retryFailures = result?.ok ? 0 : Math.min(4, retryFailures + 1);
+    if (result?.ok) {
+      lastSuccessfulPageKey = key; lastSuccessfulPageUntil = reuseUntil(result); lastSuccessfulPageRisk = result.risk_level;
+      return;
+    }
     const retryHint = Number.isFinite(result?.retry_after_ms) ? Math.min(60000, Math.max(0, result.retry_after_ms)) : 0;
-    const delay = result?.ok ? C.EXTREME_TTL_MS : Math.max(retryHint, Math.min(60000, 5000 * (2 ** (retryFailures - 1))));
+    const delay = Math.max(retryHint, Math.min(60000, 5000 * (2 ** (retryFailures - 1))));
     schedulePage(delay);
   }
   function gate(event) {
@@ -280,27 +299,36 @@
   }
   for (const type of ['click', 'auxclick', 'submit']) listen(window, type, gate, true);
   function intent(event) {
-    if (!active || !event.isTrusted) return;
+    if (!active || !event.isTrusted || document.visibilityState !== 'visible') return;
     const element = event.composedPath().find(value => value instanceof Element);
     const candidate = candidateForElement(element); if (!candidate) return;
     clearTimeout(hoverTimer);
-    if (event.type === 'touchstart' || event.type === 'pointerdown' || (event.type === 'keydown' && event.key === 'Enter')) void assess(candidate, 'intent');
-    else hoverTimer = setTimeout(() => { if (active) void assess(candidate, 'intent'); }, 200);
+    if (event.type === 'touchstart' || event.type === 'pointerdown' ||
+        event.type === 'focusin' && candidate.kind === 'submit' && candidate.sensitive ||
+        (event.type === 'keydown' && event.key === 'Enter')) void assess(candidate, 'intent');
+    else hoverTimer = setTimeout(() => {
+      if (active) void assess(candidate, candidate.kind === 'submit' && candidate.sensitive && event.type !== 'focusin' ? 'proactive' : 'intent');
+    }, 200);
   }
   for (const type of ['pointerover', 'mouseover', 'focusin', 'pointerdown', 'touchstart']) listen(window, type, intent, { capture: true, passive: true });
   for (const type of ['pointerout', 'mouseout', 'focusout']) listen(window, type, () => clearTimeout(hoverTimer), { capture: true, passive: true });
   listen(window, 'keydown', event => { if (event.key === 'Enter') intent(event); }, true);
   for (const type of ['input', 'change']) listen(window, type, () => { edits++; if (active) schedulePage(1200); }, true);
+  for (const type of ['scroll', 'resize']) listen(window, type, () => { if (active) schedulePage(400); }, { capture: true, passive: true });
   function resetAutomatic() {
     generation++; clearTimeout(pageTimer); clearTimeout(hoverTimer); clearTimeout(mutationTimer);
-    cache.clear(); inflight.clear(); localProofs.clear(); lastPageKey = ''; lastPageAttempt = 0; retryFailures = 0; cancelWarnings();
+    cache.clear(); assessmentReuse.clear(); inflight.clear(); localProofs.clear(); lastPageKey = ''; lastPageAttempt = 0;
+    lastSuccessfulPageKey = ''; lastSuccessfulPageUntil = 0; lastSuccessfulPageRisk = null; retryFailures = 0; cancelWarnings();
   }
   function routeChanged() {
     if (!active || lastURL === location.href) return;
     lastURL = location.href; resetAutomatic(); schedulePage(100);
   }
   function activate() {
-    if (!active) return; routeChanged(); const fresh = cached(null); if (fresh) void warn(fresh); schedulePage(100); prefetchForms();
+    if (!active) return; routeChanged(); const fresh = cached(null);
+    if (fresh) void warn(fresh);
+    else if (lastSuccessfulPageRisk === 'high') lastSuccessfulPageUntil = 0;
+    schedulePage(100); prefetchForms();
   }
   async function refresh() {
     const sequence = ++configurationSequence, stamp = generation;
