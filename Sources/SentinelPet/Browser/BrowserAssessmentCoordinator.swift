@@ -12,6 +12,7 @@ final class BrowserAssessmentCoordinator {
     private let onPresent: (BrowserRequest, RiskVerdict, ScreenSnapshot) -> Bool
     private let onProtectionChanged: (Bool) -> Void
     private let statusDetail: () -> String
+    private let desktopMonitoring: () -> BrowserResponse.DesktopMonitoringMetadata?
     private let now: () -> Date
     private struct Receipt {
         let request: BrowserRequest
@@ -40,11 +41,13 @@ final class BrowserAssessmentCoordinator {
          monitoringPaused: @escaping () -> Bool = { false },
          onAssessment: @escaping (BrowserRequest, RiskVerdict?, ScreenSnapshot?, String?) -> Void = { _,_,_,_ in },
          statusDetail: @escaping () -> String = { "Automatic checks stay on this Mac." },
+         desktopMonitoring: @escaping () -> BrowserResponse.DesktopMonitoringMetadata? = { nil },
          now: @escaping () -> Date = Date.init,
          onProtectionChanged: @escaping (Bool) -> Void = { _ in },
          onPresent: @escaping (BrowserRequest, RiskVerdict, ScreenSnapshot) -> Bool = { _,_,_ in true }) {
         self.analyzer = analyzer; self.modelReady = modelReady; self.monitoringPaused = monitoringPaused; self.onAssessment = onAssessment
         self.statusDetail = statusDetail; self.now = now; self.onPresent = onPresent
+        self.desktopMonitoring = desktopMonitoring
         self.onProtectionChanged = onProtectionChanged
     }
 
@@ -76,7 +79,8 @@ final class BrowserAssessmentCoordinator {
             return BrowserResponse(id: request.id, ok: true, decision: "review", riskLevel: "unknown",
                 summary: ready ? "Muse Guard is connected to the local model." : "Muse Guard is connected; the model is still starting.",
                 guidance: statusDetail(), mode: request.mode, modelReady: ready,
-                lastAssessment: lastAssessment, completedAssessments: completedCount)
+                lastAssessment: lastAssessment, completedAssessments: completedCount,
+                desktopMonitoring: desktopMonitoring())
         }
         if ["assess", "present-block"].contains(request.type), monitoringPaused() {
             return .failure(id: request.id, message: "All automatic monitoring is paused.")

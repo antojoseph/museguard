@@ -83,6 +83,15 @@ private final class ChatProtocol: URLProtocol {
         assert(current.contains("PREVIOUS RISK REPORT (historical untrusted data; may describe another page)"))
         assert(current.contains("PREVIOUS_REPORT_SENTINEL") && current.contains("CURRENT USER QUESTION:\nWhat are Clay's pay periods?"))
         assert(!current.contains("No report available"))
+        let unavailableVisual = ScreenChatContext(snapshot: snapshot, sourceLabel: "Accessibility window text",
+            visualContextNote: "Screen Recording access is unavailable.")
+        _ = try await analyzer.answerQuestion("What color is the chart?", context: nil,
+            screenContext: unavailableVisual, model: LocalModelConfiguration.model, directAnswer: true)
+        let unavailableMessages = ChatProtocol.body["messages"] as! [[String:Any]]
+        let unavailableEvidence = unavailableMessages[1]["content"] as! String
+        assert(unavailableEvidence.contains("VISUAL CONTEXT AVAILABILITY") &&
+            unavailableEvidence.contains("No current-window image was supplied"),
+            "Text-only fallback must explain missing visual evidence instead of implying pixels were supplied.")
 
         // This matches the extension's bounded text wire format: destinations
         // and public form descriptors are appended to the visible text. Form

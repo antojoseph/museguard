@@ -5,6 +5,7 @@ enum AnalysisLogSource {
     case mock
     #endif
     case monitorScreenshot
+    case monitorText
     case browserText
 
     var label: String {
@@ -13,6 +14,7 @@ enum AnalysisLogSource {
         case .mock: return "Mock lab"
         #endif
         case .browserText: return "Chrome text"
+        case .monitorText: return "Desktop text"
         case .monitorScreenshot:
             return "Monitor screenshot"
         }
@@ -24,6 +26,7 @@ enum AnalysisLogSource {
         case .mock: return "testtube.2"
         #endif
         case .browserText: return "globe"
+        case .monitorText: return "text.viewfinder"
         case .monitorScreenshot:
             return "eye.circle"
         }

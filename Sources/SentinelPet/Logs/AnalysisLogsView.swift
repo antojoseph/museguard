@@ -79,7 +79,8 @@ private struct ActivityEntryView: View {
     private var sourceLabel: String {
         switch entry.source {
         case .browserText: return "Browser check"
-        case .monitorScreenshot: return "Desktop check"
+        case .monitorScreenshot: return "Desktop visual check"
+        case .monitorText: return "Desktop text check"
         #if MUSE_DEVELOPMENT
         case .mock: return "Example check"
         #endif

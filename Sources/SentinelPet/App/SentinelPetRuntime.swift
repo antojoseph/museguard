@@ -39,6 +39,7 @@ final class SentinelPetRuntime: ObservableObject {
             }
         },
         statusDetail: { [weak self] in self?.browserStatus ?? "Muse Guard is closing." },
+        desktopMonitoring: { [weak self] in self?.desktopMonitoringMetadata() },
         onProtectionChanged: { [weak self] enabled in
             guard let self else { return }
             self.browserProtection.update(enabled: enabled && !self.monitoringPaused)
@@ -76,7 +77,10 @@ final class SentinelPetRuntime: ObservableObject {
     private let screenReader = ScreenReader()
     private let screenshotCapture = ScreenshotCapture()
     private let riskAnalyzer = LocalRiskAnalyzer()
-    private lazy var monitorLoop = MonitorLoop(screenReader: screenReader, riskAnalyzer: riskAnalyzer, screenshotCapture: screenshotCapture)
+    private lazy var monitorLoop = MonitorLoop(screenReader: screenReader, riskAnalyzer: riskAnalyzer,
+        screenshotCapture: screenshotCapture,
+        chromeCoverage: { [weak self] source in await self?.hasFreshBrowserCoverage(source) ?? false },
+        ignoredProcess: { UnrealCharacterRenderer.shared.ownsProcess($0) })
     private let settingsWindowController = SettingsWindowController()
     private let analysisLogsWindowController = AnalysisLogsWindowController()
     private var chatTask: Task<Void, Never>?
@@ -164,18 +168,24 @@ final class SentinelPetRuntime: ObservableObject {
         }
     }
 
-    func refreshAccessibilityStatus() { accessibilityTrusted = AccessibilityPermissionController.isTrusted }
+    func refreshAccessibilityStatus() {
+        accessibilityTrusted = AccessibilityPermissionController.isTrusted
+        if accessibilityTrusted { reconcileDesktopMonitoring() }
+        else if !screenCaptureTrusted { stopMonitoring() }
+    }
     func refreshScreenCaptureStatus() {
         screenCaptureTrusted = ScreenCapturePermissionController.isTrusted
         if screenCaptureTrusted { reconcileDesktopMonitoring() }
-        else { stopMonitoring() }
+        else if !accessibilityTrusted { stopMonitoring() }
     }
     func requestAccessibilityPermission() {
         accessibilityTrusted = AccessibilityPermissionController.requestAccess()
+        reconcileDesktopMonitoring()
         petViewModel.show(accessibilityTrusted ? "Accessibility is enabled. I can read focused-window text." : "Enable Muse Guard in Privacy & Security → Accessibility, then restart the app.", mood: .idle, clearAfter: 8)
     }
     func requestScreenCapturePermission() {
         screenCaptureTrusted = ScreenCapturePermissionController.requestAccess()
+        reconcileDesktopMonitoring()
         petViewModel.show(screenCaptureTrusted ? "Screen Recording is enabled. Analysis stays on this Mac." : "Enable Muse Guard in Privacy & Security → Screen Recording, then restart the app.", mood: .idle, clearAfter: 8)
     }
     func openAccessibilitySettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!) }
@@ -227,7 +237,8 @@ final class SentinelPetRuntime: ObservableObject {
 
     private func reconcileDesktopMonitoring() {
         guard settings.monitoringConsentGranted, !monitoringPaused,
-              ScreenCapturePermissionController.isTrusted, LocalModelService.shared.isReady else { return }
+              (AccessibilityPermissionController.isTrusted || ScreenCapturePermissionController.isTrusted),
+              LocalModelService.shared.isReady else { return }
         if !isMonitoring { startMonitoring() }
     }
 
@@ -239,9 +250,10 @@ final class SentinelPetRuntime: ObservableObject {
     }
 
     func startMonitoring() {
+        accessibilityTrusted = AccessibilityPermissionController.isTrusted
         screenCaptureTrusted = ScreenCapturePermissionController.isTrusted
         guard !isMonitoring, !monitoringPaused, settings.monitoringConsentGranted,
-              screenCaptureTrusted, LocalModelService.shared.isReady else { return }
+              (accessibilityTrusted || screenCaptureTrusted), LocalModelService.shared.isReady else { return }
         lastMonitorErrorMessage = nil
         monitorLoop.start(model: LocalModelConfiguration.model,
             onStatus: { [weak self] status in self?.monitorStatus = status.label },
@@ -251,17 +263,17 @@ final class SentinelPetRuntime: ObservableObject {
                 self.lastMonitorErrorMessage = nil
                 let interrupt = verdict.riskLevel == .high
                 self.monitorStatus = "Last local check: \(verdict.riskLevel.rawValue)"
-                self.logVerdict(verdict, source: .monitorScreenshot, snapshot: snapshot, includesScreenshot: screenshot, updatesChatContext: interrupt)
+                self.logVerdict(verdict, source: screenshot ? .monitorScreenshot : .monitorText, snapshot: snapshot, includesScreenshot: screenshot, updatesChatContext: interrupt)
                 if interrupt { self.presentVerdict(verdict, snapshot: snapshot) }
             },
             onError: { [weak self] error, snapshot in
                 guard let self else { return }
                 self.monitorStatus = "Local analysis unavailable"
-                if error is ScreenshotCaptureError { self.stopMonitoring() }
-                self.logError(error, source: .monitorScreenshot, snapshot: snapshot)
                 guard error.localizedDescription != self.lastMonitorErrorMessage else { return }
                 self.lastMonitorErrorMessage = error.localizedDescription
-                self.petViewModel.show(error.localizedDescription, mood: .alert, clearAfter: 10)
+                // Automatic collection failures belong in status/activity, not
+                // in a warning bubble that could seed an unrelated new chat.
+                self.logError(error, source: self.monitorLoop.diagnostics.lastMode == "vision" ? .monitorScreenshot : .monitorText, snapshot: snapshot)
             })
         isMonitoring = true
         refreshMonitoringStatus()
@@ -332,7 +344,7 @@ final class SentinelPetRuntime: ObservableObject {
                 var screen: ScreenChatContext?
                 var sourceKey = "unavailable:\(app?.processIdentifier ?? -1)"
                 do {
-                    let fresh = try await self.captureChatContext(app:app)
+                    let fresh = try await self.captureChatContext(app:app, question:question)
                     guard self.chatRequestID == requestID, self.petViewModel.isChatOpen, !self.petViewModel.isAvatarHidden else { throw CancellationError() }
                     screen = fresh.context; sourceKey = fresh.key
                     self.petViewModel.chatContextLabel = fresh.label
@@ -400,37 +412,97 @@ final class SentinelPetRuntime: ObservableObject {
             !UnrealCharacterRenderer.shared.ownsProcess(app.processIdentifier)
     }
     private func isChrome(_ app: NSRunningApplication?) -> Bool { app?.bundleIdentifier?.hasPrefix("com.google.Chrome") == true }
-    private func chatWindow(for app: NSRunningApplication) -> (id:Int,title:String?)? {
-        let windows = CGWindowListCopyWindowInfo([.optionOnScreenOnly,.excludeDesktopElements],kCGNullWindowID) as? [[String:Any]] ?? []
-        guard let window = windows.first(where: { $0[kCGWindowOwnerPID as String] as? pid_t == app.processIdentifier && $0[kCGWindowLayer as String] as? Int == 0 }),
-              let id = window[kCGWindowNumber as String] as? Int else { return nil }
-        return (id,window[kCGWindowName as String] as? String)
+    private func hasFreshBrowserCoverage(_ source: ScreenSourceIdentity) async -> Bool {
+        guard !monitoringPaused, !monitoringControl.syncPending, monitoringControl.browserConnected,
+              browserProtection.isActive, source.bundleID?.hasPrefix("com.google.Chrome") == true else { return false }
+        do {
+            let fresh = try await browserChatContext.requestContext(timeout: 2)
+            try Task.checkCancellation()
+            guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier == source.processID,
+                  screenReader.sourceIdentity(for: app) == source else { return false }
+            return ContextEvidence.visibleText(fresh.page.text).hasMeaningfulText
+        } catch { return false }
     }
-    private func captureChatContext(app: NSRunningApplication?) async throws -> (context:ScreenChatContext,key:String,label:String) {
+
+    private func desktopMonitoringMetadata() -> BrowserResponse.DesktopMonitoringMetadata {
+        let counters = monitorLoop.diagnostics
+        return .init(enabled: isMonitoring, accessibilityReady: AccessibilityPermissionController.isTrusted,
+            screenCaptureReady: ScreenCapturePermissionController.isTrusted,
+            textAnalyses: counters.textAnalyses, visualAnalyses: counters.visualAnalyses,
+            windowCaptures: counters.windowCaptures, duplicateSkips: counters.duplicateSkips,
+            browserCoverageSkips: counters.browserCoverageSkips, sourceChanges: counters.sourceChanges,
+            lastMode: counters.lastMode, lastOutcome: counters.lastOutcome)
+    }
+
+    private func captureChatContext(app: NSRunningApplication?, question: String) async throws -> (context:ScreenChatContext,key:String,label:String) {
         guard let app, !app.isTerminated else { throw ScreenReaderError.noFrontmostApplication }
         let name = app.localizedName ?? "Current app"
-        if isChrome(app) {
-            let fresh = try await browserChatContext.requestContext()
-            try Task.checkCancellation()
-            guard chatApplication()?.processIdentifier == app.processIdentifier else { throw ChatScreenError.changed }
-            let snapshot = ScreenSnapshot(appName:name,windowTitle:fresh.page.title,text:fresh.page.text)
-            return (ScreenChatContext(snapshot:snapshot,sourceLabel:"Chrome extension · current visible page",url:fresh.page.url),
-                "chrome:\(fresh.tabID):\(fresh.documentID):\(fresh.page.url)","Using Chrome · \(fresh.page.title)")
+        guard let source = screenReader.sourceIdentity(for: app) else { throw ScreenReaderError.noReadableContent(name) }
+        func sourceIsCurrent() -> Bool {
+            chatApplication()?.processIdentifier == source.processID && screenReader.sourceIdentity(for: app) == source
         }
-        let beforeWindow = chatWindow(for:app)
+        var browserContext: BrowserChatContext?
         var snapshot: ScreenSnapshot?
-        if AccessibilityPermissionController.isTrusted { snapshot = try? screenReader.readContext(for:app) }
-        var image: String?
-        if (snapshot?.text.count ?? 0) < 80, ScreenCapturePermissionController.isTrusted, let beforeWindow {
-            image = try? screenshotCapture.capture(windowID:CGWindowID(beforeWindow.id)).dataURL
+        if isChrome(app), monitoringControl.browserConnected {
+            do {
+                let fresh = try await browserChatContext.requestContext()
+                try Task.checkCancellation()
+                guard sourceIsCurrent() else { throw ChatScreenError.changed }
+                browserContext = fresh
+                snapshot = ScreenSnapshot(appName: name, windowTitle: fresh.page.title, text: fresh.page.text,
+                    evidence: .visibleText(fresh.page.text), source: source)
+            } catch is CancellationError { throw CancellationError() }
+            catch ChatScreenError.changed { throw ChatScreenError.changed }
+            catch { /* AX and targeted image capture remain available if the extension cannot read this page. */ }
         }
-        let afterWindow = chatWindow(for:app)
-        guard chatApplication()?.processIdentifier == app.processIdentifier,
-              beforeWindow?.id == afterWindow?.id, beforeWindow?.title == afterWindow?.title else { throw ChatScreenError.changed }
-        guard snapshot != nil || image != nil else { throw ScreenReaderError.noReadableContent(name) }
-        let evidence = snapshot ?? ScreenSnapshot(appName:name,windowTitle:beforeWindow?.title,text:"The attached image is the current application window.")
-        return (ScreenChatContext(snapshot:evidence,sourceLabel:image == nil ? "Current application window text" : "Current application window screenshot",screenshotDataURL:image),
-            "app:\(app.processIdentifier):\(beforeWindow?.id ?? -1)","Using \(name) · \(evidence.windowTitle ?? "current window")")
+        if snapshot == nil, AccessibilityPermissionController.isTrusted {
+            do { snapshot = try await screenReader.readContextAsync(for: app) }
+            catch is CancellationError { throw CancellationError() }
+            catch { /* A text-poor window may still expose a useful image. */ }
+        }
+        try Task.checkCancellation()
+        guard sourceIsCurrent(), snapshot?.source == nil || snapshot?.source == source else { throw ChatScreenError.changed }
+        let evidence = snapshot ?? ScreenSnapshot(appName: name, windowTitle: source.windowTitle, text: "",
+            evidence: .visibleText(""), source: source)
+        var image: String?
+        var visualNote: String?
+        if ChatCapturePolicy.needsVisual(question: question, snapshot: evidence) {
+            if !ScreenCapturePermissionController.isTrusted {
+                visualNote = "Screen Recording access is unavailable. Only readable text was collected."
+            } else if let windowID = source.windowID {
+                do { image = try await screenshotCapture.captureAsync(windowID: windowID).dataURL }
+                catch is CancellationError { throw CancellationError() }
+                catch { visualNote = "The current-window image could not be captured. Only readable text was collected." }
+            } else {
+                visualNote = "The current window could not be identified for image capture. Only readable text was collected."
+            }
+        }
+        try Task.checkCancellation()
+        guard sourceIsCurrent() else { throw ChatScreenError.changed }
+        if image != nil, let original = browserContext {
+            let latest = try await browserChatContext.requestContext()
+            guard sourceIsCurrent(), latest.tabID == original.tabID, latest.documentID == original.documentID,
+                  latest.page.url == original.page.url,
+                  ContextEvidence.normalizedText(latest.page.text) == ContextEvidence.normalizedText(original.page.text) else {
+                throw ChatScreenError.changed
+            }
+        } else if image != nil, let original = snapshot {
+            let latest = try? await screenReader.readContextAsync(for: app)
+            try Task.checkCancellation()
+            guard sourceIsCurrent(), latest?.source == nil || latest?.source == source,
+                  latest.map({ ContextEvidence.normalizedText($0.text) }) == ContextEvidence.normalizedText(original.text) else {
+                throw ChatScreenError.changed
+            }
+        }
+        let origin = browserContext != nil ? "Chrome extension · current visible page" :
+            (snapshot == nil ? "Current window" : "Accessibility window text")
+        let context = ScreenChatContext(snapshot: evidence,
+            sourceLabel: image == nil ? origin : origin + " and current-window image",
+            url: browserContext?.page.url, screenshotDataURL: image, visualContextNote: visualNote)
+        let key = browserContext.map { "chrome:\($0.tabID):\($0.documentID):\($0.page.url)" } ??
+            "app:\(source.processID):\(source.windowID.map(String.init) ?? "unknown")"
+        let title = browserContext?.page.title ?? evidence.windowTitle ?? "current window"
+        return (context, key, "Using \(name) · \(title)" + (image == nil ? "" : " · visual context"))
     }
     #if MUSE_DEVELOPMENT
     func previewGuardianIntervention() {

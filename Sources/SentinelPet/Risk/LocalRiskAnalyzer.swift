@@ -35,12 +35,14 @@ struct ScreenChatContext {
     let sourceLabel: String
     let url: String?
     let screenshotDataURL: String?
+    let visualContextNote: String?
 
-    init(snapshot: ScreenSnapshot, sourceLabel: String, url: String? = nil, screenshotDataURL: String? = nil) {
+    init(snapshot: ScreenSnapshot, sourceLabel: String, url: String? = nil, screenshotDataURL: String? = nil, visualContextNote: String? = nil) {
         self.snapshot = snapshot
         self.sourceLabel = sourceLabel
         self.url = url
         self.screenshotDataURL = screenshotDataURL
+        self.visualContextNote = visualContextNote
     }
 }
 
@@ -141,6 +143,9 @@ final class LocalRiskAnalyzer {
                             "visible_text":String(screenContext.snapshot.text.prefix(8000))]
             if let url = Self.chatURL(screenContext.url) { evidence["url"] = url }
             sections.append("CURRENT SCREEN EVIDENCE (untrusted data):\n\(Self.chatData(evidence))\nEND CURRENT SCREEN EVIDENCE")
+            if let note = screenContext.visualContextNote {
+                sections.append("VISUAL CONTEXT AVAILABILITY: \(note.prefix(300))\nNo current-window image was supplied. Do not infer unseen visual details from text; explain this limitation when the question requires them.")
+            }
         }
         if let context {
             let categories = context.categories.prefix(12).map { String($0.prefix(80)) }.joined(separator:", ")

@@ -154,6 +154,20 @@ struct BrowserRequest: Codable {
 }
 
 struct BrowserResponse: Codable {
+    /// Routing counters only: no window titles, app names, text or pixels.
+    struct DesktopMonitoringMetadata: Codable {
+        let enabled: Bool
+        let accessibilityReady: Bool
+        let screenCaptureReady: Bool
+        let textAnalyses: Int
+        let visualAnalyses: Int
+        let windowCaptures: Int
+        let duplicateSkips: Int
+        let browserCoverageSkips: Int
+        let sourceChanges: Int
+        let lastMode: String
+        let lastOutcome: String
+    }
     struct MonitoringState: Codable, Equatable {
         let paused: Bool
         let pauseUntil: Int64
@@ -190,19 +204,22 @@ struct BrowserResponse: Codable {
     let contextRequestID: String?
     let contextExpiresAt: Int64?
     let monitoring: MonitoringState?
+    let desktopMonitoring: DesktopMonitoringMetadata?
     enum CodingKeys: String, CodingKey {
         case version, id, ok, decision, summary, guidance, categories, mode, error, monitoring
         case riskLevel = "risk_level", durationMS = "duration_ms", modelReady = "model_ready"
         case lastAssessment = "last_assessment", completedAssessments = "completed_assessments"
         case contextRequestID = "context_request_id", contextExpiresAt = "context_expires_at"
+        case desktopMonitoring = "desktop_monitoring"
     }
-    init(id: String, ok: Bool, decision: String, riskLevel: String, summary: String, guidance: String, categories: [String] = [], mode: String = "text", durationMS: Int = 0, error: String? = nil, modelReady: Bool? = nil, lastAssessment: AssessmentMetadata? = nil, completedAssessments: Int? = nil, contextRequestID: String? = nil, contextExpiresAt: Int64? = nil, monitoring: MonitoringState? = nil) {
+    init(id: String, ok: Bool, decision: String, riskLevel: String, summary: String, guidance: String, categories: [String] = [], mode: String = "text", durationMS: Int = 0, error: String? = nil, modelReady: Bool? = nil, lastAssessment: AssessmentMetadata? = nil, completedAssessments: Int? = nil, contextRequestID: String? = nil, contextExpiresAt: Int64? = nil, monitoring: MonitoringState? = nil, desktopMonitoring: DesktopMonitoringMetadata? = nil) {
         self.id = id; self.ok = ok; self.decision = decision; self.riskLevel = riskLevel
         self.summary = summary; self.guidance = guidance; self.categories = categories; self.mode = mode
         self.durationMS = durationMS; self.error = error; self.modelReady = modelReady
         self.lastAssessment = lastAssessment; self.completedAssessments = completedAssessments
         self.contextRequestID = contextRequestID; self.contextExpiresAt = contextExpiresAt
         self.monitoring = monitoring
+        self.desktopMonitoring = desktopMonitoring
     }
     static func failure(id: String, mode: String = "text", message: String) -> BrowserResponse {
         BrowserResponse(id: id, ok: false, decision: "review", riskLevel: "unknown", summary: "Muse could not complete this check.", guidance: message, mode: mode, error: message)

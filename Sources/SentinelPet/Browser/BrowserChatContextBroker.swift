@@ -26,16 +26,17 @@ final class BrowserChatContextBroker {
         self.timeout = min(6,max(0.001,timeout)); self.now = now
     }
 
-    func requestContext() async throws -> BrowserChatContext {
+    func requestContext(timeout requestedTimeout: TimeInterval? = nil) async throws -> BrowserChatContext {
         let id = UUID().uuidString
+        let requestTimeout = min(timeout, max(0.001, requestedTimeout ?? timeout))
         let context = try await withTaskCancellationHandler(operation: {
             try Task.checkCancellation()
             prune()
             guard pending.count < 4 else { throw ContextError.busy }
             return try await withCheckedThrowingContinuation { continuation in
-                let deadline = now().addingTimeInterval(timeout)
-                let timer = Task { [weak self, timeout] in
-                    try? await Task.sleep(nanoseconds:UInt64(timeout*1_000_000_000))
+                let deadline = now().addingTimeInterval(requestTimeout)
+                let timer = Task { [weak self] in
+                    try? await Task.sleep(nanoseconds:UInt64(requestTimeout*1_000_000_000))
                     guard !Task.isCancelled else { return }
                     self?.finish(id,result:.failure(ContextError.timedOut))
                 }

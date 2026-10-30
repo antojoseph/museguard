@@ -26,7 +26,15 @@ xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/inference-
 ./build/inference-metrics-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/guardian-acknowledgment-checks Tests/GuardianAcknowledgmentChecks.swift "$sources/Overlay/PetViewModel.swift" "$sources/Character/GuardianMotion.swift"
 ./build/guardian-acknowledgment-checks
-shared=("$sources/Risk/LocalRiskAnalyzer.swift" "$sources/Risk/LocalInferenceScheduler.swift" "$sources/Risk/LocalModelConfiguration.swift" "$sources/Risk/RiskVerdict.swift" "$sources/Accessibility/ScreenReader.swift" "$sources/Accessibility/AccessibilityPermissionController.swift")
+shared=("$sources/Risk/LocalRiskAnalyzer.swift" "$sources/Risk/LocalInferenceScheduler.swift" "$sources/Risk/LocalModelConfiguration.swift" "$sources/Risk/RiskVerdict.swift" "$sources/Accessibility/ScreenReader.swift" "$sources/Accessibility/ContextEvidence.swift" "$sources/Accessibility/AccessibilityPermissionController.swift")
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/context-evidence-checks Tests/ContextEvidenceChecks.swift "$sources/Accessibility/ContextEvidence.swift"
+./build/context-evidence-checks
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/chat-capture-policy-checks Tests/ChatCapturePolicyChecks.swift "$sources/Context/ChatCapturePolicy.swift" "$sources/Accessibility/ScreenReader.swift" "$sources/Accessibility/ContextEvidence.swift" "$sources/Accessibility/AccessibilityPermissionController.swift"
+./build/chat-capture-policy-checks
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/monitor-loop-checks Tests/MonitorLoopChecks.swift "${shared[@]}" "$sources/Monitor/MonitorLoop.swift" "$sources/Monitor/MonitorEvidenceCache.swift" "$sources/Media/ScreenshotCapture.swift" "$sources/Media/ScreenCapturePermissionController.swift"
+./build/monitor-loop-checks
+xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/screenshot-capture-checks Tests/ScreenshotCaptureChecks.swift "$sources/Media/ScreenshotCapture.swift" "$sources/Media/ScreenCapturePermissionController.swift"
+./build/screenshot-capture-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/screen-chat-checks Tests/ScreenChatChecks.swift "${shared[@]}"
 ./build/screen-chat-checks
 xcrun swiftc -swift-version 5 -target arm64-apple-macosx13.0 -o build/streaming-chat-checks Tests/StreamingChatChecks.swift "${shared[@]}" "$sources/Overlay/PetViewModel.swift" "$sources/Character/GuardianMotion.swift"

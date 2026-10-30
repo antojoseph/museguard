@@ -21,7 +21,7 @@ struct SettingsView: View {
                         Toggle("Also check my desktop screen", isOn: Binding(
                             get: { runtime.settings.monitoringConsentGranted },
                             set: { runtime.setDesktopMonitoringEnabled($0) }))
-                        Text("Optional screen checks need Screen Recording access. Turning this off stops them immediately.")
+                        Text("Accessibility text is checked first. Screen Recording adds a closer look at the current window when needed. Turning this off stops desktop checks immediately.")
                             .font(.callout).foregroundStyle(.secondary)
                         if runtime.settings.monitoringConsentGranted {
                             Text(desktopStatus).font(.callout).foregroundStyle(.secondary)
@@ -65,7 +65,7 @@ struct SettingsView: View {
                                 Button("Enable…") { runtime.requestAccessibilityPermission() }
                             }
                         }
-                        Text("Accessibility lets Muse read other apps’ window text. Screen Recording enables desktop checks and visual context when needed.")
+                        Text("Accessibility lets Muse read other apps’ window text. Screen Recording supplies visual context when text is missing or you ask for a closer look.")
                             .font(.callout).foregroundStyle(.secondary)
                     }.padding(8)
                 }
@@ -107,7 +107,7 @@ struct SettingsView: View {
 
     private var desktopStatus: String {
         if runtime.monitoringPaused { return "Desktop checks paused with monitoring." }
-        if !runtime.screenCaptureTrusted { return "Waiting for Screen Recording access." }
+        if !runtime.accessibilityTrusted && !runtime.screenCaptureTrusted { return "Waiting for Accessibility or Screen Recording access." }
         if !modelService.isReady { return "Waiting for the local model." }
         return runtime.isMonitoring ? runtime.monitorStatus : "Desktop checks stopped."
     }
