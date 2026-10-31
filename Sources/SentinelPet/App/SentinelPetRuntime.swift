@@ -42,6 +42,7 @@ final class SentinelPetRuntime: ObservableObject {
         monitoringPaused: { [weak self] in self?.monitoringPaused ?? true },
         onAssessment: { [weak self] request, verdict, snapshot, error in
             guard let self else { return }
+            self.recordBrowserPrediction(request: request, verdict: verdict)
             if let verdict, let snapshot {
                 self.logVerdict(verdict, source: .browserText, snapshot: snapshot,
                     includesScreenshot: false, updatesChatContext: false)
@@ -60,20 +61,17 @@ final class SentinelPetRuntime: ObservableObject {
         },
         onPresent: { [weak self] request, verdict, snapshot in
             guard let self else { return false }
-            guard !self.monitoringPaused, verdict.riskLevel == .high else { return false }
+            guard !self.monitoringPaused, [.medium, .high].contains(verdict.riskLevel) else { return false }
             guard NSWorkspace.shared.frontmostApplication?.bundleIdentifier == "com.google.Chrome" else {
                 self.browserStatus = "Chrome warning received; avatar stayed home because Chrome was not foreground."
                 return false
             }
             let warningContext = "browser:" + (request.page?.url ?? snapshot.windowTitle ?? snapshot.appName)
             if self.petViewModel.acknowledgment != nil {
-                // A blocked action always gets its own explanation, even
-                // while another serious finding is waiting for Got it.
-                if self.acknowledgmentContext != warningContext {
-                    _ = self.presentSafety(verdict, context: warningContext)
-                } else {
-                    self.cancelChat(); self.petViewModel.returnToWarning()
-                }
+                // Webmail messages share one redacted URL. Merge their new
+                // findings by content instead of dropping them as one page.
+                _ = self.presentSafety(verdict, context: warningContext, feedbackSource: AnalysisLogSource.browserText.label,
+                    feedbackEngine: LocalModelConfiguration.model)
                 let wasHidden = self.petViewModel.isAvatarHidden
                 self.petViewModel.revealForWarning()
                 if wasHidden, let target = self.acknowledgmentTarget { self.petViewModel.intervene(at: target) }
@@ -94,7 +92,8 @@ final class SentinelPetRuntime: ObservableObject {
             let target = precise.map { BrowserPointingController.landingPoint(for: $0.resolved.elementRect) } ?? GuardianTarget.activeWindowCenter(expectedAppName: snapshot.appName) ?? fallback
             self.browserStatus = "Chrome warning delivered to Muse."
             guard self.presentVerdict(verdict, snapshot: snapshot, target: target,
-                acknowledgmentID: request.id, acknowledgmentContext: warningContext) else { return false }
+                acknowledgmentID: request.id, acknowledgmentContext: warningContext, requiresAcknowledgment: true,
+                feedbackSource: AnalysisLogSource.browserText.label) else { return false }
             if let precise, let target, let measurement = request.target {
                 self.pointing.show(target: measurement, resolved: precise.resolved, app: precise.app, bounds: precise.bounds, landing: self.petViewModel.interventionAnchor ?? target)
             }
@@ -104,11 +103,15 @@ final class SentinelPetRuntime: ObservableObject {
     private let screenReader = ScreenReader()
     private let screenshotCapture = ScreenshotCapture()
     private let riskAnalyzer = LocalRiskAnalyzer()
-    private lazy var monitorLoop = MonitorLoop(screenReader: screenReader, riskAnalyzer: riskAnalyzer,
-        screenshotCapture: screenshotCapture,
-        chromeCoverage: { [weak self] source in await self?.hasFreshBrowserCoverage(source) ?? false },
-        ignoredProcess: { UnrealCharacterRenderer.shared.ownsProcess($0) },
-        watchedApplication: { [weak self] in self?.watchedApplication() })
+    private lazy var monitorLoop: MonitorLoop = {
+        let loop = MonitorLoop(screenReader: screenReader, riskAnalyzer: riskAnalyzer,
+            screenshotCapture: screenshotCapture,
+            chromeCoverage: { [weak self] source in await self?.hasFreshBrowserCoverage(source) ?? .unavailable },
+            ignoredProcess: { UnrealCharacterRenderer.shared.ownsProcess($0) },
+            watchedApplication: { [weak self] in self?.watchedApplication() })
+        loop.onPrediction = { [weak self] observation in self?.observeDesktopPrediction(observation) }
+        return loop
+    }()
     private let settingsWindowController = SettingsWindowController()
     private let analysisLogsWindowController = AnalysisLogsWindowController()
     private var chatTask: Task<Void, Never>?
@@ -121,6 +124,24 @@ final class SentinelPetRuntime: ObservableObject {
     private var browserSubscriptions = Set<AnyCancellable>()
     private var acknowledgmentContext: String?
     private var acknowledgmentTarget: CGPoint?
+    private var warningFeedbackSession: WarningFeedbackSession?
+    private var predictionDebugState: PredictionDebugState = {
+        let detector = SecretDetector()
+        return PredictionDebugState(sanitizeSummary: { detector.detect($0) == nil ? $0 : nil })
+    }()
+    private var predictionBrowserUpdate: BrowserPredictionUpdate?
+    private var predictionBrowserIsPush = false
+    private var predictionNewestBrowserExpiry: Int64 = 0
+    private var predictionFallbackSources: [Int: String] = [:]
+    private var predictionBrowserSourceIDs: [Int: String] = [:]
+    private var predictionLastVisualBrowser: (sourceID: String, date: Date)?
+    private let predictionTitleSecretDetector = SecretDetector()
+    private var predictionBrowserResults: [String: (verdict: RiskVerdict?, date: Date)] = [:]
+    private var predictionAppliedBrowserSignature: String?
+    private var predictionActiveProcess: Int32?
+    private var predictionDesktopSource: ScreenSourceIdentity?
+    private var predictionVisualContexts: [String: (key: String, kind: PredictionDebugSourceKind)] = [:]
+    private var predictionDebugTask: Task<Void, Never>?
     private var inferenceActivityTask: Task<Void, Never>?
     private var lastExternalApplication: NSRunningApplication?
     private var menuTrackingDepth = 0
@@ -141,6 +162,7 @@ final class SentinelPetRuntime: ObservableObject {
             .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier && $0.activationPolicy == .regular }
             .sink { [weak self] app in
                 if !UnrealCharacterRenderer.shared.ownsProcess(app.processIdentifier) { self?.lastExternalApplication = app }
+                self?.refreshPredictionDebug()
             }
             .store(in:&browserSubscriptions)
         inferenceActivityTask = Task {
@@ -177,12 +199,41 @@ final class SentinelPetRuntime: ObservableObject {
         petViewModel.$isChatOpen.removeDuplicates().filter { !$0 }.sink { [weak self] _ in
             self?.cancelChat()
         }.store(in: &browserSubscriptions)
+        predictionDebugTask = Task { [weak self] in
+            while !Task.isCancelled {
+                self?.refreshPredictionDebug()
+                try? await Task.sleep(nanoseconds: 1_000_000_000)
+            }
+        }
     }
 
     func startBrowserBridge() {
         do {
             try browserBridge.start { [weak self] request in
                 guard let self else { return .failure(id: request.id, mode: request.mode, message: "Muse Guard is closing.") }
+                if request.type == "prediction-update" {
+                    do {
+                        let checked = try request.validated()
+                        guard let update = checked.prediction else { throw BrowserProtocolError.invalidRequest }
+                        guard !self.monitoringPaused else {
+                            return BrowserResponse(id: request.id, ok: true, decision: "review", riskLevel: "unknown",
+                                summary: "Prediction display is paused.", guidance: "No activity was selected.")
+                        }
+                        guard update.expiresAt > self.predictionNewestBrowserExpiry else {
+                            return BrowserResponse(id: request.id, ok: true, decision: "review", riskLevel: "unknown",
+                                summary: "Obsolete prediction metadata ignored.", guidance: "The newer current source remains selected.")
+                        }
+                        self.predictionNewestBrowserExpiry = update.expiresAt
+                        // Retire an earlier Chrome selection on app re-entry
+                        // before installing this freshly observed selection.
+                        self.refreshPredictionDebug()
+                        self.predictionBrowserUpdate = update
+                        self.predictionBrowserIsPush = true
+                        self.refreshPredictionDebug()
+                        return BrowserResponse(id: request.id, ok: true, decision: "review", riskLevel: "unknown",
+                            summary: "Current browser prediction context received.", guidance: "Display metadata only; no model check was requested.")
+                    } catch { return .failure(id: request.id, message: "Invalid prediction context.") }
+                }
                 if var controlReply = self.monitoringControl.handle(request) {
                     if request.type == "monitoring-state" { controlReply.downloadCommands = self.downloadCommands.pending() }
                     return controlReply
@@ -262,7 +313,15 @@ final class SentinelPetRuntime: ObservableObject {
 
     private func applyMonitoringState(paused: Bool) {
         monitoringPaused = paused
+        predictionDebugState.setPaused(paused)
+        predictionAppliedBrowserSignature = nil
         if paused {
+            predictionBrowserResults.removeAll()
+            predictionBrowserUpdate = nil
+            predictionVisualContexts.removeAll()
+            predictionBrowserSourceIDs.removeAll()
+            predictionLastVisualBrowser = nil
+            predictionDebugState.clearCurrentSource()
             stopMonitoring()
             browserAssessments.cancelAll()
             browserProtection.update(enabled: false)
@@ -276,6 +335,7 @@ final class SentinelPetRuntime: ObservableObject {
             startDownloadMaintenance()
         }
         DispatchQueue.main.async { [weak self] in self?.refreshMonitoringStatus() }
+        refreshPredictionDebug()
     }
 
     private func refreshMonitoringStatus() {
@@ -310,10 +370,11 @@ final class SentinelPetRuntime: ObservableObject {
             onVerdict: { [weak self] verdict, snapshot, screenshot in
                 guard let self, !self.monitoringPaused else { return false }
                 self.lastMonitorErrorMessage = nil
-                let interrupt = verdict.riskLevel == .high
+                let interrupt = verdict.riskLevel == .medium || verdict.riskLevel == .high
                 self.monitorStatus = "Last local check: \(verdict.riskLevel.rawValue)"
                 self.logVerdict(verdict, source: screenshot ? .monitorScreenshot : .monitorText, snapshot: snapshot, includesScreenshot: screenshot, updatesChatContext: interrupt)
-                if interrupt { return self.presentVerdict(verdict, snapshot: snapshot) }
+                if interrupt { return self.presentVerdict(verdict, snapshot: snapshot, requiresAcknowledgment: true,
+                    feedbackSource: (screenshot ? AnalysisLogSource.monitorScreenshot : .monitorText).label) }
                 return true
             },
             onError: { [weak self] error, snapshot in
@@ -368,7 +429,34 @@ final class SentinelPetRuntime: ObservableObject {
         petViewModel.intervention = nil
     }
     func acknowledgeWarning(id: String) {
+        dismissWarning(id: id)
+    }
+    func dismissWarningAsFalsePositive(id: String) {
+        dismissWarning(id: id, falsePositive: true)
+    }
+    private func dismissWarning(id: String, falsePositive: Bool = false) {
         guard petViewModel.acknowledgment?.id == id else { return }
+        var dismissalStatus = "Warning acknowledged."
+        if falsePositive {
+            let details = petViewModel.warningDetails
+            let record = warningFeedbackSession?.record(warningID: id,
+                summary: details?.summary ?? petViewModel.message ?? "", guidance: details?.guidance ?? "")
+            do {
+                guard let record else { throw WarningFeedbackError.missingWarning }
+                let store = try WarningFeedbackStore()
+                try store.record(record)
+                dismissalStatus = "False-positive feedback saved on this Mac."
+                appendLog(AnalysisLogEntry(timestamp: Date(), source: .warningFeedback, appName: "Muse Guard", windowTitle: nil,
+                    model: record.engine, includesScreenshot: false,
+                    verdict: RiskVerdict(riskLevel: record.riskLevel ?? .unknown, summary: record.summary,
+                        guidance: "You dismissed this warning as a false positive. Feedback was saved on this Mac.", categories: record.categories), errorMessage: nil))
+            } catch {
+                dismissalStatus = "Warning dismissed; false-positive feedback could not be saved."
+                appendLog(AnalysisLogEntry(timestamp: Date(), source: .warningFeedback, appName: "Muse Guard", windowTitle: nil,
+                    model: record?.engine ?? "Local feedback", includesScreenshot: false, verdict: nil,
+                    errorMessage: "The warning was dismissed, but feedback could not be saved on this Mac."))
+            }
+        }
         // Acknowledgement dismisses this explanation, never the browser's
         // high-risk block. Native controls never grant a browser action.
         cancelDemo(); cancelChat()
@@ -376,10 +464,11 @@ final class SentinelPetRuntime: ObservableObject {
         warningDownloadActions.removeAll()
         acknowledgmentContext = nil; acknowledgmentTarget = nil
         latestChatContext = nil
+        warningFeedbackSession = nil
         screenChatHistory.reset()
         petViewModel.acknowledge(id: id)
         petViewModel.restoreVisibilityAfterWarning()
-        browserStatus = "Warning acknowledged."
+        browserStatus = dismissalStatus
     }
     func askPetChat(_ question: String) {
         let question = question.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -484,17 +573,43 @@ final class SentinelPetRuntime: ObservableObject {
             !UnrealCharacterRenderer.shared.ownsProcess(app.processIdentifier)
     }
     private func isChrome(_ app: NSRunningApplication?) -> Bool { app?.bundleIdentifier?.hasPrefix("com.google.Chrome") == true }
-    private func hasFreshBrowserCoverage(_ source: ScreenSourceIdentity) async -> Bool {
+    private func hasFreshBrowserCoverage(_ source: ScreenSourceIdentity) async -> MonitorLoop.ChromeCoverage {
         guard !monitoringPaused, !monitoringControl.syncPending, monitoringControl.browserConnected,
-              NSWorkspace.shared.frontmostApplication?.processIdentifier == source.processID,
-              browserProtection.isActive, source.bundleID?.hasPrefix("com.google.Chrome") == true else { return false }
+              watchedApplication()?.processIdentifier == source.processID,
+              browserProtection.isActive, source.bundleID?.hasPrefix("com.google.Chrome") == true else { return .unavailable }
         do {
             let fresh = try await browserChatContext.requestContext(timeout: 2)
             try Task.checkCancellation()
-            guard let app = NSWorkspace.shared.frontmostApplication, app.processIdentifier == source.processID,
-                  screenReader.sourceIdentity(for: app) == source else { return false }
-            return ContextEvidence.visibleText(fresh.page.text).hasMeaningfulText
-        } catch { return false }
+            guard let app = watchedApplication(), app.processIdentifier == source.processID,
+                  screenReader.sourceIdentity(for: app) == source,
+                  let quality = fresh.page.evidence else { return .unavailable }
+            observePredictionBrowserContext(fresh)
+            let identity = fresh.monitoringIdentity
+            if quality.needsVisualContext {
+                let evidence = ContextEvidence(semanticTextCharacters: quality.primaryTextCharacters,
+                    semanticTextElements: quality.primaryTextCharacters > 0 ? 1 : 0,
+                    visualElements: quality.substantialVisuals, truncated: quality.truncated, requiresVisual: true)
+                let snapshot = ScreenSnapshot(appName: source.appName, windowTitle: fresh.page.title,
+                    text: fresh.page.text, evidence: evidence, source: source)
+                return .visual(snapshot: snapshot, identity: identity, isCurrent: { [weak self] in
+                    guard let self, !self.monitoringPaused, !self.monitoringControl.syncPending,
+                          self.monitoringControl.browserConnected, self.browserProtection.isActive,
+                          let current = self.watchedApplication(),
+                          current.processIdentifier == source.processID,
+                          self.screenReader.sourceIdentity(for: current) == source else { return false }
+                    do {
+                        let latest = try await self.browserChatContext.requestContext(timeout: 2)
+                        try Task.checkCancellation()
+                        guard !self.monitoringPaused, let current = self.watchedApplication(),
+                              current.processIdentifier == source.processID,
+                              self.screenReader.sourceIdentity(for: current) == source else { return false }
+                        return latest.matchesContent(of: fresh)
+                    } catch { return false }
+                })
+            }
+            guard let proof = fresh.coverage, proof.isFresh(at: Date()) else { return .unavailable }
+            return proof.state == "completed" ? .covered(identity: identity) : .pending(identity: identity)
+        } catch { return .unavailable }
     }
 
     private func desktopMonitoringMetadata() -> BrowserResponse.DesktopMonitoringMetadata {
@@ -504,7 +619,8 @@ final class SentinelPetRuntime: ObservableObject {
             textAnalyses: counters.textAnalyses, visualAnalyses: counters.visualAnalyses,
             windowCaptures: counters.windowCaptures, duplicateSkips: counters.duplicateSkips,
             browserCoverageSkips: counters.browserCoverageSkips, sourceChanges: counters.sourceChanges,
-            lastMode: counters.lastMode, lastOutcome: counters.lastOutcome)
+            lastMode: counters.lastMode, lastOutcome: counters.lastOutcome,
+            lastFailureReason: counters.lastFailureReason?.rawValue)
     }
 
     private func captureChatContext(app: NSRunningApplication?, question: String) async throws -> (context:ScreenChatContext,key:String,label:String) {
@@ -522,8 +638,14 @@ final class SentinelPetRuntime: ObservableObject {
                 try Task.checkCancellation()
                 guard sourceIsCurrent() else { throw ChatScreenError.changed }
                 browserContext = fresh
+                let evidence = fresh.page.evidence.map { quality in
+                    ContextEvidence(semanticTextCharacters: quality.primaryTextCharacters,
+                        semanticTextElements: quality.primaryTextCharacters > 0 ? 1 : 0,
+                        visualElements: quality.substantialVisuals, truncated: quality.truncated,
+                        requiresVisual: quality.needsVisualContext)
+                } ?? .visibleText(fresh.page.text)
                 snapshot = ScreenSnapshot(appName: name, windowTitle: fresh.page.title, text: fresh.page.text,
-                    evidence: .visibleText(fresh.page.text), source: source)
+                    evidence: evidence, source: source)
             } catch is CancellationError { throw CancellationError() }
             catch ChatScreenError.changed { throw ChatScreenError.changed }
             catch { /* AX and targeted image capture remain available if the extension cannot read this page. */ }
@@ -554,9 +676,7 @@ final class SentinelPetRuntime: ObservableObject {
         guard sourceIsCurrent() else { throw ChatScreenError.changed }
         if image != nil, let original = browserContext {
             let latest = try await browserChatContext.requestContext()
-            guard sourceIsCurrent(), latest.tabID == original.tabID, latest.documentID == original.documentID,
-                  latest.page.url == original.page.url,
-                  ContextEvidence.normalizedText(latest.page.text) == ContextEvidence.normalizedText(original.page.text) else {
+            guard sourceIsCurrent(), latest.matchesContent(of: original) else {
                 throw ChatScreenError.changed
             }
         } else if image != nil, let original = snapshot {
@@ -628,7 +748,9 @@ final class SentinelPetRuntime: ObservableObject {
     #endif
     @discardableResult
     private func presentVerdict(_ verdict: RiskVerdict, snapshot: ScreenSnapshot, target: CGPoint? = nil,
-        acknowledgmentID: String? = nil, acknowledgmentContext context: String? = nil) -> Bool {
+        acknowledgmentID: String? = nil, acknowledgmentContext context: String? = nil,
+        requiresAcknowledgment: Bool = false, feedbackSource: String = "Desktop text",
+        feedbackEngine: String = LocalModelConfiguration.model) -> Bool {
         let watchedProcessID = watchedApplication()?.processIdentifier
         let key: String
         if let context { key = context }
@@ -644,25 +766,26 @@ final class SentinelPetRuntime: ObservableObject {
             identity.combine(ContextEvidence.normalizedText(verdict.summary))
             key = "desktop:\(identity.finalize())"
         }
+        let risky = verdict.riskLevel == .medium || verdict.riskLevel == .high
+        let shouldAcknowledge = verdict.riskLevel == .high || (requiresAcknowledgment && risky)
         if petViewModel.acknowledgment != nil {
-            guard verdict.riskLevel == .high, acknowledgmentContext == key else { return false }
-            let wasHidden = petViewModel.isAvatarHidden
-            petViewModel.revealForWarning()
-            if wasHidden, let target = acknowledgmentTarget { petViewModel.intervene(at: target) }
-            return true
+            guard shouldAcknowledge else { return false }
+            return presentSafety(verdict, context: key, target: target, feedbackSource: feedbackSource, feedbackEngine: feedbackEngine)
         }
         cancelDemo()
-        let risky = verdict.riskLevel == .medium || verdict.riskLevel == .high
         let pinned = risky || verdict.riskLevel == .unknown
-        if verdict.riskLevel == .high {
+        if shouldAcknowledge {
             cancelChat()
             screenChatHistory.reset()
             if petViewModel.isAvatarHidden {
                 petViewModel.revealForWarning()
             }
-            let text = "\(verdict.summary)\n\(verdict.guidance)\nI’ll stay here until you choose Got it."
-            guard petViewModel.showAcknowledgment(id: acknowledgmentID ?? UUID().uuidString, text: text,
+            let text = "\(verdict.summary)\n\(verdict.guidance)\nI’ll stay here until you dismiss this warning."
+            let warningID = acknowledgmentID ?? UUID().uuidString
+            guard petViewModel.showAcknowledgment(id: warningID, text: text,
                 details: GuardianWarningDetails(summary: verdict.summary, guidance: verdict.guidance)) else { return false }
+            warningFeedbackSession = WarningFeedbackSession(warningID: warningID,
+                source: feedbackSource, engine: feedbackEngine, verdict: verdict)
             acknowledgmentContext = key
             let screen = NSScreen.screens.first { $0.frame.contains(NSEvent.mouseLocation) } ?? NSScreen.main
             let verifiedTarget = snapshot.source.flatMap { source in
@@ -700,7 +823,8 @@ final class SentinelPetRuntime: ObservableObject {
                     guidance: "This was a warning after the paste; Muse could not prevent it. If this was not intentional, undo the paste. If you sent it, revoke or rotate the credential. A wallet recovery phrase should stay private.",
                     categories: detection.categories.map(\.rawValue))
                 self.logSafety(verdict, source: .secretPaste, app: app.localizedName ?? "Current app")
-                _ = self.presentSafety(verdict, context: key)
+                _ = self.presentSafety(verdict, context: key, feedbackSource: AnalysisLogSource.secretPaste.label,
+                    feedbackEngine: "Local secret format detector")
             })
     }
 
@@ -759,7 +883,8 @@ final class SentinelPetRuntime: ObservableObject {
                 guidance: "Keep this secret private. If you intended to enter it here, first verify the destination and pause monitoring. Got it dismisses this warning and never pastes or submits the value.", categories: secret.categories)
             let precise = resolveBrowserTarget(request)
             let landing = precise.map { BrowserPointingController.landingPoint(for: $0.resolved.elementRect) }
-            let delivered = presentSafety(verdict, context: "secret:\(request.documentID ?? ""):\(secret.category)", target: landing)
+            let delivered = presentSafety(verdict, context: "secret:\(request.documentID ?? ""):\(secret.category)", target: landing,
+                feedbackSource: AnalysisLogSource.secretPaste.label, feedbackEngine: "Local secret format detector")
             if delivered, let precise, let landing, let target = request.target {
                 pointing.show(target: target, resolved: precise.resolved, app: precise.app, bounds: precise.bounds, landing: petViewModel.interventionAnchor ?? landing)
             }
@@ -785,7 +910,9 @@ final class SentinelPetRuntime: ObservableObject {
             logSafety(verdict, source: .downloadInspection, app: "Google Chrome", engine: inspection.details.scanner == "clamav" ? "Local static inspection · ClamAV" : "Local static inspection · antivirus unavailable")
             if verdict.riskLevel == .high {
                 let actions = downloadWarningActions(download)
-                _ = presentSafety(verdict, context: "download:\(download.downloadID)", actions: actions)
+                _ = presentSafety(verdict, context: "download:\(download.downloadID)", actions: actions,
+                    feedbackSource: AnalysisLogSource.downloadInspection.label,
+                    feedbackEngine: inspection.details.scanner == "clamav" ? "Local static inspection · ClamAV" : "Local static inspection · antivirus unavailable")
             }
             var response = BrowserResponse(id: request.id, ok: true, decision: verdict.riskLevel == .high ? "block" : "review", riskLevel: verdict.riskLevel.rawValue,
                 summary: verdict.summary, guidance: verdict.guidance, categories: verdict.categories)
@@ -836,21 +963,29 @@ final class SentinelPetRuntime: ObservableObject {
         }
     }
     @discardableResult
-    private func presentSafety(_ verdict: RiskVerdict, context: String, target: CGPoint? = nil, actions: [GuardianWarningAction] = []) -> Bool {
+    private func presentSafety(_ verdict: RiskVerdict, context: String, target: CGPoint? = nil, actions: [GuardianWarningAction] = [],
+        feedbackSource: String, feedbackEngine: String) -> Bool {
         if petViewModel.acknowledgment != nil {
             cancelChat(); petViewModel.returnToWarning()
+            let wasHidden = petViewModel.isAvatarHidden
+            petViewModel.revealForWarning()
             petViewModel.addSafetyNotice(summary: verdict.summary, guidance: verdict.guidance, actions: actions)
+            warningFeedbackSession?.include(source: feedbackSource, engine: feedbackEngine, verdict: verdict)
             if let details = petViewModel.warningDetails {
+                let risk: RiskLevel = latestChatContext?.riskLevel == .high || verdict.riskLevel == .high ? .high : verdict.riskLevel
+                let categories = Array(Set((latestChatContext?.categories ?? []) + verdict.categories)).sorted()
                 latestChatContext = RiskReportChatContext(sourceLabel: "Local protection", appName: "Muse Guard", windowTitle: nil,
-                    riskLevel: .high, summary: details.summary, guidance: details.guidance, categories: verdict.categories)
+                    riskLevel: risk, summary: details.summary, guidance: details.guidance, categories: categories)
             }
             if let target { petViewModel.intervene(at: target); acknowledgmentTarget = target }
+            else if wasHidden, let target = acknowledgmentTarget { petViewModel.intervene(at: target) }
             return true
         }
         let snapshot = ScreenSnapshot(appName: "Muse Guard", windowTitle: nil, text: "")
         latestChatContext = RiskReportChatContext(sourceLabel: "Local protection", appName: "Muse Guard", windowTitle: nil,
-            riskLevel: .high, summary: verdict.summary, guidance: verdict.guidance, categories: verdict.categories)
-        let delivered = presentVerdict(verdict, snapshot: snapshot, target: target, acknowledgmentContext: context)
+            riskLevel: verdict.riskLevel, summary: verdict.summary, guidance: verdict.guidance, categories: verdict.categories)
+        let delivered = presentVerdict(verdict, snapshot: snapshot, target: target, acknowledgmentContext: context, requiresAcknowledgment: true,
+            feedbackSource: feedbackSource, feedbackEngine: feedbackEngine)
         if delivered { petViewModel.setWarningActions(actions) }
         return delivered
     }
@@ -873,7 +1008,211 @@ final class SentinelPetRuntime: ObservableObject {
             guidance: verdict.guidance, categories: verdict.categories)
     }
     private func appendLog(_ entry: AnalysisLogEntry) { analysisLogs.insert(entry, at: 0); if analysisLogs.count > 200 { analysisLogs.removeLast() } }
-    deinit { inferenceActivityTask?.cancel() }
+
+    private func predictionHeading(app: String, title: String?) -> String {
+        guard let title, !title.isEmpty, predictionTitleSecretDetector.detect(title) == nil else { return app }
+        return "\(app) · \(title)"
+    }
+
+    private func publishPredictionDebug() {
+        let snapshot = predictionDebugState.snapshot()
+        if petViewModel.predictionDebug != snapshot { petViewModel.predictionDebug = snapshot }
+    }
+
+    /// Metadata never supplies a verdict. Only locally completed model jobs
+    /// can populate this small, in-memory lookup by their original request ID.
+    private func recordBrowserPrediction(request: BrowserRequest, verdict: RiskVerdict?) {
+        guard request.type == "assess", !monitoringPaused else { return }
+        let now = Date()
+        predictionBrowserResults[request.id] = (verdict, now)
+        predictionBrowserResults = predictionBrowserResults.filter { now.timeIntervalSince($0.value.date) < 300 }
+        while predictionBrowserResults.count > 128,
+              let oldest = predictionBrowserResults.min(by: { $0.value.date < $1.value.date })?.key {
+            predictionBrowserResults.removeValue(forKey: oldest)
+        }
+        if predictionBrowserUpdate?.assessmentID == request.id, isChrome(watchedApplication()) {
+            refreshPredictionDebug()
+            applyBrowserPrediction(force: true)
+        }
+    }
+
+    private func applyBrowserPrediction(force: Bool = false) {
+        guard let update = predictionBrowserUpdate,
+              update.expiresAt > Int64(Date().timeIntervalSince1970 * 1_000),
+              isChrome(watchedApplication()) else { return }
+        let signature = "\(update.sourceID)|\(update.assessmentID ?? "")|\(update.phase)"
+        guard force || predictionAppliedBrowserSignature != signature else { return }
+        predictionAppliedBrowserSignature = signature
+        if let visual = predictionLastVisualBrowser, visual.sourceID == update.sourceID,
+           predictionDebugState.snapshot().kind == .desktopVisual,
+           predictionDebugState.snapshot().phase == .completed,
+           let id = update.assessmentID, let text = predictionBrowserResults[id], text.date <= visual.date {
+            // Renewing an older text receipt cannot overwrite a newer visual
+            // prediction of this same exact page (for example a canvas).
+            return
+        }
+        let key = "browser:\(update.sourceID):\(update.assessmentID ?? update.phase)"
+        predictionDebugState.setCurrentSource(key: key, kind: .browser,
+            heading: predictionHeading(app: "Chrome", title: update.title))
+        let requestID = "\(key):result"
+        if let id = update.assessmentID, let result = predictionBrowserResults[id] {
+            _ = predictionDebugState.begin(sourceKey: key, requestID: requestID, now: result.date)
+            if let verdict = result.verdict {
+                _ = predictionDebugState.complete(sourceKey: key, requestID: requestID, verdict: verdict, now: result.date)
+            } else { _ = predictionDebugState.fail(sourceKey: key, requestID: requestID, now: result.date) }
+        } else if update.phase == "checking" {
+            _ = predictionDebugState.begin(sourceKey: key, requestID: requestID)
+        } else if update.phase == "unavailable" || update.phase == "completed" {
+            _ = predictionDebugState.begin(sourceKey: key, requestID: requestID)
+            _ = predictionDebugState.fail(sourceKey: key, requestID: requestID)
+        }
+        publishPredictionDebug()
+    }
+
+    /// Reuse the exact context already fetched by native monitoring. This is
+    /// a fallback for an older/disconnected metadata stream, not another poll.
+    private func observePredictionBrowserContext(_ context: BrowserChatContext) {
+        let now = Date(), milliseconds = Int64(Date().timeIntervalSince1970 * 1_000)
+        let identity = context.monitoringIdentity
+        if let sourceID = context.predictionSourceID {
+            if predictionBrowserSourceIDs.count >= 32, predictionBrowserSourceIDs[identity] == nil { predictionBrowserSourceIDs.removeAll() }
+            predictionBrowserSourceIDs[identity] = sourceID
+        }
+        if predictionBrowserIsPush, let update = predictionBrowserUpdate,
+           context.prefersPredictionPush(update,
+               resultCompletedAt: update.assessmentID.flatMap { predictionBrowserResults[$0]?.date }, now: now) { return }
+        if predictionFallbackSources[identity] == nil {
+            if predictionFallbackSources.count >= 32 { predictionFallbackSources.removeAll() }
+            predictionFallbackSources[identity] = UUID().uuidString
+        }
+        let proof = context.coverage.flatMap { $0.isFresh(at: now) ? $0 : nil }
+        predictionBrowserUpdate = BrowserPredictionUpdate(sourceID: context.predictionSourceID ?? predictionFallbackSources[identity]!,
+            title: String(context.page.title.prefix(250)), tabID: context.tabID, windowID: context.windowID,
+            documentID: context.documentID, phase: proof?.state ?? "waiting", assessmentID: proof?.assessmentID,
+            expiresAt: milliseconds + 3_000)
+        predictionBrowserIsPush = false
+        refreshPredictionDebug()
+    }
+
+    private func observeDesktopPrediction(_ observation: MonitorLoop.PredictionObservation) {
+        guard !monitoringPaused, let app = watchedApplication(), app.processIdentifier == observation.source.processID else { return }
+        if predictionActiveProcess != app.processIdentifier {
+            predictionActiveProcess = app.processIdentifier
+            predictionAppliedBrowserSignature = nil
+            if isChrome(app) { predictionBrowserUpdate = nil }
+        }
+        let source = observation.source
+        let base = "desktop:\(source.hashValue)"
+        if observation.phase == .source {
+            if predictionDesktopSource != source {
+                predictionDesktopSource = source
+                // Chrome's selected document is more precise than its native
+                // window title. Let its source metadata own this transition.
+                if !isChrome(app) {
+                    predictionDebugState.setCurrentSource(key: base, kind: .desktopText,
+                        heading: predictionHeading(app: source.appName, title: source.windowTitle))
+                    publishPredictionDebug()
+                }
+            }
+            return
+        }
+        let browserScope = isChrome(app)
+            ? observation.browserIdentity.map(String.init) ?? predictionBrowserUpdate?.sourceID ?? "native-window"
+            : "desktop"
+        let context = "\(base):\(browserScope):\(observation.textIdentity.map(String.init) ?? "reading")"
+        let key = "\(context):\(observation.evidenceIdentity.map(String.init) ?? "reading"):\(observation.visual)"
+        if observation.phase == .cancelled {
+            _ = predictionDebugState.discard(sourceKey: key, requestID: observation.requestID,
+                detail: observation.failureReason?.message ?? "Check superseded. Waiting for fresh context.")
+            publishPredictionDebug()
+            return
+        }
+        predictionDesktopSource = source
+        if observation.phase == .evidence, observation.visual, observation.imageIdentity == nil {
+            // The current text/document was observed, but a capture may be
+            // cooling down. Retain only that exact context's last image result.
+            let previous = predictionVisualContexts[context]
+            predictionDebugState.setCurrentSource(key: previous?.key ?? "\(context):waiting-image",
+                kind: previous?.kind ?? .desktopVisual, heading: predictionHeading(app: source.appName, title: source.windowTitle))
+            retainPredictionVisualBrowser(observation.browserIdentity)
+            publishPredictionDebug()
+            return
+        }
+        if observation.imageIdentity != nil {
+            if predictionVisualContexts.count >= 32, predictionVisualContexts[context] == nil { predictionVisualContexts.removeAll() }
+            predictionVisualContexts[context] = (key, .desktopVisual)
+        }
+        predictionDebugState.setCurrentSource(key: key, kind: observation.visual ? .desktopVisual : .desktopText,
+            heading: predictionHeading(app: source.appName, title: source.windowTitle))
+        switch observation.phase {
+        case .checking: _ = predictionDebugState.begin(sourceKey: key, requestID: observation.requestID)
+        case .completed:
+            if let verdict = observation.verdict {
+                let completedAt = Date()
+                _ = predictionDebugState.complete(sourceKey: key, requestID: observation.requestID, verdict: verdict, now: completedAt)
+                if predictionVisualContexts.count >= 32, predictionVisualContexts[context] == nil { predictionVisualContexts.removeAll() }
+                predictionVisualContexts[context] = (key, observation.visual ? .desktopVisual : .desktopText)
+            }
+        case .unavailable:
+            _ = predictionDebugState.begin(sourceKey: key, requestID: observation.requestID)
+            _ = predictionDebugState.fail(sourceKey: key, requestID: observation.requestID, detail: observation.failureReason?.message)
+        case .source, .evidence, .cancelled: break
+        }
+        retainPredictionVisualBrowser(observation.browserIdentity)
+        publishPredictionDebug()
+    }
+
+    private func retainPredictionVisualBrowser(_ identity: Int?) {
+        let snapshot = predictionDebugState.snapshot()
+        guard snapshot.kind == .desktopVisual, snapshot.phase == .completed,
+              let completedAt = snapshot.timestamp, let identity,
+              let sourceID = predictionBrowserSourceIDs[identity] else { return }
+        // Restoring a cached image result must restore its original precedence,
+        // too; visiting another document must not renew or replace its date.
+        predictionLastVisualBrowser = (sourceID, completedAt)
+    }
+
+    private func refreshPredictionDebug() {
+        predictionDebugState.setPaused(monitoringPaused)
+        if monitoringPaused { publishPredictionDebug(); return }
+        predictionDebugState.setStopped(!LocalModelService.shared.isReady)
+        guard let app = watchedApplication() else {
+            predictionActiveProcess = nil
+            predictionAppliedBrowserSignature = nil
+            predictionDebugState.clearCurrentSource()
+            publishPredictionDebug()
+            return
+        }
+        if predictionActiveProcess != app.processIdentifier {
+            predictionActiveProcess = app.processIdentifier
+            predictionDesktopSource = nil
+            predictionAppliedBrowserSignature = nil
+            if isChrome(app) { predictionBrowserUpdate = nil }
+            predictionDebugState.setCurrentSource(key: "app:\(app.processIdentifier)",
+                kind: isChrome(app) ? .browser : .desktopText, heading: app.localizedName ?? "Current app")
+        }
+        if isChrome(app) {
+            if let update = predictionBrowserUpdate, update.expiresAt > Int64(Date().timeIntervalSince1970 * 1_000) {
+                applyBrowserPrediction()
+            } else if predictionAppliedBrowserSignature != nil {
+                predictionAppliedBrowserSignature = nil
+                predictionDebugState.setCurrentSource(key: "browser:waiting:\(app.processIdentifier)", kind: .browser,
+                    heading: "Chrome · waiting for current tab")
+            }
+        } else if !isMonitoring, !monitoringPaused, LocalModelService.shared.isReady {
+            let key = "app:\(app.processIdentifier)"
+            predictionDebugState.setCurrentSource(key: key, kind: .desktopText, heading: app.localizedName ?? "Current app")
+            if predictionDebugState.snapshot().phase == .waiting {
+                let request = UUID().uuidString
+                _ = predictionDebugState.begin(sourceKey: key, requestID: request)
+                _ = predictionDebugState.fail(sourceKey: key, requestID: request)
+            }
+        }
+        publishPredictionDebug()
+    }
+
+    deinit { inferenceActivityTask?.cancel(); predictionDebugTask?.cancel() }
 }
 
 private enum ChatScreenError: Error { case changed }
+private enum WarningFeedbackError: Error { case missingWarning }

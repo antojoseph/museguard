@@ -9,7 +9,7 @@ const root = path.resolve(__dirname, '..');
 const turn = () => new Promise(resolve => setImmediate(resolve));
 
 function harness(settings = {}, options = {}) {
-  const sent = [], heartbeats = [], contextPolls = [], contextResults = [], contextRequests = [], onNative = [], onDisconnect = [], opened = [], writes = [], badges = [], tabMessages = [], injections = [], downloadOps = [], monitoringCommands = [], timers = [];
+  const sent = [], predictions = [], heartbeats = [], contextPolls = [], contextResults = [], contextRequests = [], onNative = [], onDisconnect = [], opened = [], writes = [], badges = [], tabMessages = [], injections = [], downloadOps = [], monitoringCommands = [], timers = [];
   const local = { configVersion: 2, enabled: true, paused: false, pauseUntil: 0, ...settings }, session = {};
   const monitoring = { paused: settings.paused === true || settings.enabled === false, pause_until: settings.pauseUntil || 0, revision: 1 };
   const monitoringRequests = [];
@@ -35,6 +35,11 @@ function harness(settings = {}, options = {}) {
     runtime: { id: 'extension-id', getURL: file => 'chrome-extension://extension-id/' + file,
       connectNative(name) { assert.equal(name, 'com.antojoseph.museguard'); connections++; return {
         postMessage(value) {
+          if (value.type === 'prediction-update') {
+            predictions.push(structuredClone(value));
+            queueMicrotask(() => { for (const listener of onNative) listener({ version: 1, id: value.id, ok: true }); });
+            return;
+          }
           if (['monitoring-state', 'monitoring-control'].includes(value.type)) {
             monitoringRequests.push(value);
             const conflict = value.type === 'monitoring-control' && value.monitoring_revision && value.monitoring_revision !== monitoring.revision;
@@ -75,9 +80,9 @@ function harness(settings = {}, options = {}) {
         if (['snapshot', 'target-state'].includes(message.type) && snapshotReply) return snapshotReply(id);
         return structuredClone(snapshot); },
       async create(value) { opened.push(value); }, onUpdated: listen('updated'), onRemoved: listen('removed'), onActivated: listen('activated'), onZoomChange: listen('zoom'), onDetached: listen('detached') },
-    windows: { async get() {
+    windows: { async get(id = 2) {
       if (windowReadGate) { const gate=windowReadGate; windowReadGate=null; gate.entered(); await gate.wait; }
-      return { id: 2, focused, left: 80, top: 30, width: 1200, height: 900 };
+      return { id, focused, left: 80, top: 30, width: 1200, height: 900 };
     }, async create(value) { opened.push(value); }, onFocusChanged: listen('window-focused'), onBoundsChanged: listen('window-bounds') },
     alarms: { async get(name) { return alarms.get(name); }, async create(name, value) { alarms.set(name, { name, scheduledTime: value.when, periodInMinutes: value.periodInMinutes }); },
       async clear(name) { return alarms.delete(name); }, onAlarm: listen('alarm') },
@@ -103,7 +108,7 @@ function harness(settings = {}, options = {}) {
     setTimeout: (fn, time) => { const handle = setTimeout(fn, time); handle.unref(); timers.push({ fn, time, handle }); return handle; }, clearTimeout });
   sandbox.importScripts = file => vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), sandbox);
   vm.runInContext(fs.readFileSync(path.join(root, 'background.js'), 'utf8'), sandbox);
-  const api = vm.runInContext('({handle, documents, pending, forget, config, cache, receipts, automaticQueue, ensureTabMonitoring, hydrateOpenTabs, restoreMonitoring, syncProtectionState, pollChatContext, pollMonitoringState, applyMonitoringState, processDownloadCommands, downloadGuard, core:C, getActive:()=>activeAutomatic, hasContextTimer:()=>chatContextTimer!==null})', sandbox);
+  const api = vm.runInContext('({handle, documents, pending, forget, config, cache, receipts, automaticQueue, ensureTabMonitoring, hydrateOpenTabs, restoreMonitoring, syncProtectionState, pollChatContext, pollMonitoringState, applyMonitoringState, processDownloadCommands, publishSelectedPrediction, predictionSources, downloadGuard, core:C, getActive:()=>activeAutomatic, hasContextTimer:()=>chatContextTimer!==null})', sandbox);
   const senderFor = id => { const value = tabs.get(id); return { id: 'extension-id', frameId: 0, documentId: 'document-'+id,
     url: value.url, tab: { ...value } }; };
   const sender = { ...senderFor(7), documentId: 'document-a' };
@@ -129,7 +134,7 @@ function harness(settings = {}, options = {}) {
       summary: 'Concrete concern', guidance: 'Stay here.', categories: [], mode: request.mode || 'text', duration_ms: 20, ...value };
     for (const listener of onNative) listener(response);
   }
-  return { api, monitoring, monitoringRequests, monitoringCommands, downloadItems, downloadOps, timers, now: () => now, sent, heartbeats, contextPolls, contextResults, tab, tabs, sender, senderFor, popup, local, snapshot, writes, badges, opened, pageRequest, automatic, answer, tabMessages, session, alarms, events, injections, monitoringTabs,
+  return { api, monitoring, monitoringRequests, monitoringCommands, downloadItems, downloadOps, timers, now: () => now, sent, predictions, heartbeats, contextPolls, contextResults, tab, tabs, sender, senderFor, popup, local, snapshot, writes, badges, opened, pageRequest, automatic, answer, tabMessages, session, alarms, events, injections, monitoringTabs,
     focus: value => { focused = value; }, advance: value => { now += value; },
     addTab(id, active = false) { const value = { id, active, windowId: 2, url: 'https://tab'+id+'.test/page' }; tabs.set(id, value); return value; },
     blockNextRead() { let release; nextGetGate = new Promise(resolve => { release = resolve; }); return release; },
@@ -267,6 +272,25 @@ async function automaticResult(h, request = h.automatic(), value = {}, sender = 
   return (await nativeCall(h, request, value, sender)).result;
 }
 function blockMessage(request, id) { return { ...request, type: 'present-block', assessment_id: id }; }
+function measuredEvidence(value = {}) {
+  return { version: 1, primary_text_characters: 80, visible_text_characters: 120, substantial_visuals: 0,
+    requires_visual: false, truncated: false, visual_revision: 0, ...value };
+}
+function currentMeasuredPage(h) {
+  h.snapshot.page.evidence = measuredEvidence();
+  const request = h.automatic();
+  // Match the production page action, rather than the link-shaped historical
+  // harness default: exact coverage cannot be earned by a different intent.
+  request.action = h.api.core.normalizeAction({ kind: 'page' });
+  request.public_signature = h.api.core.publicSignature(request.action);
+  return request;
+}
+async function contextReply(h) {
+  const before = h.contextResults.length;
+  h.requestContext(); await h.api.pollChatContext();
+  assert.equal(h.contextResults.length, before + 1, 'The request must receive a new context reply.');
+  return h.contextResults.at(-1);
+}
 
 // Global controls do not depend on a page's URL or a site's old opt-in entry.
 test('global pause controls work on internal tabs and expire through a persistent alarm', async () => {
@@ -367,15 +391,41 @@ test('foreground intent gets priority while a waiting background page receives a
   const h=harness(), jobs=[]; h.addTab(8);
   jobs.push(h.api.handle(h.automatic(),h.sender)); await sentCount(h,1);
   jobs.push(h.api.handle(h.automatic('page','proactive',8),h.senderFor(8)));
-  for(let id=9;id<13;id++){ h.addTab(id); jobs.push(h.api.handle(h.automatic('link','intent',id),h.senderFor(id))); }
-  await until(()=>h.api.automaticQueue.size===5);
-  for(let n=0;n<6;n++){
+  jobs.push(h.api.handle(h.automatic('link','intent'),h.sender));
+  const form=h.automatic('submit','proactive'); form.action.sensitive=true;
+  form.public_signature=h.api.core.publicSignature(form.action,['password']);
+  jobs.push(h.api.handle(form,h.sender));
+  await until(()=>h.api.automaticQueue.size===3);
+  for(let n=0;n<4;n++){
     await sentCount(h,n+1); h.answer(h.sent[n],{risk_level:'safe'});
   }
   await Promise.all(jobs);
   const dispatched=h.sent.map(value=>value.page.url);
-  assert.equal(dispatched[1],'https://tab9.test/page');
+  assert.equal(h.sent[1].action.kind,'link');
+  assert.equal(dispatched[1],h.snapshot.page.url);
   assert.ok(dispatched.indexOf('https://tab8.test/page')<=3,'Background work gets a turn after at most three foreground jobs.');
+});
+
+test('the current page outranks stale intents from inactive tabs and other Chrome windows', async () => {
+  for (const otherWindow of [false,true]) {
+    const h=harness(), jobs=[]; h.addTab(8);
+    jobs.push(h.api.handle(h.automatic('page','proactive',8),h.senderFor(8))); await sentCount(h,1);
+    for (let id=9;id<12;id++) {
+      const tab=h.addTab(id,otherWindow);
+      if (otherWindow) tab.windowId=id;
+      jobs.push(h.api.handle(h.automatic('link','intent',id),h.senderFor(id)));
+    }
+    jobs.push(h.api.handle(h.automatic('page','proactive'),h.sender));
+    await until(()=>h.api.automaticQueue.size===4);
+    assert.equal(h.sent.length,1,'A routine activation preserves the scan already running.');
+    for (let n=0;n<5;n++) {
+      await sentCount(h,n+1); h.answer(h.sent[n],{risk_level:'safe'});
+    }
+    await Promise.all(jobs);
+    assert.equal(h.sent[1].page.url,h.snapshot.page.url,'Fresh current-page evidence must beat old hover/press intent.');
+    assert.deepEqual(h.sent.slice(2).map(value=>value.page.url),[9,10,11].map(id=>'https://tab'+id+'.test/page'),
+      'Inactive intents remain covered in bounded background FIFO order.');
+  }
 });
 
 test('exact cached results retain their original expiry and never authorize a different action', async () => {
@@ -447,6 +497,7 @@ test('an old sensitive intent cannot cancel newer work after a deferred focus qu
   for (const race of ['pause-resume','forget-reattach']) {
     const h=harness(); h.addTab(8); h.addTab(9);
     const original=h.api.handle(h.automatic('page','proactive',8),h.senderFor(8)); await sentCount(h,1);
+    await h.api.publishSelectedPrediction();
     const blocked=h.blockNextWindowRead(), intent=h.automatic('submit');
     intent.action.sensitive=true; intent.public_signature=h.api.core.publicSignature(intent.action,['password']);
     const obsolete=h.api.handle(intent,h.sender); await blocked.began;
@@ -535,6 +586,86 @@ test('present-block rejects stale, changed, hidden and mismatched proof without 
     if(change==='expired')h.advance(30001);
     const count=h.sent.length, result=await h.api.handle(message,sender);
     assert.equal(result.ok,false,change); assert.equal(h.sent.length,count,change);
+  }
+});
+
+test('medium concerns earn a warning receipt without gaining high-risk blocking authority', async () => {
+  const h = harness(), request = h.automatic(), finding = await automaticResult(h, request, { risk_level: 'medium', decision: 'review' });
+  assert.equal(finding.confirmed_extreme, false);
+  assert.equal(finding.warning_eligible, true);
+  assert.ok(finding.warning_expires_at > h.now() && finding.warning_expires_at <= h.now() + 30000);
+  assert.equal(h.api.core.isPresentableWarning(finding, h.now()), true);
+  assert.equal(h.api.core.isConfirmedExtreme(finding, h.now()), false);
+  const before = h.sent.length;
+  assert.equal((await h.api.handle(blockMessage(request, finding.id), h.sender)).ok, false);
+  assert.equal(h.sent.length, before, 'A medium caution cannot invoke the browser blocking route.');
+  const warning = { ...blockMessage(request, finding.id), type: 'present-warning' };
+  const shown = await nativeCall(h, warning, { risk_level: 'medium', decision: 'review' });
+  assert.equal(shown.request.type, 'present-warning');
+  assert.equal(shown.request.assessment_id, finding.id);
+  assert.equal(shown.result.ok, true);
+  assert.ok(!('page' in shown.request) && !('action' in shown.request), 'Presentation uses the exact native receipt without resending evidence.');
+  const high = harness(), highRequest = high.automatic(), highFinding = await automaticResult(high, highRequest);
+  const highCount = high.sent.length;
+  assert.equal((await high.api.handle({ ...blockMessage(highRequest, highFinding.id), type: 'present-warning' }, high.sender)).ok, false);
+  assert.equal(high.sent.length, highCount, 'A high finding retains its separate blocking presentation route.');
+});
+
+test('medium warning presentation rejects stale, changed, paused, unfocused and mismatched evidence', async () => {
+  for (const change of ['expired', 'text', 'fingerprint', 'signature', 'nonce', 'rawRoute', 'focus', 'pause']) {
+    const h = harness(), request = h.automatic(), finding = await automaticResult(h, request, { risk_level: 'medium', decision: 'review' });
+    const message = { ...blockMessage(request, finding.id), type: 'present-warning' };
+    let sender = h.sender;
+    if (change === 'expired') h.advance(30001);
+    if (change === 'text') message.page.text = 'A replacement message with a different destination.';
+    if (change === 'fingerprint') message.action_fingerprint = 'b'.repeat(64);
+    if (change === 'signature') message.public_signature = h.api.core.publicSignature(message.action, ['password']);
+    if (change === 'nonce') message.nonce = 'replacement-document';
+    if (change === 'rawRoute') { h.tab.url += '#another-email'; sender = { ...sender, url: h.tab.url, tab: { ...h.tab } }; }
+    if (change === 'focus') h.focus(false);
+    if (change === 'pause') await h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup);
+    const count = h.sent.length, response = await h.api.handle(message, sender);
+    assert.equal(response.ok, false, change);
+    assert.equal(h.sent.length, count, 'No native presentation for ' + change);
+  }
+});
+
+test('inconsistent or failed medium responses never acquire warning eligibility', async () => {
+  for (const value of [{ decision: 'allow' }, { decision: 'block' }, { decision: 'review', ok: false }]) {
+    const h = harness(), request = h.automatic();
+    const result = await automaticResult(h, request, { risk_level: 'medium', ...value });
+    assert.equal(result.warning_eligible, false, JSON.stringify(value));
+    assert.equal(result.confirmed_extreme, false);
+    assert.equal(h.api.core.isPresentableWarning(result, h.now()), false);
+    const count = h.sent.length;
+    assert.equal((await h.api.handle({ ...blockMessage(request, result.id), type: 'present-warning' }, h.sender)).ok, false);
+    assert.equal(h.sent.length, count);
+  }
+});
+
+test('typed page quality is validated and preserved while visual revision ends exact cached reuse', async () => {
+  const h = harness(), request = currentMeasuredPage(h);
+  request.page.evidence.extra_private_field = 'MUST_NOT_PASS';
+  const first = await nativeCall(h, request, { risk_level: 'safe' });
+  assert.deepEqual(structuredClone(first.request.page.evidence), measuredEvidence());
+  assert.ok(!JSON.stringify(first.request).includes('MUST_NOT_PASS'));
+  const before = h.sent.length;
+  assert.equal((await h.api.handle(request, h.sender)).id, first.result.id);
+  assert.equal(h.sent.length, before, 'Unchanged typed evidence reuses the exact completed assessment.');
+  const changed = structuredClone(request); changed.page.evidence.visual_revision++;
+  assert.notEqual(h.api.core.assessmentKey(changed.page), h.api.core.assessmentKey(request.page));
+  const second = await nativeCall(h, changed, { risk_level: 'safe' });
+  assert.notEqual(second.result.id, first.result.id);
+  assert.equal(second.request.page.evidence.visual_revision, 1);
+  for (const invalid of [
+    { version: 2 }, { primary_text_characters: -1 }, { primary_text_characters: 121 },
+    { visible_text_characters: 8001 }, { substantial_visuals: 65 }, { requires_visual: 'yes' },
+    { truncated: 1 }, { visual_revision: -1 }, { visual_revision: 2147483648 }
+  ]) {
+    const bad = structuredClone(request); bad.page.evidence = measuredEvidence(invalid);
+    const count = h.sent.length;
+    await assert.rejects(h.api.handle(bad, h.sender), /read this tab/);
+    assert.equal(h.sent.length, count, JSON.stringify(invalid));
   }
 });
 
@@ -767,6 +898,154 @@ test('explicit chat requests get a fresh bounded redacted snapshot even while au
   assert.deepEqual(Object.keys(result.page).sort(), ['text', 'title', 'url']);
   assert.equal(h.tabMessages.filter(value => value.type === 'snapshot').length, 2);
   assert.equal((await h.api.config()).active, false); assert.equal(h.sent.length, 0);
+});
+
+test('fresh context gains completed browser coverage only after the exact current page was assessed', async () => {
+  const h = harness({}, { readyTabs: [7] }), request = currentMeasuredPage(h);
+  await h.api.syncProtectionState();
+  const unassessed = await contextReply(h);
+  assert.equal(unassessed.context_error, undefined);
+  assert.equal(unassessed.browser_coverage, undefined, 'A readable responding document alone does not establish analysis coverage.');
+  assert.deepEqual(structuredClone(unassessed.page.evidence), measuredEvidence());
+  const finding = await automaticResult(h, request, { risk_level: 'safe' });
+  const completed = await contextReply(h);
+  assert.equal(completed.browser_coverage.state, 'completed');
+  assert.equal(completed.browser_coverage.assessment_id, finding.id);
+  assert.equal(completed.browser_coverage.checked_at, h.now());
+  assert.equal(completed.browser_coverage.expires_at, finding.expires_at);
+  assert.deepEqual(Object.keys(completed.browser_coverage).sort(), ['assessment_id', 'checked_at', 'expires_at', 'state']);
+  h.advance(300001);
+  assert.equal((await contextReply(h)).browser_coverage, undefined, 'Expired page work is not fresh coverage.');
+});
+
+test('queued and in-flight page checks have bounded checking coverage without claiming completion', async () => {
+  for (const queued of [false, true]) {
+    const h = harness({}, { readyTabs: [7] }), request = currentMeasuredPage(h), jobs = [];
+    await h.api.syncProtectionState();
+    if (queued) {
+      h.addTab(8); jobs.push(h.api.handle(h.automatic('page', 'proactive', 8), h.senderFor(8)));
+      await sentCount(h, 1);
+    }
+    jobs.push(h.api.handle(request, h.sender));
+    if (queued) await until(() => h.api.automaticQueue.size === 1);
+    else await sentCount(h, 1);
+    const pending = await contextReply(h), proof = pending.browser_coverage;
+    assert.equal(proof.state, 'checking', queued ? 'queued' : 'in-flight');
+    assert.match(proof.assessment_id, /^[a-f0-9-]{36}$/i);
+    assert.equal(proof.checked_at, h.now());
+    assert.equal(proof.expires_at - proof.checked_at, 35000);
+    h.advance(35001);
+    assert.equal((await contextReply(h)).browser_coverage, undefined, 'A stalled check cannot indefinitely suppress a fallback.');
+    if (queued) { h.answer(h.sent[0], { risk_level: 'safe' }); await sentCount(h, 2); }
+    h.answer(h.sent.at(-1), { risk_level: 'safe' }); await Promise.all(jobs);
+  }
+});
+
+test('a completed concern earns coverage only after its avatar warning was delivered', async () => {
+  for (const risk of ['medium', 'high']) {
+    const h = harness({}, { readyTabs: [7] }), request = currentMeasuredPage(h);
+    const finding = await automaticResult(h, request, { risk_level: risk });
+    assert.equal((await contextReply(h)).browser_coverage.state, 'checking', 'Give the display request a short grace period.');
+    h.advance(3001);
+    assert.equal((await contextReply(h)).browser_coverage, undefined, 'A silently undelivered finding must allow native recovery.');
+    await nativeCall(h, { ...blockMessage(request, finding.id), type: risk === 'medium' ? 'present-warning' : 'present-block' },
+      { risk_level: risk });
+    assert.equal((await contextReply(h)).browser_coverage.state, 'completed');
+  }
+});
+
+test('unknown, failed and action-only assessments cannot establish completed page coverage', async () => {
+  for (const kind of ['unknown', 'failed', 'link']) {
+    const h = harness({}, { readyTabs: [7] }), page = currentMeasuredPage(h);
+    await h.api.syncProtectionState();
+    const request = kind === 'link' ? { ...page, action: h.api.core.normalizeAction({ kind: 'link', url: 'https://destination.test/' }) } : page;
+    request.public_signature = h.api.core.publicSignature(request.action);
+    const value = kind === 'unknown' ? { risk_level: 'unknown', decision: 'review' } :
+      kind === 'failed' ? { risk_level: 'unknown', decision: 'review', ok: false } : { risk_level: 'safe' };
+    await automaticResult(h, request, value);
+    assert.equal((await contextReply(h)).browser_coverage, undefined, kind);
+  }
+});
+
+test('page and source changes never borrow coverage from an earlier exact assessment', async () => {
+  for (const change of ['visualRevision', 'quality', 'title', 'text', 'nonce', 'document', 'rawRoute']) {
+    const h = harness({}, { readyTabs: [7] }), request = currentMeasuredPage(h);
+    await automaticResult(h, request, { risk_level: 'safe' });
+    const initial = await contextReply(h);
+    assert.equal(initial.browser_coverage.state, 'completed', 'Fixture initially has exact coverage.');
+    assert.match(initial.prediction_source_id, /^[0-9a-f-]{36}$/i);
+    if (change === 'visualRevision') h.snapshot.page.evidence.visual_revision++;
+    if (change === 'quality') h.snapshot.page.evidence.requires_visual = true;
+    if (change === 'title') h.snapshot.page.title = 'Another opened message';
+    if (change === 'text') h.snapshot.page.text = 'An unrelated message with a new instruction.';
+    if (change === 'nonce') h.snapshot.nonce = 'replacement-content-document';
+    if (change === 'document') h.api.documents.get(h.tab.id).documentId = 'replacement-browser-document';
+    if (change === 'rawRoute') h.tab.url += '#new-email';
+    const result = await contextReply(h);
+    assert.equal(result.context_error, undefined, 'The changed page still supplies fresh context: ' + change);
+    assert.equal(result.browser_coverage, undefined, 'The changed source needs its own assessment: ' + change);
+    assert.notEqual(result.prediction_source_id, initial.prediction_source_id,
+      'Every exact document, route or normalized evidence change rotates the attribution epoch: ' + change);
+  }
+});
+
+test('fresh context and current prediction pushes share one epoch even without completed coverage', async () => {
+  const h = harness({}, { readyTabs: [7] }), request = currentMeasuredPage(h);
+  await until(() => h.heartbeats.length > 0); await h.api.pollMonitoringState();
+  await automaticResult(h, request, { risk_level: 'unknown', decision: 'review' });
+  const first = await contextReply(h);
+  assert.equal(first.browser_coverage, undefined);
+  await h.api.publishSelectedPrediction();
+  assert.equal(h.predictions.at(-1).prediction.source_id, first.prediction_source_id);
+  const again = await contextReply(h);
+  assert.equal(again.prediction_source_id, first.prediction_source_id, 'Stable page identity survives repeated context requests.');
+  h.tab.url += '#same-title-and-body-message';
+  const newRoute = await contextReply(h); await h.api.publishSelectedPrediction();
+  assert.notEqual(newRoute.prediction_source_id, first.prediction_source_id);
+  assert.equal(h.predictions.at(-1).prediction.source_id, newRoute.prediction_source_id);
+  assert.equal(h.sent.filter(value => value.type === 'assess').length, 1, 'Source alignment never adds inference.');
+});
+
+test('Pause and native disconnect remove old page coverage without removing explicit context', async () => {
+  for (const change of ['pause', 'disconnect']) {
+    const h = harness({}, { readyTabs: [7] }), request = currentMeasuredPage(h);
+    await automaticResult(h, request, { risk_level: 'safe' });
+    assert.equal((await contextReply(h)).browser_coverage.state, 'completed');
+    if (change === 'pause') await h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup);
+    else { h.disconnect(); await h.api.syncProtectionState(true); }
+    const result = await contextReply(h);
+    assert.equal(result.context_error, undefined);
+    assert.equal(result.browser_coverage, undefined, change);
+    assert.ok(result.page.text, 'Explicit context remains available.');
+  }
+});
+
+test('measured context permits cosmetic DOM revisions but rejects actual quality or visual changes', async () => {
+  for (const change of ['cosmetic', 'visual', 'quality', 'legacy']) {
+    const h = harness({}, { readyTabs: [7] });
+    if (change !== 'legacy') await automaticResult(h, currentMeasuredPage(h), { risk_level: 'safe' });
+    await h.api.syncProtectionState();
+    let reads = 0;
+    h.setSnapshotReply(() => {
+      const value = structuredClone(h.snapshot);
+      if (++reads === 2) {
+        value.revision++;
+        if (change === 'visual') value.page.evidence.visual_revision++;
+        if (change === 'quality') value.page.evidence.requires_visual = true;
+      }
+      return value;
+    });
+    const result = await contextReply(h);
+    if (change === 'cosmetic') {
+      assert.equal(result.context_error, undefined);
+      assert.deepEqual(structuredClone(result.page.evidence), measuredEvidence());
+      assert.equal(result.browser_coverage.state, 'completed', 'A cosmetic revision does not discard exact completed work.');
+    } else {
+      assert.ok(result.context_error, change);
+      assert.equal(result.page, undefined, 'Changed or legacy revision evidence is not sent to native.');
+      assert.equal(result.browser_coverage, undefined);
+    }
+  }
 });
 
 test('chat requests reject tab, window, raw URL, document, edit and public snapshot changes without leaking evidence', async () => {
@@ -1136,4 +1415,114 @@ test('a real Chrome window focus change invalidates targets from other windows o
   h.events['window-focused'](3);
   await until(() => h.sent.slice(before).some(value => value.type === 'target-invalidated'));
   assert.equal(h.sent.filter(value => value.type === 'target-invalidated').at(-1).window_id, 2);
+});
+
+test('prediction metadata follows selected tabs before inference and ignores background completions', async () => {
+  const h = harness(); h.tab.title = 'Shop'; const other = h.addTab(8); other.title = 'Tab 8';
+  await until(() => h.heartbeats.length > 0); await h.api.pollMonitoringState(); await turn();
+  const first = h.api.handle(h.automatic('page', 'proactive'), h.sender); await sentCount(h, 1);
+  await until(() => h.predictions.some(value => value.prediction.phase === 'checking'));
+  const firstRequest = h.sent[0], firstSource = h.predictions.at(-1).prediction.source_id;
+  assert.equal(h.predictions.at(-1).prediction.assessment_id, firstRequest.id);
+  h.tab.active = false; other.active = true; h.events.activated({ tabId: 8 });
+  await until(() => h.predictions.at(-1)?.prediction.tab_id === 8);
+  const switchedAt = h.predictions.length - 1;
+  assert.equal(h.predictions.at(-1).prediction.phase, 'waiting');
+  assert.notEqual(h.predictions.at(-1).prediction.source_id, firstSource);
+  const second = h.api.handle(h.automatic('page', 'proactive', 8), h.senderFor(8));
+  h.answer(firstRequest, { risk_level: 'high' }); await first; await sentCount(h, 2);
+  const secondRequest = h.sent.find(value => value.type === 'assess' && value.id !== firstRequest.id);
+  await until(() => h.predictions.at(-1)?.prediction.assessment_id === secondRequest.id);
+  h.answer(secondRequest, { risk_level: 'safe' }); await second;
+  await until(() => h.predictions.at(-1)?.prediction.phase === 'completed');
+  assert.equal(h.predictions.at(-1).prediction.assessment_id, secondRequest.id);
+  h.answer(firstRequest, { risk_level: 'high' }); await turn();
+  assert.ok(h.predictions.slice(switchedAt).every(value => value.prediction.tab_id === 8),
+    'A late background result must never change the foreground source.');
+  const metadata = JSON.stringify(h.predictions);
+  assert.ok(!metadata.includes('session=secret') && !metadata.includes('Visible original context'));
+  for (const { prediction } of h.predictions) {
+    assert.match(prediction.source_id, /^[0-9a-f-]{36}$/i);
+    assert.equal('risk_level' in prediction, false); assert.equal('summary' in prediction, false);
+    assert.equal('url' in prediction, false); assert.equal('text' in prediction, false);
+    assert.ok(prediction.expires_at > h.now() && prediction.expires_at <= h.now() + 10000);
+  }
+  assert.ok(h.predictions.every((value, index) => index === 0 ||
+    value.prediction.expires_at > h.predictions[index - 1].prediction.expires_at),
+    'Native can reject reordered updates even when phase changes share one millisecond.');
+  assert.equal(h.sent.filter(value => value.type === 'assess').length, 2);
+});
+
+test('prediction source epochs rotate for routes, exact document evidence and nonce changes', async () => {
+  const h = harness(); h.tab.title = 'Shop';
+  await until(() => h.heartbeats.length > 0); await h.api.pollMonitoringState(); await turn();
+  const initial = await automaticResult(h, h.automatic('page', 'proactive'), { risk_level: 'safe' });
+  await until(() => h.predictions.at(-1)?.prediction.assessment_id === initial.id && h.predictions.at(-1)?.prediction.phase === 'completed');
+  const before = h.predictions.at(-1).prediction.source_id;
+  h.tab.url += '#another-message'; h.events.updated(7, { url: h.tab.url });
+  await until(() => h.predictions.at(-1)?.prediction.source_id !== before);
+  assert.equal(h.predictions.at(-1).prediction.phase, 'waiting');
+  assert.equal(h.sent.filter(value => value.type === 'assess').length, 1, 'Attribution itself performs no inference.');
+  let previous = h.predictions.at(-1).prediction.source_id;
+  const sender = h.senderFor(7), request = h.automatic('page', 'proactive');
+  for (const change of ['text', 'quality', 'document']) {
+    const next = structuredClone(request);
+    if (change === 'text') next.page.text = 'A newly selected public message asks a different question.';
+    if (change === 'quality') next.page.evidence = { version: 1, primary_text_characters: 40,
+      visible_text_characters: 40, substantial_visuals: 1, requires_visual: true, truncated: false, visual_revision: 1 };
+    if (change === 'document') next.nonce = 'replacement-document';
+    const result = await automaticResult(h, next, { risk_level: 'safe' }, sender);
+    await until(() => h.predictions.at(-1)?.prediction.assessment_id === result.id && h.predictions.at(-1)?.prediction.phase === 'completed');
+    assert.notEqual(h.predictions.at(-1).prediction.source_id, previous, change);
+    previous = h.predictions.at(-1).prediction.source_id;
+  }
+});
+
+test('prediction leases reuse cached native IDs and pause or disconnect never reconnect for attribution', async () => {
+  const h = harness(); h.tab.title = 'Shop';
+  await until(() => h.heartbeats.length > 0); await h.api.pollMonitoringState(); await turn();
+  const request = h.automatic('page', 'proactive');
+  const first = await automaticResult(h, request, { risk_level: 'safe' });
+  await until(() => h.predictions.at(-1)?.prediction.phase === 'completed');
+  const originalSource = h.predictions.at(-1).prediction.source_id;
+  const calls = h.sent.filter(value => value.type === 'assess').length;
+  const snapshots = h.tabMessages.filter(value => value.type === 'snapshot').length;
+  const hit = await h.api.handle(request, h.sender); assert.equal(hit.id, first.id);
+  await h.api.publishSelectedPrediction();
+  assert.equal(h.predictions.at(-1).prediction.assessment_id, first.id);
+  const updates = h.predictions.length;
+  await h.api.pollMonitoringState(); await h.api.publishSelectedPrediction({ heartbeat: true });
+  assert.equal(h.predictions.length, updates, 'An unchanged lease is renewed at most once every two seconds.');
+  h.advance(2001); await h.api.pollMonitoringState();
+  await until(() => h.predictions.length === updates + 1);
+  assert.equal(h.predictions.at(-1).prediction.source_id, originalSource);
+  assert.equal(h.sent.filter(value => value.type === 'assess').length, calls);
+  assert.equal(h.tabMessages.filter(value => value.type === 'snapshot').length, snapshots, 'Metadata does not perform additional DOM extraction.');
+  await h.api.handle({ type: 'pause', duration_ms: 0 }, h.popup);
+  const pausedCount = h.predictions.length;
+  h.advance(5000); await h.api.publishSelectedPrediction(); assert.equal(h.predictions.length, pausedCount);
+  await h.api.handle({ type: 'resume' }, h.popup); await h.api.publishSelectedPrediction();
+  assert.equal(h.predictions.at(-1).prediction.phase, 'waiting');
+  assert.notEqual(h.predictions.at(-1).prediction.source_id, originalSource);
+  h.disconnect(); const connections = h.connectionCount(), disconnectedCount = h.predictions.length;
+  h.advance(5000); await h.api.publishSelectedPrediction();
+  assert.equal(h.connectionCount(), connections); assert.equal(h.predictions.length, disconnectedCount);
+});
+
+test('a deferred prediction focus check cannot restore the previously selected tab', async () => {
+  const h = harness(); h.tab.title = 'Shop'; const other = h.addTab(8); other.title = 'Second tab';
+  await until(() => h.heartbeats.length > 0); await h.api.pollMonitoringState();
+  await h.api.publishSelectedPrediction(); await turn();
+  const blocked = h.blockNextWindowRead();
+  const obsolete = h.api.publishSelectedPrediction({ tabID: 7, forceWaiting: true }); await blocked.began;
+  h.tab.active = false; other.active = true; h.events.activated({ tabId: 8 });
+  await until(() => h.predictions.at(-1)?.prediction.tab_id === 8);
+  const count = h.predictions.length;
+  blocked.release(); await obsolete; await turn();
+  assert.equal(h.predictions.at(-1).prediction.tab_id, 8);
+  assert.ok(h.predictions.slice(count).every(value => value.prediction.tab_id === 8));
+  const focusedCount = h.predictions.length;
+  h.focus(false); h.advance(5000); await h.api.publishSelectedPrediction();
+  assert.equal(h.predictions.length, focusedCount, 'Unfocused Chrome does not renew the source lease.');
+  assert.equal(h.sent.filter(value => value.type === 'assess').length, 0);
 });

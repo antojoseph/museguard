@@ -34,13 +34,14 @@ import Foundation
         var results: [[String: Any]] = []
         var failures = 0
         let selectedCases = CommandLine.arguments.contains("--warning-only") ? [] : cases
-        for (name, text, expectsHigh) in selectedCases {
+        for (name, text, expectsAlert) in selectedCases {
             let start = Date()
             let snapshot = ScreenSnapshot(appName: "Muse Context Fixture", windowTitle: name,
                 text: text, evidence: .visibleText(text))
             let verdict = try await analyzer.analyze(snapshot: snapshot, model: LocalModelConfiguration.model,
                 directAnswer: true, scope: .desktop)
-            let passed = expectsHigh ? verdict.riskLevel == .high : [.safe, .low].contains(verdict.riskLevel)
+            let warnable = [.medium, .high].contains(verdict.riskLevel)
+            let passed = expectsAlert ? warnable : !warnable
             if !passed { failures += 1 }
             results.append(["case": name, "risk": verdict.riskLevel.rawValue, "passed": passed,
                 "seconds": Date().timeIntervalSince(start), "summary": verdict.summary])

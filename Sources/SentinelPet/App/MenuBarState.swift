@@ -10,6 +10,7 @@ final class MenuBarState: ObservableObject {
         var avatarHidden = false
         var hasAcknowledgment = false
         var rendererReady = false
+        var showsPredictionDebug = true
     }
 
     @Published private(set) var snapshot = Snapshot()
@@ -17,13 +18,14 @@ final class MenuBarState: ObservableObject {
 
     init(status: AnyPublisher<String, Never>, paused: AnyPublisher<Bool, Never>,
          hidden: AnyPublisher<Bool, Never>, acknowledgment: AnyPublisher<Bool, Never>,
-         rendererReady: AnyPublisher<Bool, Never>) {
+         rendererReady: AnyPublisher<Bool, Never>,
+         predictionDebug: AnyPublisher<Bool, Never> = Just(true).eraseToAnyPublisher()) {
         subscription = Publishers.CombineLatest4(status.removeDuplicates(), paused.removeDuplicates(),
             hidden.removeDuplicates(), acknowledgment.removeDuplicates())
-            .combineLatest(rendererReady.removeDuplicates())
-            .map { values, ready in
+            .combineLatest(rendererReady.removeDuplicates(), predictionDebug.removeDuplicates())
+            .map { values, ready, debug in
                 Snapshot(monitoringStatus: values.0, monitoringPaused: values.1,
-                    avatarHidden: values.2, hasAcknowledgment: values.3, rendererReady: ready)
+                    avatarHidden: values.2, hasAcknowledgment: values.3, rendererReady: ready, showsPredictionDebug: debug)
             }
             .removeDuplicates()
             .sink { [weak self] snapshot in

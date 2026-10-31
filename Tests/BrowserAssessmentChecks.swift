@@ -22,7 +22,9 @@ private final class ModelFixture: URLProtocol {
         }
         if let data = requestBody, let body = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let messages = body["messages"] as? [[String: Any]], messages.last?["role"] as? String == "assistant",
-           messages.last?["content"] as? String == "{", body["max_tokens"] as? Int == 512 { Self.directCalls += 1 }
+           messages.last?["content"] as? String == "{", body["max_tokens"] as? Int == 512,
+           body["continue_final_message"] as? String == "content",
+           body["add_generation_prompt"] as? Bool == false { Self.directCalls += 1 }
         let verdict: [String: Any] = ["risk_level": Self.risk, "summary": "The destination asks for an authenticator code.",
             "guidance": "Use your saved official bookmark.", "categories": ["credential_theft"]]
         let content = Self.malformed ? "not a verdict" : String(data: try! JSONSerialization.data(withJSONObject: verdict), encoding: .utf8)!
@@ -139,13 +141,23 @@ private final class HeldModelFixture: URLProtocol {
                 let replay = await coordinator.handle(BrowserRequest(id:displayID,type:"present-block",assessmentID:id))
                 assert(!replay.ok && presentations == 1, "A display ID cannot be replayed.")
             } else {
-                assert(!shown.ok && presentations == 0, "Only confirmed high findings can use automatic presentation.")
+                assert(!shown.ok && presentations == 0, "Only confirmed high findings can support an action-block presentation.")
+            }
+            let advisoryID = UUID().uuidString
+            let advisory = await coordinator.handle(BrowserRequest(id:advisoryID,type:"present-warning",assessmentID:id))
+            if risk == "medium" {
+                assert(advisory.ok && advisory.decision == "review" && advisory.riskLevel == "medium" && presentations == 1)
+                assert(presented.last?.id == advisoryID && presented.last?.page?.text == "")
+                let replay = await coordinator.handle(BrowserRequest(id:advisoryID,type:"present-warning",assessmentID:id))
+                assert(!replay.ok && presentations == 1, "An advisory display ID cannot be replayed.")
+            } else {
+                assert(!advisory.ok, "The advisory route accepts only retained medium/review findings; it cannot downgrade high findings or invent cautions.")
             }
             let afterPresentation = await coordinator.handle(BrowserRequest(id:"after-presentation",type:"status"))
             assert(afterPresentation.lastAssessment?.id == id && afterPresentation.completedAssessments == expectedCompletions)
             presentations = 0
         }
-        assert(ModelFixture.directCalls == 5, "Browser text checks use bounded direct-answer mode.")
+        assert(ModelFixture.directCalls == 5, "Browser text checks continue the bounded JSON prefill in direct-answer mode.")
         let beforeHeartbeat = await coordinator.handle(BrowserRequest(id:"before-heartbeat",type:"status"))
         let callsBeforeHeartbeat = ModelFixture.calls
         testNow = testNow.addingTimeInterval(1)
@@ -169,6 +181,32 @@ private final class HeldModelFixture: URLProtocol {
         let evidence = BrowserAssessmentCoordinator.snapshot(for:cleaned,page:cleaned.page!)
         assert(!evidence.text.contains("token=private") && !evidence.text.contains("#secret"))
         assert(evidence.appName == "Google Chrome")
+        let ordinaryPageReview = BrowserAssessmentCoordinator.snapshot(for: cleaned,
+            page: cleaned.page!)
+        let pageEvidence = try JSONSerialization.jsonObject(with: Data(ordinaryPageReview.text.utf8)) as! [String: Any]
+        assert(pageEvidence["pending_action"] == nil, "A page review is not a user click or submission.")
+        assert(ordinaryPageReview.text.contains("not a verified link target"), "Printed URLs and observed action destinations must remain distinct.")
+
+        // Advisories retain their true severity and do not acquire a block
+        // receipt, even when the same finding is displayed or cancelled twice.
+        ModelFixture.risk = "medium"
+        _ = await coordinator.handle(BrowserRequest(id:"cached-medium",type:"assess",page:page,purpose:"proactive"))
+        let sameMediumID = await coordinator.handle(BrowserRequest(id:"cached-medium",type:"present-warning",assessmentID:"cached-medium"))
+        assert(!sameMediumID.ok)
+        let mediumShown = await coordinator.handle(BrowserRequest(id:"medium-display",type:"present-warning",assessmentID:"cached-medium"))
+        assert(mediumShown.ok && mediumShown.riskLevel == "medium" && mediumShown.decision == "review")
+        _ = await coordinator.handle(BrowserRequest(id:"cancel-medium-display",type:"cancel",assessmentID:"medium-display"))
+        let repeatedMediumDisplay = await coordinator.handle(BrowserRequest(id:"medium-display",type:"present-warning",assessmentID:"cached-medium"))
+        assert(!repeatedMediumDisplay.ok, "Cancelling a presentation cannot make its display ID reusable.")
+        let mediumCannotBlock = await coordinator.handle(BrowserRequest(id:"medium-as-block",type:"present-block",assessmentID:"cached-medium"))
+        assert(!mediumCannotBlock.ok)
+        _ = await coordinator.handle(BrowserRequest(id:"revoke-medium",type:"cancel",assessmentID:"cached-medium"))
+        let cancelledMedium = await coordinator.handle(BrowserRequest(id:"cancelled-medium-display",type:"present-warning",assessmentID:"cached-medium"))
+        assert(!cancelledMedium.ok)
+        _ = await coordinator.handle(BrowserRequest(id:"medium-expiry",type:"assess",page:page,purpose:"proactive"))
+        testNow = testNow.addingTimeInterval(61)
+        let expiredMedium = await coordinator.handle(BrowserRequest(id:"expired-medium-display",type:"present-warning",assessmentID:"medium-expiry"))
+        assert(!expiredMedium.ok, "Medium advisories require the same fresh bounded receipt as high findings.")
 
         // A fresh cached high finding can produce a new warning, but no grant
         // or acknowledgment protocol is exposed to the browser.
@@ -204,12 +242,17 @@ private final class HeldModelFixture: URLProtocol {
         assert(!stopped.ok && stopped.decision == "review")
         let stoppedStatus = await unavailable.handle(BrowserRequest(id:"stopped-status",type:"status"))
         assert(stoppedStatus.modelReady == false && stoppedStatus.lastAssessment?.ok == false)
+        ModelFixture.risk = "medium"
+        _ = await coordinator.handle(BrowserRequest(id:"before-pause-medium",type:"assess",page:page,purpose:"proactive"))
         paused = true; coordinator.cancelAll()
         let pausedResult = await coordinator.handle(BrowserRequest(id:"paused",type:"assess",page:page,purpose:"proactive"))
         assert(!pausedResult.ok && !activity.contains(where: { $0.0 == "paused" }))
         let pausedPresentation = await coordinator.handle(BrowserRequest(id:"paused-display",type:"present-block",assessmentID:"cached-high"))
         assert(!pausedPresentation.ok)
+        let pausedAdvisory = await coordinator.handle(BrowserRequest(id:"paused-advisory",type:"present-warning",assessmentID:"before-pause-medium"))
+        assert(!pausedAdvisory.ok)
         paused = false
+        ModelFixture.risk = "high"
         let callsBeforeNotices = ModelFixture.calls
         for retired in [BrowserRequest(id:"retired-decision",type:"decision",assessmentID:"manual-page"),
                         BrowserRequest(id:"retired-finish",type:"finish-checking",assessmentID:"manual-page"),
@@ -223,7 +266,7 @@ private final class HeldModelFixture: URLProtocol {
         }
         assert(ModelFixture.calls == callsBeforeNotices)
         let latestBeforeExpiry = await coordinator.handle(BrowserRequest(id:"latest-before-expiry",type:"status"))
-        assert(latestBeforeExpiry.lastAssessment?.id == "malformed", "Notices, rejected protocols and presentation must not replace assessment diagnostics.")
+        assert(latestBeforeExpiry.lastAssessment?.id == "before-pause-medium", "Notices, rejected protocols and presentation must not replace assessment diagnostics.")
         let hidden = BrowserAssessmentCoordinator(analyzer:analyzer,modelReady:{true},onPresent:{_,_,_ in false})
         _ = await hidden.handle(BrowserRequest(id:"hidden",type:"assess",page:page,purpose:"proactive"))
         let hiddenPresentation = await hidden.handle(BrowserRequest(id:"hidden-display",type:"present-block",assessmentID:"hidden"))

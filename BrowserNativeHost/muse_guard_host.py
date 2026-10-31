@@ -21,9 +21,9 @@ MAX_RESPONSE = 1_048_576
 _ORIGIN = re.compile(r'chrome-extension://[a-p]{32}/?\Z')
 # Long file scans and inference may wait for seconds. Metadata, warning
 # delivery and Pause must always have their own bounded route to the app.
-CONTROL_REQUESTS = frozenset({'status', 'present-block', 'cancel', 'protection-state',
+CONTROL_REQUESTS = frozenset({'status', 'present-block', 'present-warning', 'cancel', 'protection-state',
     'chat-context-poll', 'chat-context-result', 'monitoring-state', 'monitoring-control',
-    'secret-paste', 'target-update', 'target-invalidated', 'download-command-result'})
+    'secret-paste', 'target-update', 'target-invalidated', 'download-command-result', 'prediction-update'})
 ANALYSIS_WORKERS, ANALYSIS_CAPACITY = 4, 8
 CONTROL_WORKERS, CONTROL_CAPACITY = 2, 16
 DOWNLOAD_WORKERS, DOWNLOAD_CAPACITY = 2, 4

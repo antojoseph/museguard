@@ -21,7 +21,8 @@ struct MenuBarContent: View {
             paused: runtime.$monitoringPaused.eraseToAnyPublisher(),
             hidden: runtime.petViewModel.$isAvatarHidden.eraseToAnyPublisher(),
             acknowledgment: runtime.petViewModel.$acknowledgment.map { $0 != nil }.eraseToAnyPublisher(),
-            rendererReady: rendererReady))
+            rendererReady: rendererReady,
+            predictionDebug: runtime.petViewModel.$showsPredictionDebug.eraseToAnyPublisher()))
     }
 
     var body: some View {
@@ -41,6 +42,9 @@ struct MenuBarContent: View {
         Button("Return Muse home") { runtime.returnMuseHome() }
             .disabled(menu.snapshot.hasAcknowledgment)
         Button("Recent activity…") { runtime.showAnalysisLogs() }
+        Toggle("Show model predictions", isOn: Binding(
+            get: { menu.snapshot.showsPredictionDebug },
+            set: { runtime.petViewModel.showsPredictionDebug = $0 }))
         Button("Settings…") { runtime.showSettings() }
         #if MUSE_DEVELOPMENT
         Divider()

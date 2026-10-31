@@ -23,9 +23,9 @@ final class BrowserAssessmentCoordinator {
         var decision: String { BrowserAssessmentCoordinator.decision(for: verdict) }
     }
     private var receipts: [String: Receipt] = [:]
-    // Retain only redacted, model-confirmed high findings briefly, so a fresh
-    // browser action can repeat its warning after an earlier page alert closed.
-    private var highFindings: [String: Receipt] = [:]
+    // Retain redacted, model-confirmed cautions briefly. Medium findings can
+    // explain a concern, while only high findings can support an action block.
+    private var warningFindings: [String: Receipt] = [:]
     // Presentation IDs cannot be reused by a later warning. Browser cleanup
     // never acknowledges a warning already visible in the native UI.
     private var presentedIDs: [String: Date] = [:]
@@ -54,7 +54,7 @@ final class BrowserAssessmentCoordinator {
     func cancelAll() {
         generation += 1
         activeChecks.values.forEach { $0.cancel() }
-        receipts.removeAll(); highFindings.removeAll(); presentedIDs.removeAll()
+        receipts.removeAll(); warningFindings.removeAll(); presentedIDs.removeAll()
     }
 
     func handle(_ raw: BrowserRequest) async -> BrowserResponse {
@@ -82,15 +82,17 @@ final class BrowserAssessmentCoordinator {
                 lastAssessment: lastAssessment, completedAssessments: completedCount,
                 desktopMonitoring: desktopMonitoring())
         }
-        if ["assess", "present-block"].contains(request.type), monitoringPaused() {
+        if ["assess", "present-block", "present-warning"].contains(request.type), monitoringPaused() {
             return .failure(id: request.id, message: "All automatic monitoring is paused.")
         }
-        if request.type == "present-block" {
-            guard let id = request.assessmentID, let finding = highFindings[id],
-                  finding.error == nil, finding.verdict.riskLevel == .high,
-                  finding.decision == "block", request.id != id,
+        if ["present-block", "present-warning"].contains(request.type) {
+            let requiredRisk: RiskLevel = request.type == "present-block" ? .high : .medium
+            let requiredDecision = request.type == "present-block" ? "block" : "review"
+            guard let id = request.assessmentID, let finding = warningFindings[id],
+                  finding.error == nil, finding.verdict.riskLevel == requiredRisk,
+                  finding.decision == requiredDecision, request.id != id,
                   presentedIDs[request.id] == nil, receipts[request.id] == nil,
-                  highFindings[request.id] == nil, !activeIDs.contains(request.id) else { return expired(request) }
+                  warningFindings[request.id] == nil, !activeIDs.contains(request.id) else { return expired(request) }
             // Each display gets a fresh ID, so a late acknowledgment of an old
             // warning cannot dismiss a newer one. No action override exists.
             let original = finding.request
@@ -110,7 +112,7 @@ final class BrowserAssessmentCoordinator {
             guard let id = request.assessmentID else { return expired(request) }
             rememberCancellation(id)
             receipts.removeValue(forKey: id)
-            highFindings.removeValue(forKey: id)
+            warningFindings.removeValue(forKey: id)
             if let check = activeChecks[id] {
                 // Cancelling a document also releases queued scheduler work
                 // and its HTTP request. It never dismisses a native warning
@@ -126,7 +128,7 @@ final class BrowserAssessmentCoordinator {
         }
         // Never replace another request's receipt, finding or in-flight ID.
         guard !activeIDs.contains(request.id), receipts[request.id] == nil,
-              highFindings[request.id] == nil, presentedIDs[request.id] == nil else {
+              warningFindings[request.id] == nil, presentedIDs[request.id] == nil else {
             return .failure(id: request.id, mode: request.mode, message: "A check with this identifier already exists.")
         }
         guard modelReady() else {
@@ -160,10 +162,10 @@ final class BrowserAssessmentCoordinator {
             try Task.checkCancellation()
             guard !check.isCancelled, stamp == generation, !monitoringPaused() else { throw CancellationError() }
             let receipt = remember(request, verdict: verdict)
-            if verdict.riskLevel == .high {
-                highFindings[request.id] = receipt
-                if highFindings.count > 64, let oldest = highFindings.min(by: { $0.value.date < $1.value.date })?.key {
-                    highFindings.removeValue(forKey: oldest)
+            if [.medium, .high].contains(verdict.riskLevel) {
+                warningFindings[request.id] = receipt
+                if warningFindings.count > 64, let oldest = warningFindings.min(by: { $0.value.date < $1.value.date })?.key {
+                    warningFindings.removeValue(forKey: oldest)
                 }
             }
             onAssessment(request, verdict, receipt.snapshot, nil)
@@ -213,7 +215,7 @@ final class BrowserAssessmentCoordinator {
     private func prune() {
         let date = now()
         receipts = receipts.filter { date.timeIntervalSince($0.value.date) < 15 }
-        highFindings = highFindings.filter { date.timeIntervalSince($0.value.date) < 60 }
+        warningFindings = warningFindings.filter { date.timeIntervalSince($0.value.date) < 60 }
         presentedIDs = presentedIDs.filter { date.timeIntervalSince($0.value) < 120 }
         cancelledChecks = cancelledChecks.filter { date.timeIntervalSince($0.value) < 120 }
     }
@@ -233,8 +235,8 @@ final class BrowserAssessmentCoordinator {
     static func snapshot(for request: BrowserRequest, page: BrowserRequest.Page) -> ScreenSnapshot {
         var evidence: [String: Any] = ["page_url": page.url, "page_title": page.title,
             "visible_page_text": String(page.text.prefix(6_000)), "analysis_mode": request.mode,
-            "limitations": "No cookies, passwords, entered field values, URL query strings or live reputation checks were supplied."]
-        if let action = request.action {
+            "limitations": "No cookies, passwords, entered field values, URL query strings or live reputation checks were supplied. A URL printed in body text is not a verified link target. Only the explicitly listed Visible link destinations and a supplied pending_action destination represent observed link/form destinations. Links may have been removed by the mail client; do not invent a destination or claim an action was blocked."]
+        if let action = request.action, action.kind != "page" {
             evidence["pending_action"] = ["kind": action.kind, "destination_url": action.url ?? page.url,
                 "label": action.label ?? "", "method": action.method ?? "GET", "has_sensitive_fields": action.sensitive ?? false] as [String: Any]
         }

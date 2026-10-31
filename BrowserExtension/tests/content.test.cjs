@@ -46,7 +46,7 @@ async function harness(html, options = {}) {
     messages.push(message);
     if (message.type === 'configuration') return deferredConfigs ? new Promise((resolve, reject) => configs.push({ resolve, reject })) : Promise.resolve(config);
     if (message.type === 'assess') return new Promise(resolve => checks.push({ message, resolve }));
-    if (message.type === 'present-block') return presentResponse ? presentResponse(message) : Promise.resolve({ ok: true, id: 'ui-' + messages.length, action_state: 'pending' });
+    if (message.type === 'present-block' || message.type === 'present-warning') return presentResponse ? presentResponse(message) : Promise.resolve({ ok: true, id: 'ui-' + messages.length, action_state: 'pending' });
     if (message.type === 'secret-paste') return secretResponse ? secretResponse(message) : Promise.resolve({ ok: true, decision: 'block' });
     if (message.type === 'target-update') return targetResponse ? targetResponse(message) : Promise.resolve({ ok: true });
     return Promise.resolve({ ok: true });
@@ -68,6 +68,8 @@ async function harness(html, options = {}) {
   return { w, messages, checks, timers, intervals, configs, trigger, settle,
     now: () => clock,
     extreme: (extra = {}) => result('high', { confirmed_extreme: true, expires_at: clock + 30000, ...extra }),
+    caution: (extra = {}) => result('medium', { warning_eligible: true, warning_expires_at: clock + 30000,
+      expires_at: clock + 300000, ...extra }),
     async advance(ms) {
       const target = clock + ms; let runs = 0;
       while (true) {
@@ -182,6 +184,61 @@ test('unassessed links and forms proceed immediately without querying or showing
       assert.equal(e.defaultPrevented, false); assert.equal(e.stopped, undefined);
     }
     assert.equal(h.checks.length, 0); assert.equal(h.messages.some(x => ['notice','decision','open-link'].includes(x.type)), false); h.noWarning();
+  } finally { h.close(); }
+});
+test('a medium finding warns through Muse without gaining click or form blocking authority', async () => {
+  const h = await harness('<main><p>Unauthenticated signature request from a different sender domain.</p>' +
+    '<a id="go" href="https://document.example.test/">Review document</a><form id="f"><button>Send</button></form></main>');
+  try {
+    await h.advance(100); h.checks[0].resolve(h.caution()); await h.settle();
+    assert.equal(h.messages.filter(x => x.type === 'present-warning').length, 1);
+    assert.equal(h.messages.some(x => x.type === 'present-block'), false);
+    await preflight(h, h.w.document.getElementById('go'), h.caution());
+    h.w.document.createTreeWalker = () => { throw new Error('Cautions must not synchronously re-extract the page on a click.'); };
+    for (const [id, type] of [['go','click'], ['go','auxclick'], ['f','submit']]) {
+      const event = h.trigger(h.w.document.getElementById(id), type, type === 'auxclick' ? { button: 1 } : {});
+      assert.equal(event.defaultPrevented, false, 'An advisory cannot hold the user action.');
+    }
+    assert.equal(h.messages.some(x => x.type === 'present-block'), false); h.noWarning();
+  } finally { h.close(); }
+});
+test('a caution first seen in a background tab is refreshed before display after its receipt expires', async () => {
+  const h = await harness('<main><p>A suspicious message that needs a caution.</p></main>', { hidden: true });
+  try {
+    await h.advance(100); h.checks[0].resolve(h.caution()); await h.settle();
+    assert.equal(h.messages.some(x => x.type === 'present-warning'), false);
+    h.elapse(31000); await h.foreground(); await h.advance(100);
+    assert.equal(h.checks.length, 2, 'A five-minute scheduling cache cannot resurrect a stale display receipt.');
+    h.checks[1].resolve(h.caution()); await h.settle();
+    assert.equal(h.messages.filter(x => x.type === 'present-warning').length, 1);
+  } finally { h.close(); }
+});
+test('delivered cautions do not repeat for unchanged content during cosmetic changes or tab switches', async () => {
+  const h = await harness('<main><p>A suspicious message that needs a caution.</p><span id="ticker"></span></main>');
+  try {
+    await h.advance(100); h.checks[0].resolve(h.caution()); await h.settle();
+    h.elapse(31000);
+    h.w.document.getElementById('ticker').className = 'another-frame'; await h.settle(); await h.advance(1500);
+    await h.foreground(); await h.advance(100);
+    assert.equal(h.checks.length, 1);
+    assert.equal(h.messages.filter(x => x.type === 'present-warning').length, 1);
+    h.w.document.querySelector('p').textContent = 'A different suspicious message with different evidence.';
+    await h.settle(); await h.advance(1500);
+    assert.equal(h.checks.length, 2);
+    h.checks[1].resolve(h.caution()); await h.settle();
+    assert.equal(h.messages.filter(x => x.type === 'present-warning').length, 2);
+  } finally { h.close(); }
+});
+test('a failed advisory delivery retries on activation without promoting the warning to a block', async () => {
+  const h = await harness('<main><p>Suspicious message.</p></main>');
+  try {
+    let attempts = 0;
+    h.setPresent(() => Promise.resolve({ ok: ++attempts > 1, id: 'caution-ui' }));
+    await h.advance(100); h.checks[0].resolve(h.caution()); await h.settle();
+    assert.equal(attempts, 1);
+    await h.foreground(); assert.equal(attempts, 2); assert.equal(h.checks.length, 1);
+    assert.equal(h.messages.some(x => x.type === 'present-block'), false);
+    for (const risk of ['safe','low','unknown']) assert.equal(core.isPresentableWarning(result(risk)), false);
   } finally { h.close(); }
 });
 test('visible text and intent metadata exclude private fields, nested text and URL secrets', async () => {
@@ -391,6 +448,44 @@ test('successful unchanged pages do not poll the model; queue-pressure failures 
     } finally { h.close(); }
   }
 });
+test('continual SPA mutations cannot postpone the initial or changed-page scan indefinitely', async () => {
+  const h = await harness('<main><p id="email">An ordinary confirmation.</p><span id="ticker"></span></main>');
+  try {
+    const ticker = h.w.document.getElementById('ticker');
+    for (let i = 0; i < 4; i++) {
+      ticker.className = 'frame-' + i; await h.settle(); await h.advance(50);
+    }
+    assert.equal(h.checks.length, 1, 'Animation cannot push back the activation scan.');
+    h.checks[0].resolve(result('safe')); await h.settle();
+    h.w.document.getElementById('email').textContent = 'You got +110475 dollars. Verify your request to continue.';
+    await h.settle();
+    for (let i = 0; i < 30; i++) {
+      ticker.className = 'frame-' + i; await h.settle(); await h.advance(50);
+    }
+    assert.equal(h.checks.length, 2, 'The new message is scanned within 1.5 seconds despite continuous mutations.');
+    assert.ok(h.checks[1].message.page.text.includes('110475'));
+    h.checks[1].resolve(h.extreme()); await h.settle();
+    assert.equal(h.messages.filter(message => message.type === 'present-block').length, 1, 'An automatic finding reaches Muse without asking a question.');
+    for (let i = 0; i < 30; i++) {
+      ticker.className = 'later-frame-' + i; await h.settle(); await h.advance(50);
+    }
+    assert.equal(h.checks.length, 2, 'Cosmetic churn does not repeat unchanged inference.');
+    h.noWarning();
+  } finally { h.close(); }
+});
+test('opening another hash-routed email invalidates a cached safe page assessment', async () => {
+  const h = await harness('<main><p id="email">Ordinary first message.</p></main>');
+  try {
+    await h.advance(100); h.checks[0].resolve(result('safe')); await h.settle();
+    h.w.history.pushState({}, '', '#spam/message-two');
+    h.w.document.getElementById('email').textContent = 'Funds transfer initiated. Verify your unexpected prize.';
+    h.w.dispatchEvent(new h.w.HashChangeEvent('hashchange')); await h.settle(); await h.advance(100);
+    assert.equal(h.checks.length, 2);
+    assert.ok(h.checks[1].message.page.text.includes('unexpected prize'));
+    assert.ok(!h.checks[1].message.page.text.includes('Ordinary first message'));
+    assert.equal(h.checks[1].message.purpose, 'proactive');
+  } finally { h.close(); }
+});
 test('hidden tabs are scanned quietly and a fresh page-high warns on activation without a new model request', async () => {
   const h = await harness('<p>Suspicious public page</p>', { hidden: true });
   try {
@@ -579,6 +674,150 @@ test('bounded snapshots reject retired capture messages and introduce no risk DO
       assert.equal((await h.message({ type, nonce: snap.nonce })).ok, false);
     }
     assert.equal(h.trigger(h.w.document.querySelector('a')).defaultPrevented, false); h.noWarning();
+  } finally { h.close(); }
+});
+test('semantic main content and its destinations precede long app navigation in bounded snapshots', async () => {
+  const navigation = '<nav><p>' + 'Mailbox folder navigation '.repeat(250) + '</p>' +
+    Array.from({ length: 15 }, (_, i) => '<a href="https://mail.test/folder-' + i + '">Folder ' + i + '</a>').join('') + '</nav>';
+  for (const main of ['main', 'div role="main"']) {
+    const tag = main.split(' ')[0], h = await harness(navigation + '<' + main + '><h1>Opened message</h1>' +
+      '<p>You got +110475 dollars. Funds transfer initiated: Verify your request.</p>' +
+      '<a href="https://offer.example.test/verify?token=LINK_SECRET">Continue</a></' + tag + '>');
+    try {
+      const { page } = await h.message({ type: 'snapshot' });
+      assert.ok(page.text.startsWith('Opened message You got +110475 dollars.'), main);
+      assert.ok(page.text.includes('Continue → https://offer.example.test/verify'), 'The message link cannot fall behind the first twelve navigation links.');
+      assert.equal((page.text.match(/ → /g) || []).length, 12, 'The overall destination limit remains bounded.');
+      assert.ok(page.text.length <= 6000);
+      assert.ok(!page.text.includes('LINK_SECRET'));
+    } finally { h.close(); }
+  }
+});
+test('retained hidden and private SPA subtrees cannot consume the traversal budget before visible content', async () => {
+  for (const attribute of ['hidden', 'aria-hidden="true"', 'data-muse-private', 'style="display:none"', 'style="visibility:hidden"', 'style="opacity:0"']) {
+    const hidden = '<div ' + attribute + '>' + '<span>HIDDEN_RETAINED_MESSAGE</span>'.repeat(4100) + '</div>';
+    // Deliberately omit semantic landmarks: hidden subtrees must be pruned
+    // even on sites that do not label their primary content accessibly.
+    const h = await harness(hidden + '<section><p>Visible funds transfer: Verify your request.</p></section>');
+    try {
+      const { page } = await h.message({ type: 'snapshot' });
+      assert.ok(page.text.includes('Visible funds transfer'), attribute);
+      assert.ok(!page.text.includes('HIDDEN_RETAINED_MESSAGE'), attribute);
+    } finally { h.close(); }
+  }
+});
+test('bounded traversal counts rejected sibling filters and never reads its private sentinel', async () => {
+  const h = await harness('<main><p>Opened message: verify this unexpected transfer.</p></main>' +
+    '<div data-muse-private>PRIVATE_REJECTED_SIBLING</div>'.repeat(8500) + '<p>Beyond the traversal budget.</p>');
+  try {
+    const createWalker = h.w.document.createTreeWalker.bind(h.w.document);
+    let filters = 0;
+    h.w.document.createTreeWalker = (root, kinds, filter) => createWalker(root, kinds, {
+      acceptNode(node) { filters++; return filter.acceptNode(node); }
+    });
+    const { page } = await h.message({ type: 'snapshot' });
+    assert.ok(filters <= 8001, 'The traversal must stop even when every remaining sibling is rejected.');
+    assert.ok(page.text.includes('Opened message: verify this unexpected transfer.'), 'Primary content keeps the first traversal budget.');
+    assert.ok(!page.text.includes('PRIVATE_REJECTED_SIBLING'), 'A private sentinel can end traversal but cannot become evidence.');
+    assert.ok(!page.text.includes('Beyond the traversal budget.'));
+  } finally { h.close(); }
+});
+test('browser quality measures actual primary text rather than navigation or synthetic section labels', async () => {
+  const h = await harness('<nav>' + 'Mailbox controls '.repeat(30) + '</nav><main><div role="toolbar">' +
+    'Open archive delete print menu '.repeat(20) + '</div><img id="message" src="https://image.test/PRIVATE_SOURCE?token=SOURCE_SECRET"></main>');
+  try {
+    const image = h.w.document.getElementById('message');
+    image.getBoundingClientRect = () => ({ top: 0, left: 0, right: 600, bottom: 400, width: 600, height: 400 });
+    const { page } = await h.message({ type: 'snapshot' });
+    assert.equal(page.evidence.version, 1);
+    assert.equal(page.evidence.primary_text_characters, 0, 'Navigation and toolbar labels do not establish document coverage.');
+    assert.ok(page.evidence.visible_text_characters > 40);
+    assert.equal(page.evidence.substantial_visuals, 1);
+    assert.equal(page.evidence.requires_visual, true);
+    assert.equal(page.evidence.visual_revision, 0);
+    for (const secret of ['PRIVATE_SOURCE', 'SOURCE_SECRET', 'image.test']) assert.ok(!JSON.stringify(page).includes(secret));
+  } finally { h.close(); }
+  const empty = await harness('<main></main>');
+  try {
+    const { page } = await empty.message({ type: 'snapshot' });
+    assert.equal(page.text, 'Visible link destinations: Visible forms:');
+    assert.equal(page.evidence.primary_text_characters, 0);
+    assert.equal(page.evidence.visible_text_characters, 0, 'The 41 synthetic heading characters are not readable evidence.');
+    assert.equal(page.evidence.requires_visual, true);
+  } finally { empty.close(); }
+});
+test('public image descriptions and measured visual quality preserve private regions and text-first articles', async () => {
+  const h = await harness('<nav>Account navigation<img alt="Navigation icon"></nav><main><p>' + 'A useful readable guide to account settings. '.repeat(20) +
+    '</p><img id="banner" alt="Read account help at https://help.test/guide?token=ALT_SECRET" src="https://image.test/public.png">' +
+    '<div data-muse-private><img alt="PRIVATE_ALT_SECRET"></div><div hidden><canvas></canvas><img alt="HIDDEN_ALT_SECRET"></div></main>');
+  try {
+    const image = h.w.document.getElementById('banner');
+    image.getBoundingClientRect = () => ({ top: 0, left: 0, right: 200, bottom: 80, width: 200, height: 80 });
+    const first = (await h.message({ type: 'snapshot' })).page;
+    assert.ok(first.text.includes('Read account help at https://help.test/guide'));
+    assert.ok(first.evidence.primary_text_characters > 240);
+    assert.ok(first.evidence.visible_text_characters > first.evidence.primary_text_characters);
+    assert.equal(first.evidence.substantial_visuals, 1);
+    assert.equal(first.evidence.requires_visual, false, 'A readable article and a small banner stay text-first.');
+    image.getBoundingClientRect = () => ({ top: 0, left: 0, right: 650, bottom: 500, width: 650, height: 500 });
+    const dominant = (await h.message({ type: 'snapshot' })).page;
+    assert.equal(dominant.evidence.requires_visual, true, 'A dominant illustration can contain important evidence even alongside readable text.');
+    for (const secret of ['ALT_SECRET', 'PRIVATE_ALT_SECRET', 'HIDDEN_ALT_SECRET', 'image.test']) assert.ok(!JSON.stringify(dominant).includes(secret));
+  } finally { h.close(); }
+});
+test('long image descriptions cannot masquerade as readable document or pixel evidence', async () => {
+  const h = await harness('<main><img id="message" alt="' + 'An ordinary verified account notice. '.repeat(100) +
+    '" src="https://image.test/message.png"></main>');
+  try {
+    h.w.document.getElementById('message').getBoundingClientRect = () =>
+      ({ top: 0, left: 0, right: 650, bottom: 500, width: 650, height: 500 });
+    const { page } = await h.message({ type: 'snapshot' });
+    assert.ok(page.text.includes('An ordinary verified account notice.'), 'A bounded description remains useful untrusted evidence.');
+    assert.ok(page.text.length < 400, 'Long descriptions cannot consume the entire evidence budget.');
+    assert.equal(page.evidence.primary_text_characters, 0);
+    assert.equal(page.evidence.visible_text_characters, 0);
+    assert.equal(page.evidence.substantial_visuals, 1);
+    assert.equal(page.evidence.requires_visual, true, 'Image-only content still needs its visible pixels checked.');
+    assert.equal(page.evidence.truncated, true);
+  } finally { h.close(); }
+});
+test('substantial visual counts and clipping flags are bounded without collecting canvas or image contents', async () => {
+  const h = await harness('<main><p>' + 'Readable article '.repeat(500) + '</p>' + '<img src="https://image.test/private-source">'.repeat(20) +
+    '<canvas>CANVAS_FALLBACK_SECRET</canvas><div data-private><img alt="PRIVATE_IMAGE_SECRET"></div></main>');
+  try {
+    for (const image of h.w.document.querySelectorAll('img,canvas')) image.getBoundingClientRect = () =>
+      ({ top: 0, left: 0, right: 400, bottom: 300, width: 400, height: 300 });
+    const { page } = await h.message({ type: 'snapshot' });
+    assert.equal(page.evidence.substantial_visuals, 16);
+    assert.equal(page.evidence.truncated, true);
+    assert.ok(page.evidence.primary_text_characters <= 3500 && page.evidence.visible_text_characters <= 3500);
+    for (const secret of ['CANVAS_FALLBACK_SECRET', 'PRIVATE_IMAGE_SECRET', 'image.test']) assert.ok(!JSON.stringify(page).includes(secret));
+  } finally { h.close(); }
+});
+test('image source changes and completion invalidate unchanged-text reuse while cosmetic and private updates do not', async () => {
+  const h = await harness('<main><p>Attached image</p><picture><source id="source" srcset="https://image.test/one.png">' +
+    '<img id="message" src="https://image.test/one.png"></picture><div data-private><img id="private" src="https://image.test/private.png"></div></main>');
+  try {
+    const image = h.w.document.getElementById('message');
+    image.getBoundingClientRect = () => ({ top: 0, left: 0, right: 600, bottom: 400, width: 600, height: 400 });
+    await h.advance(100); h.checks[0].resolve(result('safe')); await h.settle();
+    const originalText = h.checks[0].message.page.text;
+    h.w.document.getElementById('source').setAttribute('srcset', 'https://image.test/two.png?token=SOURCE_SECRET');
+    await h.settle(); await h.advance(150);
+    assert.equal(h.checks.length, 2);
+    assert.equal(h.checks[1].message.page.text, originalText);
+    assert.equal(h.checks[1].message.page.evidence.visual_revision, 1);
+    h.checks[1].resolve(result('safe')); await h.settle();
+    h.trigger(image, 'load'); await h.advance(150);
+    assert.equal(h.checks.length, 3, 'Image completion starts a new evidence episode even if text and DOM source are unchanged.');
+    assert.equal(h.checks[2].message.page.evidence.visual_revision, 2);
+    h.checks[2].resolve(result('safe')); await h.settle();
+    image.className = 'decorative-cosmetic-change';
+    h.w.document.getElementById('private').src = 'https://image.test/new-private.png';
+    await h.settle(); await h.advance(1500);
+    assert.equal(h.checks.length, 3);
+    assert.equal((await h.message({ type: 'snapshot' })).page.evidence.visual_revision, 2);
+    assert.ok(!JSON.stringify(h.checks.map(check => check.message)).includes('SOURCE_SECRET'));
   } finally { h.close(); }
 });
 test('long article snapshots reserve space for visible form safety metadata after many link destinations', async () => {

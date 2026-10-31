@@ -11,15 +11,19 @@
   const C = MuseGuardCore;
   const T = MuseGuardTargets, S = MuseGuardSecrets;
   const nonce = crypto.randomUUID?.() || [...crypto.getRandomValues(new Uint8Array(16))].map(byte => byte.toString(16).padStart(2, '0')).join('');
-  const PRIVATE = 'input,textarea,select,option,script,style,noscript,template,svg,canvas,iframe,[contenteditable]:not([contenteditable="false"]),[hidden],[aria-hidden="true"],[data-private],[data-muse-private]';
-  let active = false, generation = 0, configurationSequence = 0, edits = 0, lastURL = location.href;
-  let pageTimer, hoverTimer, mutationTimer, resumeTimer, lastPageKey = '', lastPageAttempt = 0, retryFailures = 0;
+  const PRIVATE_REGION = 'input,textarea,select,option,script,style,noscript,template,iframe,[contenteditable]:not([contenteditable="false"]),[hidden],[aria-hidden="true"],[data-private],[data-muse-private]';
+  const PRIVATE = 'svg,canvas,' + PRIVATE_REGION;
+  const NAVIGATION = 'nav,aside,[role="navigation"],[role="complementary"],[role="toolbar"],[role="menubar"],[role="menu"],button,[role="button"],[role="tablist"],[role="tab"],[role="menuitem"]';
+  const VISUAL = 'img,canvas,video,svg';
+  let active = false, generation = 0, configurationSequence = 0, edits = 0, visualEdits = 0, lastURL = location.href;
+  let pageTimer, pageScheduledAt = 0, hoverTimer, mutationTimer, resumeTimer, lastPageKey = '', lastPageAttempt = 0, retryFailures = 0;
   let lastSuccessfulPageKey = '', lastSuccessfulPageUntil = 0, lastSuccessfulPageRisk = null;
   let disposed = false, observer, routeTimer, runtimeMessage, instance;
   let nativeAvailableUntil = 0, trackedTarget = null, targetTimer = null;
+  const observedVisuals = new WeakSet();
   let secretGuard;
   const removals = [];
-  const cache = new Map(), assessmentReuse = new Map(), inflight = new Map(), presentations = new Set(), localProofs = new Map();
+  const cache = new Map(), assessmentReuse = new Map(), inflight = new Map(), presentations = new Set(), localProofs = new Map(), warnedCautions = new Map();
   function dispose() {
     if (disposed) return;
     disposed = true; active = false; generation++; configurationSequence++;
@@ -28,7 +32,7 @@
     clearInterval(routeTimer); observer?.disconnect();
     for (const remove of removals.splice(0)) remove();
     try { if (runtimeMessage) runtime.onMessage.removeListener?.(runtimeMessage); } catch { /* Already invalidated. */ }
-    cache.clear(); assessmentReuse.clear(); inflight.clear(); presentations.clear(); localProofs.clear();
+    cache.clear(); assessmentReuse.clear(); inflight.clear(); presentations.clear(); localProofs.clear(); warnedCautions.clear();
     if (window[INSTANCE_KEY] === instance) delete window[INSTANCE_KEY];
   }
   function usable() {
@@ -136,27 +140,91 @@
   function snapshot() {
     // Independent budgets preserve visible form evidence on link-heavy pages.
     const bodyLimit = 3500, linkLimit = 1400, formLimit = 1000;
-    const parts = []; let length = 0;
-    if (document.body) {
-      const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-      for (let node = walker.nextNode(), visited = 0; node && length < bodyLimit && visited++ < 4000; node = walker.nextNode()) {
-        if (!visible(node.parentElement)) continue;
-        const text = C.cleanText(node.textContent, bodyLimit - length);
-        if (text) { parts.push(text); length += text.length + 1; }
+    // App navigation and retained, hidden SPA views can precede the content
+    // the user is reading by thousands of nodes. Spend the evidence budget
+    // on visible main/article regions first, then other visible page text.
+    const roots = [];
+    for (const element of document.querySelectorAll('main,[role="main"],article,[role="article"]')) {
+      if (roots.length >= 8) break;
+      if (visible(element) && !roots.some(root => root.contains(element))) roots.push(element);
+    }
+    const parts = [], primaryParts = [], visibleParts = []; let length = 0, visited = 0, truncated = false;
+    function append(value, element, primary, visibleText = true) {
+      const remaining = bodyLimit - length;
+      const limit = visibleText ? remaining : Math.min(250, remaining);
+      const full = C.cleanText(value), text = full.slice(0, Math.max(0, limit));
+      if (full.length > limit) truncated = true;
+      if (text) {
+        parts.push(text); length += text.length + 1;
+        if (visibleText) {
+          visibleParts.push(text);
+          if (primary && !element.closest(NAVIGATION)) primaryParts.push(text);
+        }
       }
     }
-    const anchors = [...document.querySelectorAll('a[href]')].filter(a => visible(a) && C.url(a.href)).slice(0, 12);
+    function appendText(root, skipRoots = false, primary = false) {
+      if (length >= bodyLimit || visited >= 8000) return;
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT | NodeFilter.SHOW_TEXT, {
+        acceptNode(node) {
+          // Rejected siblings still consume traversal work. Accept one
+          // sentinel at the limit so nextNode returns immediately; the outer
+          // loop stops before reading it, even if it is private or hidden.
+          if (++visited > 8000) { truncated = true; return NodeFilter.FILTER_ACCEPT; }
+          if (node.nodeType !== Node.ELEMENT_NODE) return NodeFilter.FILTER_ACCEPT;
+          if (skipRoots && roots.includes(node) || node.matches(PRIVATE)) return NodeFilter.FILTER_REJECT;
+          const style = getComputedStyle(node);
+          // Reject the subtree itself; walking all its hidden text first can
+          // exhaust a bounded traversal before reaching an open email.
+          return style.display === 'none' || style.visibility !== 'visible' || Number(style.opacity) === 0 ?
+            NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
+        }
+      });
+      for (let node = walker.nextNode(); node && length < bodyLimit && visited <= 8000; node = walker.nextNode()) {
+        if (node.nodeType === Node.ELEMENT_NODE && node.matches('img') && visible(node)) {
+          // Accessible descriptions can supply useful public image context,
+          // but are not measured text from the image's visible pixels. A long
+          // description must not suppress a needed visual check.
+          append(node.getAttribute('alt') || '', node, primary, false);
+        } else if (node.nodeType === Node.TEXT_NODE && visible(node.parentElement)) {
+          append(node.textContent, node.parentElement, primary);
+        }
+      }
+    }
+    if (document.body) {
+      for (const root of roots) appendText(root, false, true);
+      appendText(document.body, true, roots.length === 0);
+    }
+    const ordered = selector => [...new Set([...roots.flatMap(root => [...root.querySelectorAll(selector)]), ...document.querySelectorAll(selector)])];
+    const visuals = ordered(VISUAL); let substantialVisuals = 0, dominantVisual = false;
+    if (visuals.length > 256) truncated = true;
+    for (const element of visuals.slice(0, 256)) {
+      if (element.closest(PRIVATE_REGION) || !displayed(element)) continue;
+      const rect = element.getBoundingClientRect();
+      const width = Math.max(0, Math.min(innerWidth, rect.right) - Math.max(0, rect.left));
+      const height = Math.max(0, Math.min(innerHeight, rect.bottom) - Math.max(0, rect.top));
+      if (width < 96 || height < 64) continue;
+      observedVisuals.add(element);
+      substantialVisuals = Math.min(16, substantialVisuals + 1);
+      if (width * height >= innerWidth * innerHeight * 0.25) dominantVisual = true;
+    }
+    const primaryCharacters = C.cleanText(primaryParts.join(' '), bodyLimit).length;
+    const visibleCharacters = C.cleanText(visibleParts.join(' '), bodyLimit).length;
+    const evidence = { version: 1, primary_text_characters: primaryCharacters, visible_text_characters: visibleCharacters,
+      substantial_visuals: substantialVisuals,
+      requires_visual: primaryCharacters < 40 || substantialVisuals > 0 && (primaryCharacters < 240 || dominantVisual && primaryCharacters < 1200),
+      truncated, visual_revision: visualEdits };
+    const anchors = ordered('a[href]').filter(a => visible(a) && C.url(a.href)).slice(0, 12);
     const perLink = Math.floor((linkLimit - Math.max(0, anchors.length - 1)) / Math.max(1, anchors.length));
     const labelLimit = Math.min(80, Math.floor(perLink * 0.3));
     const links = anchors.map(a => C.cleanText(actionLabel(a), labelLimit) + ' → ' + snapshotDestination(a.href, perLink - labelLimit - 3));
-    const forms = [...document.forms].filter(visibleForm).slice(0, 3).map(form => {
+    const forms = ordered('form').filter(visibleForm).slice(0, 3).map(form => {
       const fields = [...form.querySelectorAll('input,textarea,select')].slice(0, 20).map(field => field.type || field.tagName.toLowerCase()).filter(type => type !== 'hidden');
       return 'Form destination: ' + snapshotDestination(form.action || location.href, 150) + '; method: ' + C.cleanText(form.method, 8) +
         '; field types: ' + C.cleanText([...new Set(fields)].join(', '), 80) + '; sensitive fields: ' + sensitive(form);
     });
     return { url: C.url(location.href), title: C.cleanText(document.title, 250),
       text: C.cleanText(parts.join('\n') + '\nVisible link destinations:\n' + C.cleanText(links.join('\n'), linkLimit) +
-        '\nVisible forms:\n' + C.cleanText(forms.join('\n'), formLimit)) };
+        '\nVisible forms:\n' + C.cleanText(forms.join('\n'), formLimit)), evidence };
   }
   function actionLabel(element) {
     const explicit = element.getAttribute('aria-label') || element.getAttribute('title');
@@ -255,7 +323,7 @@
   }
   function cached(candidate) {
     const proof = material(candidate), value = cache.get(proof.key);
-    if (!value || !C.isConfirmedExtreme(value.result) || value.until <= Date.now()) { cache.delete(proof.key); return null; }
+    if (!value || !C.isPresentableWarning(value.result) || value.until <= Date.now()) { cache.delete(proof.key); return null; }
     // A framework can replace a link or form with an equivalent node. Match
     // its exact current intent again before using the already-checked finding.
     value.candidate = candidate; value.proof = { ...proof, action_fingerprint: value.proof.action_fingerprint };
@@ -270,13 +338,15 @@
     presentations.clear();
   }
   async function warn(entry, clicked = false) {
-    if (!active || document.visibilityState !== 'visible' || !C.isConfirmedExtreme(entry.result) || entry.until <= Date.now()) return;
+    if (!active || document.visibilityState !== 'visible' || !C.isPresentableWarning(entry.result) || entry.until <= Date.now()) return;
     if (entry.presenting || (!clicked && entry.warned)) return;
+    const caution = entry.result.risk_level === 'medium';
+    if (caution && warnedCautions.get(entry.proof.key) > Date.now()) return;
     if (!stillCurrent(entry.candidate, entry.proof)) return;
     const stamp = generation; entry.presenting = true;
     try {
       const geometry = sourceGeometry(entry.candidate?.submitter || entry.candidate?.element);
-      const response = await send({ type: 'present-block', assessment_id: entry.result.id,
+      const response = await send({ type: caution ? 'present-warning' : 'present-block', assessment_id: entry.result.id,
         page: entry.proof.page, action: entry.proof.action, public_signature: entry.proof.public_signature,
         action_fingerprint: entry.proof.action_fingerprint,
         ...geometry });
@@ -286,6 +356,10 @@
           return;
         }
         entry.warned = true;
+        if (caution) {
+          warnedCautions.set(entry.proof.key, Date.now() + C.ASSESSMENT_REUSE_MS);
+          if (warnedCautions.size > 40) warnedCautions.delete(warnedCautions.keys().next().value);
+        }
         confirmTarget(geometry.target);
         if (typeof response.id === 'string') presentations.add(response.id);
       }
@@ -293,14 +367,21 @@
     finally { entry.presenting = false; }
   }
   function schedulePage(delay = 250) {
-    if (!active || !usable()) return; clearTimeout(pageTimer); pageTimer = setTimeout(scanPage, Math.max(0, delay));
+    if (!active || !usable()) return;
+    const wait = Math.max(0, delay), at = Date.now() + wait;
+    // A busy app's next DOM update must not keep postponing the first scan.
+    // New evidence may advance a retry, but cannot defer an earlier deadline.
+    if (pageTimer && pageScheduledAt <= at) return;
+    clearTimeout(pageTimer); pageScheduledAt = at;
+    pageTimer = setTimeout(() => { pageTimer = null; pageScheduledAt = 0; void scanPage(); }, wait);
   }
   async function assess(candidate, purpose) {
     if (!active || (candidate && !candidate.element.isConnected)) return null;
     const proof = material(candidate), existing = cache.get(proof.key);
-    if (existing && C.isConfirmedExtreme(existing.result) && existing.until > Date.now()) { void warn(existing); return existing.result; }
+    if (existing && C.isPresentableWarning(existing.result) && existing.until > Date.now()) { void warn(existing); return existing.result; }
     const reused = assessmentReuse.get(proof.key);
-    if (reused && reused.until > Date.now()) return reused.result;
+    if (reused && reused.until > Date.now() &&
+        (reused.result.risk_level !== 'medium' || warnedCautions.get(proof.key) > Date.now())) return reused.result;
     assessmentReuse.delete(proof.key);
     if (inflight.has(proof.key)) return inflight.get(proof.key);
     if (inflight.size >= (purpose === 'intent' ? 4 : 3)) return null;
@@ -313,10 +394,12 @@
         const result = C.verdict(await send({ type: 'assess', purpose, page: proof.page, action: proof.action,
           public_signature: proof.public_signature, action_fingerprint: proof.action_fingerprint }));
         if (stamp !== generation || !stillCurrent(candidate, proof)) return null;
-        if (C.isConfirmedExtreme(result)) {
-          const entry = { result, proof, candidate, warned: false, until: Math.min(result.expires_at, Date.now() + C.EXTREME_TTL_MS) };
+        if (C.isPresentableWarning(result)) {
+          const entry = { result, proof, candidate, warned: false,
+            until: Math.min(result.warning_expires_at ?? result.expires_at, Date.now() + C.EXTREME_TTL_MS) };
           cache.set(proof.key, entry); if (cache.size > 40) cache.delete(cache.keys().next().value);
           void warn(entry);
+          if (result.risk_level === 'medium') assessmentReuse.set(proof.key, { result, until: reuseUntil(result) });
         } else {
           cache.delete(proof.key);
           if (result.ok === true && result.risk_level !== 'high') {
@@ -362,8 +445,9 @@
   }
   function gate(event) {
     if (!active || cache.size === 0 || !event.isTrusted || event.defaultPrevented) return;
+    if (![...cache.values()].some(entry => entry.until > Date.now() && C.isConfirmedExtreme(entry.result))) return;
     const candidate = candidateForEvent(event); if (!candidate) return;
-    const entry = cached(candidate); if (!entry) return;
+    const entry = cached(candidate); if (!entry || !C.isConfirmedExtreme(entry.result)) return;
     // No await and no unknown-risk hold: only a fresh, exact, already-confirmed
     // extreme finding can synchronously stop this browser action.
     event.preventDefault(); event.stopImmediatePropagation(); void warn(entry, true);
@@ -397,7 +481,8 @@
   function resetAutomatic() {
     invalidateGeometry();
     generation++; clearTimeout(pageTimer); clearTimeout(hoverTimer); clearTimeout(mutationTimer);
-    cache.clear(); assessmentReuse.clear(); inflight.clear(); localProofs.clear(); lastPageKey = ''; lastPageAttempt = 0;
+    pageTimer = null; pageScheduledAt = 0; mutationTimer = null;
+    cache.clear(); assessmentReuse.clear(); inflight.clear(); localProofs.clear(); warnedCautions.clear(); lastPageKey = ''; lastPageAttempt = 0;
     lastSuccessfulPageKey = ''; lastSuccessfulPageUntil = 0; lastSuccessfulPageRisk = null; retryFailures = 0; cancelWarnings();
   }
   function routeChanged() {
@@ -408,6 +493,12 @@
     if (!active) return; routeChanged(); const fresh = cached(null);
     if (fresh) void warn(fresh);
     else if (lastSuccessfulPageRisk === 'high') lastSuccessfulPageUntil = 0;
+    else if (lastSuccessfulPageRisk === 'medium') {
+      const proof = material(null);
+      if (!(warnedCautions.get(proof.key) > Date.now())) {
+        lastSuccessfulPageUntil = 0; assessmentReuse.delete(proof.key);
+      }
+    }
     schedulePage(100); prefetchForms();
   }
   async function refresh() {
@@ -422,8 +513,43 @@
       else if (changed || stamp === generation) { lastURL = location.href; schedulePage(100); prefetchForms(); }
     } catch { if (sequence === configurationSequence) { active = false; nativeAvailableUntil = 0; resetAutomatic(); } }
   }
+  function substantialVisual(element) {
+    if (!element?.matches(VISUAL) || element.closest(PRIVATE_REGION) || !displayed(element)) return false;
+    const rect = element.getBoundingClientRect();
+    return Math.min(innerWidth, rect.right) - Math.max(0, rect.left) >= 96 &&
+      Math.min(innerHeight, rect.bottom) - Math.max(0, rect.top) >= 64;
+  }
+  function sourceVisual(element) {
+    if (!(element instanceof Element)) return null;
+    if (element.matches(VISUAL)) return element;
+    if (element.matches('source')) return element.closest('picture')?.querySelector('img') || element.closest('video');
+    return null;
+  }
+  function changedVisualNode(node) {
+    if (!(node instanceof Element)) return false;
+    if (substantialVisual(node) || observedVisuals.has(node)) return true;
+    return [...node.querySelectorAll(VISUAL)].slice(0, 16).some(element => substantialVisual(element) || observedVisuals.has(element));
+  }
+  function visualEvidenceChanged() {
+    const remaining = pageTimer ? Math.max(0, pageScheduledAt - Date.now()) : 150;
+    visualEdits = (visualEdits + 1) % 2147483648;
+    // Image identity/pixels can change without changing text. End the old
+    // evidence episode and give the worker a fresh opaque visual revision.
+    // Never read pixels, fetch a source URL or send image URLs to the bridge.
+    resetAutomatic(); schedulePage(Math.min(150, remaining));
+  }
+  for (const type of ['load', 'loadedmetadata', 'loadeddata']) listen(window, type, event => {
+    if (active && event.isTrusted && substantialVisual(sourceVisual(event.target))) visualEvidenceChanged();
+  }, true);
   function mutations(records) {
     if (!active) return;
+    const visualChanged = records.some(record => {
+      if (record.type === 'attributes' && ['src', 'srcset', 'sizes', 'alt', 'poster', 'width', 'height'].includes(record.attributeName)) {
+        return substantialVisual(sourceVisual(record.target));
+      }
+      return record.type === 'childList' && [...record.addedNodes, ...record.removedNodes].slice(0, 64).some(changedVisualNode);
+    });
+    if (visualChanged) { visualEvidenceChanged(); return; }
     const meaningful = records.some(record => {
       if (record.type === 'attributes' && ['type', 'autocomplete', 'action', 'formaction', 'method', 'formmethod', 'target'].includes(record.attributeName)) return true;
       const element = record.target instanceof Element ? record.target : record.target.parentElement;
@@ -432,11 +558,16 @@
     if (!meaningful) return;
     invalidateGeometry();
     cancelWarnings();
-    clearTimeout(mutationTimer); mutationTimer = setTimeout(() => { routeChanged(); schedulePage(1000); prefetchForms(); }, 150);
+    // Batch a short burst once. Continual animation/classes elsewhere in a
+    // SPA must not starve the scan of a newly opened message.
+    if (!mutationTimer) mutationTimer = setTimeout(() => {
+      mutationTimer = null; routeChanged(); schedulePage(1000); prefetchForms();
+    }, 150);
   }
   observer = new MutationObserver(records => { if (usable()) mutations(records); });
   observer.observe(document, { subtree: true, childList: true, characterData: true, attributes: true,
-    attributeFilter: ['href', 'action', 'formaction', 'method', 'formmethod', 'target', 'type', 'autocomplete', 'hidden', 'aria-hidden', 'class', 'style'] });
+    attributeFilter: ['href', 'action', 'formaction', 'method', 'formmethod', 'target', 'type', 'autocomplete', 'hidden', 'aria-hidden', 'class', 'style',
+      'src', 'srcset', 'sizes', 'alt', 'poster', 'width', 'height'] });
   listen(window, 'popstate', routeChanged); listen(window, 'hashchange', routeChanged);
   listen(document, 'visibilitychange', () => { invalidateGeometry(); if (document.visibilityState === 'visible') activate(); });
   // Muse's nonactivating overlay can briefly take key-window focus without

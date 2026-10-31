@@ -10,6 +10,7 @@ struct PetChatBubbleView: View {
     let onNewChat: () -> Void
     let onBack: () -> Void
     var onAcknowledge: ((String) -> Void)?
+    var onFalsePositive: ((String) -> Void)?
 
     @State private var draft = ""
     @State private var followsLatest = true
@@ -23,15 +24,16 @@ struct PetChatBubbleView: View {
     private var acknowledgmentTranscriptHeight: CGFloat? {
         // Keep the header, acknowledgement and question field reachable when
         // placement reduces the panel height; only the transcript gets shorter.
-        acknowledgmentSize.map { max(0, min(152, $0.height - 136)) }
+        acknowledgmentSize.map { max(0, min(152, $0.height - (compactAcknowledgment ? 150 : 200))) }
     }
+    private var compactAcknowledgment: Bool { (acknowledgmentSize?.height ?? .infinity) < 180 }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: compactAcknowledgment ? 2 : 8) {
             HStack(spacing: 8) {
                 VStack(alignment:.leading,spacing:2) {
                     Text("Muse Guard").font(.caption.weight(.semibold))
-                    if let label = viewModel.chatContextLabel {
+                    if let label = viewModel.chatContextLabel, !compactAcknowledgment {
                         Text(label).font(.system(size:10)).lineLimit(1).help(label)
                     }
                 }
@@ -114,8 +116,12 @@ struct PetChatBubbleView: View {
             }
 
             if let acknowledgment = viewModel.acknowledgment, let onAcknowledge {
-                GuardianAcknowledgmentButton(acknowledgment: acknowledgment, onAcknowledge: onAcknowledge)
-                    .layoutPriority(1)
+                VStack(alignment: .leading, spacing: compactAcknowledgment ? 4 : 7) {
+                    GuardianAcknowledgmentButton(acknowledgment: acknowledgment, onAcknowledge: onAcknowledge)
+                    if let onFalsePositive {
+                        GuardianFalsePositiveButton(acknowledgment: acknowledgment, onFalsePositive: onFalsePositive)
+                    }
+                }.layoutPriority(1)
             }
 
             HStack(spacing: 6) {
@@ -138,7 +144,7 @@ struct PetChatBubbleView: View {
             .layoutPriority(viewModel.acknowledgment == nil ? 0 : 1)
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, compactAcknowledgment ? 4 : 10)
         .frame(width: acknowledgmentSize?.width ?? MuseLayout.chatContentSize.width,
                height: acknowledgmentSize?.height ?? MuseLayout.chatContentSize.height, alignment: .topLeading)
         .background {

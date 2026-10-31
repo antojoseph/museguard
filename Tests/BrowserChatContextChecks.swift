@@ -48,6 +48,110 @@ import Foundation
         assert(poll(broker).contextRequestID == nil && !broker.handle(result(token))!.ok,
             "Delivery removes the pending request and rejects replay.")
 
+        // Measured document content and exact-assessment leases survive the
+        // same validated context mailbox. Toolbar/section text is not proof
+        // that an image-only message was understood by the model.
+        let quality = BrowserContentEvidence(primaryTextCharacters: 12, visibleTextCharacters: 600,
+            substantialVisuals: 1, requiresVisual: true, truncated: false, visualRevision: 2)
+        let visualPage = BrowserRequest.Page(url: "https://example.test/message", title: "Message",
+            text: "Visible link destinations: Visible forms: public toolbar labels", evidence: quality)
+        let checkedAt = Int64(clock.timeIntervalSince1970 * 1_000)
+        let proof = BrowserCoverageProof(state: "completed", assessmentID: "assessment-opaque",
+            checkedAt: checkedAt, expiresAt: checkedAt + 300_000)
+        let measured = Task { @MainActor in try await broker.requestContext() }
+        let measuredID = try await pending(broker).contextRequestID!
+        let measuredReply = BrowserRequest(id: UUID().uuidString, type: "chat-context-result", page: visualPage,
+            contextRequestID: measuredID, tabID: 7, windowID: 2, documentID: "document-b", browserCoverage: proof)
+        assert(broker.handle(measuredReply)!.ok)
+        let measuredContext = try await measured.value
+        assert(measuredContext.page.evidence == quality && measuredContext.coverage == proof)
+        assert(quality.needsVisualContext && proof.isFresh(at: clock))
+        let pendingProof = BrowserCoverageProof(state: "checking", assessmentID: "pending-opaque",
+            checkedAt: checkedAt, expiresAt: checkedAt + 35_000)
+        let stillSame = BrowserChatContext(page: visualPage, tabID: 7, windowID: 2, documentID: "document-b", coverage: pendingProof)
+        assert(stillSame.matchesContent(of: measuredContext) && stillSame.monitoringIdentity == measuredContext.monitoringIdentity,
+            "Completing a model operation does not change the browser document identity.")
+        func push(tab: Int = 7, window: Int = 2, document: String? = "document-b",
+            phase: String = "completed", assessment: String? = "assessment-opaque",
+            expires: Int64 = checkedAt + 8_000) -> BrowserPredictionUpdate {
+            BrowserPredictionUpdate(sourceID: UUID().uuidString, title: visualPage.title, tabID: tab,
+                windowID: window, documentID: document, phase: phase, assessmentID: assessment, expiresAt: expires)
+        }
+        assert(measuredContext.prefersPredictionPush(push(), resultCompletedAt: nil, now: clock),
+            "The fresh current-page receipt identifies the same native assessment.")
+        for differentSource in [push(tab: 8), push(window: 3), push(document: "document-c"), push(document: nil)] {
+            assert(!measuredContext.prefersPredictionPush(differentSource, resultCompletedAt: clock.addingTimeInterval(1), now: clock),
+                "Same-title tabs, windows and replacement documents must not inherit an old prediction.")
+        }
+        let changedRoute = BrowserChatContext(page: .init(url: visualPage.url, title: visualPage.title,
+            text: "A different message selected through a same-URL hash route."), tabID: 7, windowID: 2, documentID: "document-b")
+        assert(!changedRoute.prefersPredictionPush(push(), resultCompletedAt: clock.addingTimeInterval(1), now: clock),
+            "A fresh SPA snapshot without matching coverage clears an older push even before its lease expires.")
+        let intent = push(assessment: "newer-native-intent")
+        assert(measuredContext.prefersPredictionPush(intent, resultCompletedAt: clock.addingTimeInterval(0.1), now: clock))
+        assert(!measuredContext.prefersPredictionPush(intent, resultCompletedAt: clock, now: clock))
+        assert(!measuredContext.prefersPredictionPush(intent, resultCompletedAt: clock.addingTimeInterval(-0.1), now: clock))
+        assert(!measuredContext.prefersPredictionPush(intent, resultCompletedAt: nil, now: clock))
+        assert(!measuredContext.prefersPredictionPush(push(phase: "waiting", assessment: nil),
+            resultCompletedAt: clock.addingTimeInterval(1), now: clock))
+        assert(!stillSame.prefersPredictionPush(intent, resultCompletedAt: clock.addingTimeInterval(1), now: clock),
+            "A checking page cannot establish that an unrelated completed intent describes its fresh content.")
+        assert(stillSame.prefersPredictionPush(push(phase: "checking", assessment: pendingProof.assessmentID),
+            resultCompletedAt: nil, now: clock))
+        assert(!measuredContext.prefersPredictionPush(push(expires: checkedAt), resultCompletedAt: nil, now: clock))
+        assert(!measuredContext.prefersPredictionPush(push(expires: checkedAt + 308_000), resultCompletedAt: nil,
+            now: clock.addingTimeInterval(300)), "A fresh push cannot revive an expired page assessment.")
+        let predictionSourceID = UUID().uuidString
+        let attributed = Task { @MainActor in try await broker.requestContext() }
+        let attributedID = try await pending(broker).contextRequestID!
+        assert(broker.handle(BrowserRequest(id: UUID().uuidString, type: "chat-context-result", page: visualPage,
+            contextRequestID: attributedID, tabID: 7, windowID: 2, documentID: "document-b",
+            predictionSourceID: predictionSourceID))!.ok)
+        let attributedContext = try await attributed.value
+        assert(attributedContext.predictionSourceID == predictionSourceID && attributedContext.coverage == nil)
+        let aligned = BrowserPredictionUpdate(sourceID: predictionSourceID, title: visualPage.title, tabID: 7,
+            windowID: 2, documentID: "document-b", phase: "completed", assessmentID: "image-assessment", expiresAt: checkedAt + 8000)
+        assert(attributedContext.prefersPredictionPush(aligned, resultCompletedAt: nil, now: clock),
+            "An exact worker-provided page epoch aligns visual or unknown predictions without a text-coverage receipt.")
+        assert(!attributedContext.prefersPredictionPush(push(), resultCompletedAt: clock.addingTimeInterval(1), now: clock),
+            "A different source epoch cannot win by reusing a title, document or newer timestamp.")
+        let routedAgain = BrowserChatContext(page: visualPage, tabID: 7, windowID: 2, documentID: "document-b",
+            predictionSourceID: UUID().uuidString)
+        assert(!routedAgain.matchesContent(of: attributedContext) && routedAgain.monitoringIdentity != attributedContext.monitoringIdentity)
+        assert(!routedAgain.prefersPredictionPush(aligned, resultCompletedAt: clock.addingTimeInterval(1), now: clock),
+            "An identical-body hash route still ends the previous source epoch.")
+        let changedImage = BrowserContentEvidence(primaryTextCharacters: 12, visibleTextCharacters: 600,
+            substantialVisuals: 1, requiresVisual: true, truncated: false, visualRevision: 3)
+        let revisedPage = BrowserRequest.Page(url: visualPage.url, title: visualPage.title, text: visualPage.text, evidence: changedImage)
+        for different in [
+            BrowserChatContext(page: visualPage, tabID: 8, windowID: 2, documentID: "document-b"),
+            BrowserChatContext(page: visualPage, tabID: 7, windowID: 3, documentID: "document-b"),
+            BrowserChatContext(page: visualPage, tabID: 7, windowID: 2, documentID: "document-c"),
+            BrowserChatContext(page: revisedPage, tabID: 7, windowID: 2, documentID: "document-b")
+        ] { assert(!different.matchesContent(of: measuredContext) && different.monitoringIdentity != measuredContext.monitoringIdentity) }
+        let headersOnly = BrowserContentEvidence(primaryTextCharacters: 0, visibleTextCharacters: 0,
+            substantialVisuals: 0, requiresVisual: false, truncated: false)
+        assert(headersOnly.needsVisualContext, "Synthetic snapshot headers cannot qualify as semantic content.")
+        let article = BrowserContentEvidence(primaryTextCharacters: 900, visibleTextCharacters: 900,
+            substantialVisuals: 1, requiresVisual: false, truncated: false)
+        assert(!article.needsVisualContext, "A measured readable article with a small banner remains text-first.")
+        for invalidQuality in [
+            BrowserContentEvidence(primaryTextCharacters: -1, visibleTextCharacters: 0, substantialVisuals: 0, requiresVisual: false, truncated: false),
+            BrowserContentEvidence(primaryTextCharacters: 1, visibleTextCharacters: 0, substantialVisuals: 0, requiresVisual: false, truncated: false),
+            BrowserContentEvidence(primaryTextCharacters: 8_001, visibleTextCharacters: 8_001, substantialVisuals: 0, requiresVisual: false, truncated: false),
+            BrowserContentEvidence(primaryTextCharacters: 1, visibleTextCharacters: 1, substantialVisuals: 65, requiresVisual: false, truncated: false),
+            BrowserContentEvidence(primaryTextCharacters: 1, visibleTextCharacters: 1, substantialVisuals: 1, requiresVisual: true, truncated: false, visualRevision: -1)
+        ] { do { _ = try invalidQuality.validated(); fatalError("Invalid content-quality metadata accepted") } catch {} }
+        assert(!proof.isFresh(at: clock.addingTimeInterval(300)))
+        assert(!pendingProof.isFresh(at: clock.addingTimeInterval(35)))
+        assert(!proof.isFresh(at: clock.addingTimeInterval(-2)))
+        for invalidProof in [
+            BrowserCoverageProof(state: "unknown", assessmentID: "opaque", checkedAt: checkedAt, expiresAt: checkedAt + 1_000),
+            BrowserCoverageProof(state: "completed", assessmentID: "", checkedAt: checkedAt, expiresAt: checkedAt + 1_000),
+            BrowserCoverageProof(state: "completed", assessmentID: "opaque", checkedAt: checkedAt, expiresAt: checkedAt + 300_001),
+            BrowserCoverageProof(state: "checking", assessmentID: "opaque", checkedAt: checkedAt, expiresAt: checkedAt + 35_001)
+        ] { do { _ = try invalidProof.validated(); fatalError("Unbounded or invalid coverage lease accepted") } catch {} }
+
         let unavailable = Task { @MainActor in try await broker.requestContext() }
         let unavailableToken = try await pending(broker).contextRequestID!
         let unavailableReply = broker.handle(BrowserRequest(id:"unavailable",type:"chat-context-result",
@@ -115,6 +219,9 @@ import Foundation
         _ = try validError.validated()
         let id = UUID().uuidString
         let invalid = [
+            BrowserRequest(id:"x",type:"chat-context-result",page:page,contextRequestID:id,tabID:7,windowID:2,documentID:"doc",predictionSourceID:"malformed-source"),
+            BrowserRequest(id:"x",type:"chat-context-result",contextRequestID:id,contextError:"Unavailable",predictionSourceID:UUID().uuidString),
+            BrowserRequest(id:"x",type:"status",predictionSourceID:UUID().uuidString),
             BrowserRequest(id:"x",type:"chat-context-poll",page:page),
             BrowserRequest(id:"x",type:"chat-context-poll",contextRequestID:id),
             BrowserRequest(id:"x",type:"chat-context-poll",mode:"vision"),

@@ -76,6 +76,9 @@ struct PetMessageView: View {
                     onBack: { SentinelPetRuntime.shared.returnToWarning() },
                     onAcknowledge: { id in
                         SentinelPetRuntime.shared.acknowledgeWarning(id: id)
+                    },
+                    onFalsePositive: { id in
+                        SentinelPetRuntime.shared.dismissWarningAsFalsePositive(id: id)
                     }
                 )
 
@@ -96,6 +99,9 @@ struct PetMessageView: View {
                     },
                     onAcknowledge: { id in
                         SentinelPetRuntime.shared.acknowledgeWarning(id: id)
+                    },
+                    onFalsePositive: { id in
+                        SentinelPetRuntime.shared.dismissWarningAsFalsePositive(id: id)
                     }
                 )
 
@@ -109,9 +115,51 @@ struct GuardianAcknowledgmentButton: View {
     let onAcknowledge: (String) -> Void
 
     var body: some View {
-        Button("Got it") { onAcknowledge(acknowledgment.id) }
-            .buttonStyle(.borderedProminent)
-            .accessibilityIdentifier("guardian-acknowledge-\(acknowledgment.id)")
-            .help("Acknowledge this warning and let Muse return home")
+        Button { onAcknowledge(acknowledgment.id) } label: {
+            Text("Got it")
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, minHeight: 44)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(GuardianAcknowledgmentStyle())
+        .accessibilityIdentifier("guardian-acknowledge-\(acknowledgment.id)")
+        .help("Acknowledge this warning and let Muse return home")
+    }
+}
+
+private struct GuardianAcknowledgmentStyle: ButtonStyle {
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            // Native prominent controls lose their accent in an inactive
+            // overlay. Keep the primary decision readable before the first
+            // click, including while the browser remains the active app.
+            .background(RoundedRectangle(cornerRadius: 8, style: .continuous)
+                .fill(configuration.isPressed
+                    ? Color(red: 0.11, green: 0.27, blue: 0.65)
+                    : Color(red: 0.16, green: 0.35, blue: 0.78)))
+            .contentShape(Rectangle())
+            .animation(.easeOut(duration: 0.08), value: configuration.isPressed)
+    }
+}
+
+struct GuardianFalsePositiveButton: View {
+    let acknowledgment: GuardianAcknowledgment
+    let onFalsePositive: (String) -> Void
+
+    var body: some View {
+        Button { onFalsePositive(acknowledgment.id) } label: {
+            Text("Dismiss as false positive")
+                .font(.system(size: 12, weight: .medium, design: .rounded))
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
+                .frame(maxWidth: .infinity, minHeight: 24)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .foregroundStyle(.primary)
+        .accessibilityIdentifier("guardian-false-positive-\(acknowledgment.id)")
+        .help("Dismiss and save this warning as incorrect on this Mac. This does not allow the flagged action.")
     }
 }

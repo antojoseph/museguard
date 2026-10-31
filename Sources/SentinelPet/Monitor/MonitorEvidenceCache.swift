@@ -21,6 +21,15 @@ struct MonitorEvidenceCache {
         self.visualInterval = max(1, visualInterval)
     }
     mutating func removeAll() { entries.removeAll(); visualAttempts.removeAll() }
+    /// A newly observed browser document ends the previous evidence episode,
+    /// including a text-only page that the extension assessed successfully.
+    /// Keep the independent visual-attempt throttle across quick tab changes.
+    mutating func removeEvidence(for source: ScreenSourceIdentity) {
+        for existing in entries.keys.filter({
+            $0.processID == source.processID && $0.bundleID == source.bundleID &&
+                ($0.windowID == source.windowID || $0.windowID == nil || source.windowID == nil)
+        }) { entries.removeValue(forKey: existing) }
+    }
     /// A newly observed document ends the previous assessment episode as soon
     /// as it is read, not only after the replacement model job completes.
     /// Otherwise A → B → A can reuse A forever when B was cancelled/stale.

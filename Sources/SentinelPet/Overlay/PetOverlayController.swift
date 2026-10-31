@@ -20,6 +20,11 @@ final class PetOverlayController {
     private var outwardScene: GuardianDesktopScene?
     private var pendingReturn = false
     private var messagePanel: PetPanel?
+    private var predictionPanel: PetPanel?
+    private var predictionSilhouette: CGRect?
+    private var predictionSilhouetteSequence: UInt32?
+    private var predictionSilhouetteIsDesktop: Bool?
+    private var predictionSilhouetteSampledAt = Date.distantPast
     private var messageSize = CGSize(width:240,height:80)
     private var placementTask: Task<Void,Never>?
     private var lastAutoMove = Date()
@@ -61,7 +66,7 @@ final class PetOverlayController {
         } else { saved = CGPoint(x: visible.minX + 134, y: visible.minY + 134) }
         applyHomeAnchor(saved)
         let message = PetPanel(contentRect: CGRect(origin:.zero,size:messageSize), acceptsKeyboard: true)
-        let messageHost = NSHostingView(rootView: GuardianMessageView(viewModel:viewModel, onSize: { [weak self] size in
+        let messageHost = GuardianMessageHostingView(rootView: GuardianMessageView(viewModel:viewModel, onSize: { [weak self] size in
             guard let self, size.width > 20, size.height > 20 else { return }
             let rounded = CGSize(width:ceil(size.width),height:ceil(size.height))
             guard rounded != self.messageSize else { return }
@@ -77,6 +82,15 @@ final class PetOverlayController {
         message.title = "Muse Guard Chat"
         message.identifier = NSUserInterfaceItemIdentifier(WatchedApplicationPolicy.chatWindowIdentifier)
         messagePanel = message
+        let prediction = PetPanel(contentRect: CGRect(origin: .zero, size: PredictionDebugPlacement.size))
+        let predictionHost = NSHostingView(rootView: PredictionDebugView(viewModel: viewModel))
+        predictionHost.sizingOptions = []
+        predictionHost.autoresizingMask = [.width, .height]
+        prediction.contentView = predictionHost
+        prediction.title = "Muse Model Activity"
+        prediction.identifier = NSUserInterfaceItemIdentifier("muse-prediction-debug")
+        prediction.ignoresMouseEvents = true
+        predictionPanel = prediction
         NotificationCenter.default.publisher(for:NSApplication.didChangeScreenParametersNotification).sink { [weak self] _ in
             guard let self, !self.away else { return }
             self.applyHomeAnchor(self.homeAnchor,persist:false)
@@ -134,6 +148,7 @@ final class PetOverlayController {
             MainActor.assumeIsolated {
                 self?.updateHitTesting()
                 self?.updateMessagePanel()
+                self?.updatePredictionPanel()
                 self?.considerAutomaticPlacement()
             }
         }
@@ -299,7 +314,7 @@ final class PetOverlayController {
             away = false; moving = false; returning = false; pendingReturn = false; queuedTarget = nil
             dragStartAnchor = nil
             desktopPresentation.showsMessage = false
-            panel?.orderOut(nil); desktopPanel?.orderOut(nil); messagePanel?.orderOut(nil)
+            panel?.orderOut(nil); desktopPanel?.orderOut(nil); messagePanel?.orderOut(nil); predictionPanel?.orderOut(nil)
             UnrealCharacterRenderer.shared.configureDesktop(nil, state: "idle")
             recordMotion("hidden")
         } else {
@@ -398,6 +413,53 @@ final class PetOverlayController {
         messageScreenRect = screen
         messageDesiredSize = desiredSize
         if !messagePanel.isVisible { messagePanel.orderFrontRegardless() }
+    }
+    private func updatePredictionPanel() {
+        guard let predictionPanel else { return }
+        let renderer = UnrealCharacterRenderer.shared
+        guard viewModel.showsPredictionDebug, !viewModel.isAvatarHidden,
+              renderer.isReady, let frame = renderer.latestFrame else {
+            predictionPanel.orderOut(nil); return
+        }
+        let drawRect: CGRect
+        if frame.isDesktopScene, let stage = desktopPanel, stage.isVisible, let rect = frame.desktopRect {
+            drawRect = rect.offsetBy(dx: stage.frame.minX, dy: stage.frame.minY)
+        } else if !frame.isDesktopScene, let panel, panel.isVisible {
+            drawRect = MuseLayout.characterRect.offsetBy(dx: panel.frame.minX, dy: panel.frame.minY)
+        } else {
+            predictionPanel.orderOut(nil); return
+        }
+        // The frame's draw rectangle follows every rendered leap/step. Refine
+        // its visible silhouette at most four times a second, reusing that
+        // normalized geometry between frames instead of scanning at 30 Hz.
+        let now = Date()
+        if predictionSilhouetteIsDesktop != frame.isDesktopScene ||
+            predictionSilhouetteSequence != frame.sequence && now.timeIntervalSince(predictionSilhouetteSampledAt) >= 0.25 {
+            predictionSilhouette = frame.silhouette
+            predictionSilhouetteSequence = frame.sequence
+            predictionSilhouetteIsDesktop = frame.isDesktopScene
+            predictionSilhouetteSampledAt = now
+        }
+        guard let normalized = predictionSilhouette else { predictionPanel.orderOut(nil); return }
+        let avatar = CGRect(x: drawRect.minX + normalized.minX * drawRect.width,
+            y: drawRect.minY + normalized.minY * drawRect.height,
+            width: normalized.width * drawRect.width, height: normalized.height * drawRect.height)
+        guard let screen = GuardianPlacement.nearestScreen(to: CGPoint(x: avatar.midX, y: avatar.midY),
+            screens: NSScreen.screens.map(\.visibleFrame)) else {
+            predictionPanel.orderOut(nil); return
+        }
+        let obstacles = messagePanel.flatMap { $0.isVisible ? [$0.frame] : nil } ?? []
+        guard let placement = PredictionDebugPlacement.frame(avatar: avatar, screen: screen, avoiding: obstacles) else {
+            predictionPanel.orderOut(nil); return
+        }
+        if predictionPanel.frame != placement {
+            predictionPanel.setFrame(placement, display: false)
+            predictionPanel.contentView?.frame = CGRect(origin: .zero, size: placement.size)
+        }
+        predictionPanel.alphaValue = frame.isDesktopScene ? 1 : (panel?.alphaValue ?? 1)
+        // A separate panel cannot intercept clicks or become the key window.
+        // Its position never constrains Muse or shifts an active warning.
+        if !predictionPanel.isVisible { predictionPanel.orderFrontRegardless() }
     }
     private func considerAutomaticPlacement() {
         let now = Date()
@@ -562,4 +624,10 @@ final class PetOverlayController {
     deinit {
         motion?.cancel(); placementTask?.cancel(); pointerTimer?.invalidate()
     }
+}
+
+/// A warning is normally above another app's active window. Its first click
+/// must reach the chosen control, rather than only activating the panel.
+private final class GuardianMessageHostingView<Content: View>: NSHostingView<Content> {
+    override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }

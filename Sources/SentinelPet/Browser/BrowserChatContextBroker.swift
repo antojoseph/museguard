@@ -6,6 +6,56 @@ struct BrowserChatContext {
     let windowID: Int
     /// Opaque content-script document identity; never sent to the model.
     let documentID: String
+    let coverage: BrowserCoverageProof?
+    let predictionSourceID: String?
+
+    init(page: BrowserRequest.Page, tabID: Int, windowID: Int, documentID: String, coverage: BrowserCoverageProof? = nil,
+         predictionSourceID: String? = nil) {
+        self.page = page; self.tabID = tabID; self.windowID = windowID
+        self.documentID = documentID; self.coverage = coverage; self.predictionSourceID = predictionSourceID
+    }
+
+    /// A local cache key only. No page identity or evidence is written to a
+    /// diagnostic, sent to the model, or reused across processes.
+    var monitoringIdentity: Int {
+        var hasher = Hasher()
+        hasher.combine(tabID); hasher.combine(windowID); hasher.combine(documentID)
+        hasher.combine(predictionSourceID)
+        hasher.combine(page.url); hasher.combine(page.title)
+        hasher.combine(Self.normalized(page.text))
+        if let evidence = page.evidence {
+            hasher.combine(evidence.version); hasher.combine(evidence.primaryTextCharacters)
+            hasher.combine(evidence.visibleTextCharacters); hasher.combine(evidence.substantialVisuals)
+            hasher.combine(evidence.requiresVisual); hasher.combine(evidence.truncated); hasher.combine(evidence.visualRevision)
+        }
+        return hasher.finalize()
+    }
+
+    func matchesContent(of previous: BrowserChatContext) -> Bool {
+        tabID == previous.tabID && windowID == previous.windowID && documentID == previous.documentID &&
+            predictionSourceID == previous.predictionSourceID &&
+            page.url == previous.page.url && page.title == previous.page.title && page.evidence == previous.page.evidence &&
+            Self.normalized(page.text) == Self.normalized(previous.page.text)
+    }
+
+    /// A still-live push cannot override a fresher page observation merely
+    /// because two webmail messages share a title or redacted URL. A different
+    /// assessment is preferred only when native actually completed newer work
+    /// on this unchanged, successfully covered document (for example, intent).
+    func prefersPredictionPush(_ update: BrowserPredictionUpdate, resultCompletedAt: Date?, now: Date = Date()) -> Bool {
+        guard (try? update.validated(now: now)) != nil,
+              update.tabID == tabID, update.windowID == windowID, update.documentID == documentID else { return false }
+        if let predictionSourceID { return update.sourceID == predictionSourceID }
+        guard let coverage, coverage.isFresh(at: now) else { return false }
+        if update.assessmentID == coverage.assessmentID { return true }
+        guard update.assessmentID != nil, coverage.state == "completed", let resultCompletedAt else { return false }
+        let completedAt = resultCompletedAt.timeIntervalSince1970 * 1_000
+        return completedAt.isFinite && completedAt > Double(coverage.checkedAt)
+    }
+
+    private static func normalized(_ text: String) -> String {
+        text.split(whereSeparator: \.isWhitespace).joined(separator: " ")
+    }
 }
 
 /// A short-lived mailbox for an explicit native chat question. Chrome supplies
@@ -74,7 +124,8 @@ final class BrowserChatContextBroker {
         if request.contextError != nil {
             finish(id,result:.failure(ContextError.unavailable))
         } else if let page = request.page, let tabID = request.tabID, let windowID = request.windowID, let documentID = request.documentID {
-            finish(id,result:.success(BrowserChatContext(page:page,tabID:tabID,windowID:windowID,documentID:documentID)))
+            finish(id,result:.success(BrowserChatContext(page:page,tabID:tabID,windowID:windowID,documentID:documentID,
+                coverage:request.browserCoverage, predictionSourceID:request.predictionSourceID)))
         } else {
             finish(id,result:.failure(ContextError.invalidContext))
             return .failure(id:request.id,message:ContextError.invalidContext.localizedDescription)

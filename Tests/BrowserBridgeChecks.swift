@@ -92,6 +92,7 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
             } catch {}
         }
         _ = try BrowserRequest(id: "repeat-high", type: "present-block", assessmentID: "one").validated()
+        _ = try BrowserRequest(id: "caution", type: "present-warning", assessmentID: "one").validated()
         for purpose in ["proactive", "intent"] {
             let request = try BrowserRequest(id: "background-"+purpose, type: "assess", page: page,
                 action: .init(kind: "submit", url: page.url, label: nil, method: "POST", sensitive: true), purpose: purpose).validated()
@@ -149,6 +150,10 @@ private func exchange(_ socketURL: URL, _ payload: Data, declaredLength: Int? = 
                         BrowserRequest(id: "x", type: "present-block"),
                         BrowserRequest(id: "x", type: "present-block", page: page, assessmentID: "one"),
                         BrowserRequest(id: "x", type: "present-block", assessmentID: "one", purpose: "intent"),
+                        BrowserRequest(id: "x", type: "present-warning"),
+                        BrowserRequest(id: "x", type: "present-warning", page: page, assessmentID: "one"),
+                        BrowserRequest(id: "x", type: "present-warning", assessmentID: "one", purpose: "intent"),
+                        BrowserRequest(id: "x", type: "present-warning", assessmentID: "one", protectionEnabled: true),
                         BrowserRequest(id: "x", type: "assess", page: page, purpose: "foreground"),
                         BrowserRequest(id: "x", type: "notice", page: page, reason: "checking", purpose: "intent"),
                         BrowserRequest(id: "x", type: "finish-checking", page: page, assessmentID: "one"),

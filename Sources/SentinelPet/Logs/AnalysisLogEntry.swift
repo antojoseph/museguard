@@ -8,9 +8,11 @@ enum AnalysisLogSource {
     case monitorText
     case downloadInspection, secretPaste
     case browserText
+    case warningFeedback
 
     var label: String {
         switch self {
+        case .warningFeedback: return "Warning feedback"
         #if MUSE_DEVELOPMENT
         case .mock: return "Mock lab"
         #endif
@@ -25,6 +27,7 @@ enum AnalysisLogSource {
 
     var systemImage: String {
         switch self {
+        case .warningFeedback: return "hand.thumbsdown"
         #if MUSE_DEVELOPMENT
         case .mock: return "testtube.2"
         #endif

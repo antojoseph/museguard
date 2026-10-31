@@ -16,6 +16,7 @@ struct SpeechBubbleView: View {
     var onOpen: (() -> Void)?
     var onDismiss: (() -> Void)?
     var onAcknowledge: ((String) -> Void)?
+    var onFalsePositive: ((String) -> Void)?
 
     var body: some View {
         Group {
@@ -89,10 +90,12 @@ struct SpeechBubbleView: View {
                         .background(Color(red: 0.98, green: 0.93, blue: 0.81), in: RoundedRectangle(cornerRadius: 11))
                 }
                 VStack(alignment: .leading, spacing: 3) {
-                    Text("Muse Guard")
-                        .font(.system(size: layout.compact ? 9.5 : 10.5, weight: .semibold))
-                        .tracking(0.3)
-                        .foregroundStyle(secondaryInk)
+                    if layout.height >= 190 {
+                        Text("Muse Guard")
+                            .font(.system(size: layout.compact ? 9.5 : 10.5, weight: .semibold))
+                            .tracking(0.3)
+                            .foregroundStyle(secondaryInk)
+                    }
                     Text("Let’s pause here")
                         .font(.system(size: layout.compact ? 16 : 18, weight: .semibold, design: .rounded))
                         .foregroundStyle(ink)
@@ -100,6 +103,18 @@ struct SpeechBubbleView: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
                 Spacer(minLength: 0)
+                if let onOpen, layout.width >= 240 {
+                    Button(action: onOpen) {
+                        if layout.width >= 300 {
+                            Text("Ask Muse").font(.system(size: 11, weight: .medium, design: .rounded))
+                        } else {
+                            Image(systemName: "bubble.left").font(.system(size: 12, weight: .medium))
+                        }
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(ink)
+                    .accessibilityLabel("Ask Muse")
+                }
             }
             .padding(.horizontal, layout.horizontalPadding)
             .frame(height: layout.headerHeight)
@@ -148,28 +163,12 @@ struct SpeechBubbleView: View {
 
             Rectangle().fill(ink.opacity(0.09)).frame(height: 1)
 
-            HStack(spacing: 12) {
-                if layout.width >= 240 {
-                    VStack(alignment: .leading, spacing: 4) {
-                        if warningDetails != nil && !layout.compact {
-                            Text("I’ll stay here.")
-                                .font(.system(size: 11, weight: .medium, design: .rounded))
-                                .foregroundStyle(secondaryInk)
-                        }
-                        if let onOpen {
-                            Button("Ask Muse", action: onOpen)
-                                .font(.system(size: 12, weight: .semibold, design: .rounded))
-                                .buttonStyle(.plain)
-                                .foregroundStyle(ink)
-                        }
-                    }
-                }
-                Spacer(minLength: 8)
+            VStack(alignment: .leading, spacing: 6) {
                 if let onAcknowledge {
                     GuardianAcknowledgmentButton(acknowledgment: acknowledgment, onAcknowledge: onAcknowledge)
-                        .controlSize(.large)
-                        .font(.system(size: 13, weight: .semibold, design: .rounded))
-                        .tint(ink)
+                }
+                if let onFalsePositive {
+                    GuardianFalsePositiveButton(acknowledgment: acknowledgment, onFalsePositive: onFalsePositive)
                 }
             }
             .padding(.horizontal, layout.horizontalPadding)
@@ -190,6 +189,9 @@ struct SpeechBubbleView: View {
         }
         .shadow(color: ink.opacity(0.16), radius: 18, y: 7)
         .accessibilityElement(children: .contain)
+        // This card uses a fixed light surface. Native controls must use the
+        // same appearance, rather than inheriting white text from dark mode.
+        .environment(\.colorScheme, .light)
     }
 
     @ViewBuilder
@@ -239,12 +241,15 @@ private struct WarningCardLayout {
         height = max(0, min(307, availableSize?.height ?? 307))
         compact = width < 300 || height < 280
         horizontalPadding = compact ? 14 : 18
-        let preferredFooter: CGFloat = height < 190 ? 48 : (compact ? 52 : 60)
+        // Both warning decisions remain outside the scrolling explanation.
+        // Reserve room for the visible bordered feedback button as well as
+        // Got it, including when placement shortens the card.
+        let preferredFooter: CGFloat = height < 190 ? 90 : (compact ? 96 : 108)
         footerHeight = min(height, preferredFooter)
-        let preferredHeader: CGFloat = height < 190 ? 44 : (compact ? 56 : 70)
+        let preferredHeader: CGFloat = height < 190 ? 24 : (compact ? 56 : 70)
         headerHeight = min(preferredHeader, max(0, height - footerHeight - 1))
         let remaining = max(0, height - headerHeight - footerHeight - 1)
-        bodyBottomPadding = min(compact ? 10 : 16, remaining)
+        bodyBottomPadding = min(height < 190 ? 4 : (compact ? 10 : 16), remaining)
         bodyHeight = max(0, remaining - bodyBottomPadding)
     }
 }

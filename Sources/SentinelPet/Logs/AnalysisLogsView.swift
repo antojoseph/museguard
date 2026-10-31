@@ -78,6 +78,7 @@ private struct ActivityEntryView: View {
 
     private var sourceLabel: String {
         switch entry.source {
+        case .warningFeedback: return "Warning feedback"
         case .downloadInspection: return "Download inspection"
         case .secretPaste: return "Secret paste protection"
         case .browserText: return "Browser check"
@@ -89,11 +90,15 @@ private struct ActivityEntryView: View {
         }
     }
     private var resultLabel: String {
+        if case .warningFeedback = entry.source {
+            return entry.errorMessage == nil ? "Reported false positive" : "Feedback not saved"
+        }
         guard entry.errorMessage == nil, let verdict = entry.verdict else { return "Check unavailable" }
         switch verdict.riskLevel {
         case .high: return "Concern found"
         case .unknown: return "Could not assess"
-        case .safe, .low, .medium: return "No high-risk concern found"
+        case .medium: return "Caution found"
+        case .safe, .low: return "No high-risk concern found"
         }
     }
 }

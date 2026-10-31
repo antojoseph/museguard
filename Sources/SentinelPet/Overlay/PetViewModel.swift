@@ -57,6 +57,10 @@ final class PetViewModel: ObservableObject {
     @Published var automaticallyPositions: Bool {
         didSet { defaults.set(automaticallyPositions, forKey:"museAutoPlacement") }
     }
+    @Published var showsPredictionDebug: Bool {
+        didSet { defaults.set(showsPredictionDebug, forKey: "museShowsPredictionDebug") }
+    }
+    @Published var predictionDebug: PredictionDebugSnapshot = .initial
     var interventionAnchor: CGPoint?
     @Published var intervention: GuardianIntervention?
     @Published var mood: PetMood = .idle
@@ -78,6 +82,7 @@ final class PetViewModel: ObservableObject {
         self.defaults = defaults
         isAvatarHidden = defaults.bool(forKey: "museAvatarHidden")
         automaticallyPositions = (defaults.object(forKey: "museAutoPlacement") as? Bool) ?? true
+        showsPredictionDebug = (defaults.object(forKey: "museShowsPredictionDebug") as? Bool) ?? true
     }
 
     /// A serious warning can reveal Muse without changing the user's lasting
@@ -176,7 +181,7 @@ final class PetViewModel: ObservableObject {
         warningActions.removeAll { $0.id == id }; warningActionStatus = message
     }
 
-    /// Only an explicit, matching Got it can release the warning and guardian.
+    /// Only an explicit, matching dismissal can release the warning and guardian.
     @discardableResult
     func acknowledge(id: String) -> Bool {
         guard acknowledgment?.id == id else { return false }

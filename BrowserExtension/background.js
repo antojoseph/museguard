@@ -27,6 +27,8 @@ let monitoringAvailable = false, commandTail = Promise.resolve();
 let monitoringTail = Promise.resolve(), monitoringAppliedRevision = 0;
 const NATIVE_AVAILABILITY_MS = 4500;
 let nativeAvailableUntil = 0, lastAvailabilityBroadcast = 0;
+const predictionSources = new Map();
+let predictionSequence = 0, lastPredictionAt = 0, lastPredictionSignature = '', lastPredictionExpiry = 0;
 const downloadCommands = new Map();
 const downloadGuard = MuseGuardDownloads.create({ chrome, nativeRequest,
   isEnabled: async () => (await config()).active });
@@ -34,6 +36,82 @@ const downloadGuard = MuseGuardDownloads.create({ chrome, nativeRequest,
 // any configuration read. Each event still checks the persisted Pause state.
 void downloadGuard.start().catch(() => {});
 function quietFailure(message) { return { ...C.failure(message), confirmed_extreme: false, retry_after_ms: 15000 }; }
+
+function clearPredictionSources() {
+  predictionSequence++; predictionSources.clear(); lastPredictionAt = 0; lastPredictionSignature = '';
+}
+function predictionSource(ctx, page = null, title = '') {
+  const previous = predictionSources.get(ctx.tabId);
+  const pageKey = page ? C.assessmentKey(page) : previous?.pageKey ?? null;
+  const normalizedTitle = C.cleanText(page?.title || title || previous?.title || 'Chrome page', 250);
+  const sameDocument = previous && previous.windowID === ctx.windowId && previous.rawURL === ctx.rawURL &&
+    (!ctx.nonce || previous.nonce === ctx.nonce) && (!ctx.documentId || previous.documentID === ctx.documentId);
+  if (sameDocument && previous.pageKey === pageKey && previous.title === normalizedTitle) return previous;
+  const value = { sourceID: crypto.randomUUID(), tabID: ctx.tabId, windowID: ctx.windowId, rawURL: ctx.rawURL,
+    nonce: ctx.nonce || null, documentID: ctx.documentId || null,
+    pageKey: page ? pageKey : null, title: normalizedTitle, phase: 'waiting', assessmentID: null, until: 0 };
+  predictionSources.delete(ctx.tabId); predictionSources.set(ctx.tabId, value);
+  if (predictionSources.size > 128) predictionSources.delete(predictionSources.keys().next().value);
+  return value;
+}
+function predictionStarted(job, id) {
+  job.nativeAssessmentID = id;
+  const source = predictionSources.get(job.ctx.tabId);
+  if (source?.sourceID !== job.sourceID || job.generation !== protectionGeneration) return;
+  Object.assign(source, { phase: 'checking', assessmentID: id, until: Date.now() + 35000 });
+  void publishSelectedPrediction().catch(() => {});
+}
+function predictionFinished(job, result) {
+  const source = predictionSources.get(job.ctx.tabId);
+  if (source?.sourceID !== job.sourceID || job.generation !== protectionGeneration ||
+      job.nativeAssessmentID && source.assessmentID && source.assessmentID !== job.nativeAssessmentID) return;
+  const completed = result?.ok === true && typeof result.id === 'string' && result.id.length > 0;
+  Object.assign(source, { phase: completed ? 'completed' : 'unavailable',
+    assessmentID: completed ? result.id : job.nativeAssessmentID || null,
+    until: completed && Number.isFinite(result.expires_at) ? result.expires_at : Date.now() + 15000 });
+  void publishSelectedPrediction().catch(() => {});
+}
+async function publishSelectedPrediction({ tabID = null, forceWaiting = false, heartbeat = false } = {}) {
+  // Renew the short native lease through existing monitoring polls. This path
+  // never reads the DOM, captures an image or starts a model operation.
+  if (!port || heartbeat && Date.now() - lastPredictionAt < 2000) return;
+  const sequence = ++predictionSequence, generation = protectionGeneration, connected = port;
+  const value = await config();
+  if (!value.active || connected !== port || generation !== protectionGeneration || sequence !== predictionSequence) return;
+  const selected = (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0];
+  if (!selected?.active || !Number.isInteger(selected.id) || selected.id <= 0 ||
+      !Number.isInteger(selected.windowId) || selected.windowId <= 0 || tabID !== null && selected.id !== tabID) return;
+  const window = await chrome.windows.get(selected.windowId);
+  if (!window.focused || connected !== port || generation !== protectionGeneration || sequence !== predictionSequence) return;
+  const known = documents.get(selected.id);
+  const source = predictionSource({ tabId: selected.id, windowId: selected.windowId, rawURL: selected.url || '',
+    nonce: known?.nonce, documentId: known?.documentId }, null, selected.title);
+  const live = await chrome.tabs.get(selected.id);
+  const latest = (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0];
+  if (!sameChatTab(selected, live) || !sameChatTab(selected, latest) ||
+      connected !== port || generation !== protectionGeneration || sequence !== predictionSequence ||
+      predictionSources.get(selected.id) !== source) return;
+  const phase = !C.url(selected.url) || selected.discarded ? 'unavailable' :
+    forceWaiting ? 'waiting' : source.until > Date.now() ? source.phase : 'waiting';
+  const assessmentID = !forceWaiting && ['checking', 'completed', 'unavailable'].includes(phase) ? source.assessmentID : null;
+  const prediction = { source_id: source.sourceID, title: source.title, tab_id: source.tabID,
+    window_id: source.windowID, ...(source.nonce ? { document_id: source.nonce } : {}), phase,
+    ...(assessmentID ? { assessment_id: assessmentID } : {}), expires_at: Date.now() + 8000 };
+  const signature = JSON.stringify([prediction.source_id, prediction.title, prediction.document_id, phase, assessmentID]);
+  if (signature === lastPredictionSignature && Date.now() - lastPredictionAt < 2000) return;
+  // Reserved control workers may deliver messages out of order. A strictly
+  // increasing, short expiry lets native reject an older source observation,
+  // including several phase changes within the same millisecond.
+  prediction.expires_at = Math.max(prediction.expires_at, lastPredictionExpiry + 1);
+  if (prediction.expires_at > Date.now() + 10000) return;
+  lastPredictionExpiry = prediction.expires_at;
+  lastPredictionAt = Date.now(); lastPredictionSignature = signature;
+  await nativeRequest({ type: 'prediction-update', prediction }, 1500, connected);
+}
+function activatePrediction(tabID) {
+  void publishSelectedPrediction({ tabID, forceWaiting: true }).then(() =>
+    publishSelectedPrediction({ tabID })).catch(() => {});
+}
 
 async function setNativeAvailability(available) {
   const hadLease = nativeAvailableUntil > 0;
@@ -67,7 +145,7 @@ async function processDownloadCommands(commands) {
   }
 }
 
-function nativeRequest(payload, timeout = 35000, expectedPort = null, signal = null) {
+function nativeRequest(payload, timeout = 35000, expectedPort = null, signal = null, onSent = null) {
   return new Promise(resolve => {
     const request = { ...payload, version: 1, id: crypto.randomUUID() };
     let finished = false, sentPort = null;
@@ -94,7 +172,7 @@ function nativeRequest(payload, timeout = 35000, expectedPort = null, signal = n
         connected.onDisconnect.addListener(() => {
           if (port !== connected) return;
           const message = chrome.runtime.lastError?.message || 'The Muse app disconnected.';
-          port = null; cache.clear(); receipts.clear();
+          port = null; cache.clear(); receipts.clear(); clearPredictionSources();
           clearTimeout(chatContextTimer); chatContextTimer = null;
           clearTimeout(monitoringTimer); monitoringTimer = null; monitoringAvailable = false;
           void setNativeAvailability(false).catch(() => {});
@@ -107,7 +185,7 @@ function nativeRequest(payload, timeout = 35000, expectedPort = null, signal = n
         if (['assess', 'download-inspect'].includes(request.type)) abort();
         else finish(C.failure('The local check timed out. This action has not been cleared.', request.id));
       }, timeout);
-      pending.set(request.id, { finish, timer }); sentPort = port; port.postMessage(request);
+      pending.set(request.id, { finish, timer }); sentPort = port; port.postMessage(request); onSent?.(request.id);
     } catch (error) { finish(C.failure(error.message, request.id)); }
   });
 }
@@ -169,6 +247,7 @@ function pollMonitoringState(connected = port) {
       if (monitoringAvailable) {
         await applyMonitoringState(result.monitoring);
         await processDownloadCommands(result.download_commands);
+        void publishSelectedPrediction({ heartbeat: true }).catch(() => {});
       }
     }
   })();
@@ -204,9 +283,51 @@ function chatSnapshot(value, tab) {
       value.page.url.length > 4096 || typeof value.page.title !== 'string' || typeof value.page.text !== 'string')
     throw new Error('Muse could not read this tab. Refresh it and try again.');
   return { nonce: value.nonce, revision: value.revision,
-    page: { url: C.url(tab.url), title: C.cleanText(value.page.title, 250), text: C.cleanText(value.page.text) } };
+    page: { url: C.url(tab.url), title: C.cleanText(value.page.title, 250), text: C.cleanText(value.page.text), ...pageEvidence(value.page) } };
+}
+function pageEvidence(page) {
+  if (page.evidence == null) return {};
+  const evidence = C.pageEvidence(page.evidence);
+  if (!evidence) throw new Error('Muse could not read this tab. Refresh it and try again.');
+  return { evidence };
+}
+function coverageForSnapshot(tab, snapshot, generation) {
+  if (generation !== protectionGeneration) return undefined;
+  const known = documents.get(tab.id);
+  if (known?.nonce !== snapshot.nonce || known.windowId !== tab.windowId) return undefined;
+  const ctx = { tabId: tab.id, windowId: tab.windowId, rawURL: tab.url,
+    nonce: snapshot.nonce, documentId: known.documentId };
+  const key = latestSlots.get(slotKey(ctx, { action: { kind: 'page' } }));
+  if (!key) return undefined;
+  try {
+    const proof = JSON.parse(key);
+    if (proof[0] !== ctx.tabId || proof[1] !== (ctx.documentId || null) || proof[2] !== ctx.nonce ||
+        proof[3] !== ctx.rawURL || proof[4] !== C.assessmentKey(snapshot.page)) return undefined;
+  }
+  catch { return undefined; }
+  const saved = cache.get(key);
+  if (saved?.generation === generation && saved.expiresAt > Date.now() && saved.result.ok === true &&
+      saved.result.risk_level !== 'unknown' && typeof saved.result.id === 'string') {
+    // Analysis completion is not warning delivery. Give an in-flight display
+    // a brief grace period, then let the native watched-window path recover
+    // a finding whose avatar presentation failed (including during chat).
+    if (saved.result.warning_eligible && !saved.warningDelivered) {
+      if (saved.checkedAt + 3000 > Date.now()) return { state: 'checking', assessment_id: saved.result.id,
+        checked_at: saved.checkedAt, expires_at: saved.checkedAt + 3000 };
+      return undefined;
+    }
+    return { state: 'completed', assessment_id: saved.result.id,
+      checked_at: saved.checkedAt, expires_at: saved.expiresAt };
+  }
+  const slot = slotKey(ctx, { action: { kind: 'page' } });
+  const job = activeAutomatic?.key === key ? activeAutomatic : automaticQueue.get(slot);
+  if (job?.key === key && job.generation === generation && !job.controller.signal.aborted &&
+      job.enqueuedAt + 35000 > Date.now()) return { state: 'checking', assessment_id: job.coverageID,
+    checked_at: job.enqueuedAt, expires_at: job.enqueuedAt + 35000 };
+  return undefined;
 }
 async function freshChatContext(expiresAt, connected) {
+  const generation = protectionGeneration;
   const tab = await currentChatTab(expiresAt, connected);
   if (!await contextOperation(() => ensureTabMonitoring(tab.id), expiresAt, connected))
     throw new Error('Muse could not read this tab. Refresh it and try again.');
@@ -216,12 +337,18 @@ async function freshChatContext(expiresAt, connected) {
   if (!sameChatTab(tab, await currentChatTab(expiresAt, connected)))
     throw new Error('The active tab changed while Muse was reading it. Try again.');
   const latest = chatSnapshot(await contextOperation(() => chrome.tabs.sendMessage(tab.id, { type: 'snapshot' }, { frameId: 0 }), expiresAt, connected), tab);
-  if (first.nonce !== latest.nonce || first.revision !== latest.revision || C.assessmentKey(first.page) !== C.assessmentKey(latest.page))
+  if (first.nonce !== latest.nonce || (!first.page.evidence && first.revision !== latest.revision) || C.assessmentKey(first.page) !== C.assessmentKey(latest.page))
     throw new Error('The page changed while Muse was reading it. Try again.');
   const live = await contextOperation(() => chrome.tabs.get(tab.id), expiresAt, connected);
   if (!sameChatTab(tab, live) || !sameChatTab(tab, await currentChatTab(expiresAt, connected)))
     throw new Error('The active tab changed while Muse was reading it. Try again.');
-  return { page: latest.page, tab_id: tab.id, window_id: tab.windowId, document_id: latest.nonce };
+  const coverage = coverageForSnapshot(tab, latest, generation);
+  const known = documents.get(tab.id);
+  const source = predictionSource({ tabId: tab.id, windowId: tab.windowId, rawURL: tab.url,
+    nonce: latest.nonce, documentId: known?.documentId }, latest.page);
+  void publishSelectedPrediction().catch(() => {});
+  return { page: latest.page, tab_id: tab.id, window_id: tab.windowId, document_id: latest.nonce,
+    prediction_source_id: source.sourceID, ...(coverage ? { browser_coverage: coverage } : {}) };
 }
 function pollChatContext(connected = port) {
   if (!connected || port !== connected) return Promise.resolve();
@@ -436,7 +563,7 @@ function validatedPayload(message, ctx) {
   const action = C.normalizeAction(message.action || { kind: 'page' });
   if (!['page', 'link', 'submit'].includes(action.kind)) throw new Error('Unsupported page action.');
   if (action.kind !== 'page' && !action.url) throw new Error('This action has no supported destination.');
-  return { type: 'assess', mode: 'text', page: { url: page.url, title: C.cleanText(page.title, 250), text: C.cleanText(page.text) }, action };
+  return { type: 'assess', mode: 'text', page: { url: page.url, title: C.cleanText(page.title, 250), text: C.cleanText(page.text), ...pageEvidence(page) }, action };
 }
 function proofSignature(message, request) {
   if (typeof message.public_signature !== 'string' || message.public_signature.length > 4096) throw new Error('This action proof is not valid.');
@@ -462,13 +589,17 @@ function slotKey(ctx, request) {
 function cachedResult(key, generation) {
   const saved = cache.get(key);
   if (!saved || saved.generation !== generation || saved.expiresAt <= Date.now()) { cache.delete(key); return null; }
+  // A caution may be reused for coverage, but displaying it requires a fresh
+  // native receipt. A background tab first opened later gets a new check.
+  if (saved.result.risk_level === 'medium' && saved.result.warning_expires_at <= Date.now()) { cache.delete(key); return null; }
   return { ...saved.result };
 }
 async function performAssessment(job) {
   if (job.generation !== protectionGeneration || !await allowed(job.ctx.rawURL) || !await current(job.ctx)) return quietFailure('This page check is no longer current.');
   if (job.generation !== protectionGeneration) return quietFailure('Automatic protection was paused.');
   const payload = { ...job.request, purpose: job.purpose };
-  const raw = await nativeRequest(payload, 35000, null, job.controller.signal), result = C.verdict(raw);
+  const raw = await nativeRequest(payload, 35000, null, job.controller.signal,
+    id => predictionStarted(job, id)), result = C.verdict(raw);
   if (job.controller.signal.aborted) return quietFailure('This scan was replaced by a newer or higher-priority check.');
   if (job.generation !== protectionGeneration || !await allowed(job.ctx.rawURL) || !await current(job.ctx) ||
       latestSlots.get(job.slot) !== job.key) return quietFailure('A newer page or protection setting replaced this check.');
@@ -477,13 +608,19 @@ async function performAssessment(job) {
   const extreme = raw?.ok === true && raw.decision === 'block' && raw.risk_level === 'high' && result.ok === true &&
     result.decision === 'block' && typeof result.id === 'string' && result.id.length > 0;
   const expiresAt = Date.now() + (result.risk_level === 'high' ? EXTREME_TTL : C.ASSESSMENT_REUSE_MS);
-  const stamped = { ...result, confirmed_extreme: extreme, expires_at: expiresAt };
-  if (extreme) saveReceipt(result.id, { ctx: job.ctx, result: stamped, extreme, key: job.key,
-    time: Date.now(), expiresAt, generation: job.generation });
+  const concern = extreme || raw?.ok === true && raw.decision === 'review' && raw.risk_level === 'medium' &&
+    result.ok === true && result.risk_level === 'medium' && result.decision === 'review' &&
+    typeof result.id === 'string' && result.id.length > 0;
+  const warningExpiresAt = Date.now() + EXTREME_TTL;
+  const stamped = { ...result, confirmed_extreme: extreme, warning_eligible: concern,
+    warning_expires_at: concern ? warningExpiresAt : undefined, expires_at: expiresAt };
+  if (concern) saveReceipt(result.id, { ctx: job.ctx, result: stamped, extreme, key: job.key,
+    time: Date.now(), expiresAt: warningExpiresAt, generation: job.generation });
   if (result.ok === true) {
-    cache.set(job.key, { result: stamped, expiresAt, generation: job.generation });
+    cache.set(job.key, { result: stamped, expiresAt, checkedAt: Date.now(), generation: job.generation });
     if (cache.size > 64) cache.delete(cache.keys().next().value);
   }
+  predictionFinished(job, stamped);
   return stamped;
 }
 function sensitiveIntent(job) { return job?.purpose === 'intent' && job.request.action.kind === 'submit' && job.request.action.sensitive; }
@@ -504,7 +641,7 @@ async function enqueueAssessment(job) {
   const saved = cachedResult(job.key, job.generation);
   if (saved) {
     if (earlier && earlier.key !== job.key) { automaticQueue.delete(job.slot); earlier.resolve(quietFailure('A newer snapshot replaced this queued check.')); }
-    return Promise.resolve(saved);
+    predictionFinished(job, saved); return Promise.resolve(saved);
   }
   if (activeAutomatic?.key === job.key && activeAutomatic.generation === job.generation) {
     if (earlier && earlier.key !== job.key) { automaticQueue.delete(job.slot); earlier.resolve(quietFailure('A newer snapshot replaced this queued check.')); }
@@ -519,6 +656,7 @@ async function enqueueAssessment(job) {
   }
   if (earlier) earlier.resolve(quietFailure('A newer snapshot replaced this queued check.'));
   job.sequence = ++queueSequence;
+  job.enqueuedAt = Date.now(); job.coverageID = crypto.randomUUID();
   job.controller = new AbortController();
   job.promise = new Promise(resolve => { job.resolve = resolve; });
   automaticQueue.set(job.slot, job); latestSlots.set(job.slot, job.key);
@@ -530,6 +668,7 @@ async function enqueueAssessment(job) {
       activeAutomatic.ctx.tabId === job.ctx.tabId && (activeAutomatic.ctx.rawURL !== job.ctx.rawURL ||
         activeAutomatic.ctx.nonce !== job.ctx.nonce || activeAutomatic.ctx.documentId !== job.ctx.documentId))) activeAutomatic.controller.abort();
   await preemptForSensitiveIntent(job);
+  void publishSelectedPrediction().catch(() => {});
   void pumpAutomatic(); return job.promise;
 }
 async function pickNext() {
@@ -538,8 +677,10 @@ async function pickNext() {
   const jobs = [...automaticQueue.values()];
   const sensitive = jobs.filter(job => sensitiveIntent(job) && focused.has(job.ctx.tabId));
   if (sensitive.length) return sensitive.sort((a,b) => a.sequence-b.sequence)[0];
-  const background = jobs.filter(job => job.purpose === 'proactive' && !focused.has(job.ctx.tabId));
-  const foreground = jobs.filter(job => job.purpose === 'intent' || focused.has(job.ctx.tabId));
+  // An intent belongs to the page the user was interacting with when it was
+  // queued. After a tab/window switch, it must not outrank the current page.
+  const background = jobs.filter(job => !focused.has(job.ctx.tabId));
+  const foreground = jobs.filter(job => focused.has(job.ctx.tabId));
   let pool;
   if (background.length && (foregroundBurst >= 3 || !foreground.length)) { pool = background; foregroundBurst = 0; }
   else { pool = foreground.length ? foreground : background; foregroundBurst++; }
@@ -555,8 +696,15 @@ async function pumpAutomatic() {
       const job = await pickNext();
       if (!job || automaticQueue.get(job.slot) !== job) continue;
       automaticQueue.delete(job.slot); activeAutomatic = job;
-      try { job.resolve(await performAssessment(job)); }
-      catch { job.resolve(quietFailure('Muse could not finish this page check.')); }
+      try {
+        const result = await performAssessment(job);
+        if (result?.ok !== true) predictionFinished(job, result);
+        job.resolve(result);
+      }
+      catch {
+        const result = quietFailure('Muse could not finish this page check.');
+        predictionFinished(job, result); job.resolve(result);
+      }
       finally { activeAutomatic = null; }
     }
   } finally { pumping = false; if (automaticQueue.size) void pumpAutomatic(); }
@@ -568,7 +716,8 @@ async function assessPage(message, sender) {
   if (!['proactive', 'intent'].includes(message.purpose)) throw new Error('Unsupported check purpose.');
   const request = validatedPayload(message, ctx), signature = proofSignature(message, request),
     fingerprint = actionFingerprint(message);
-  const job = { ctx, request, purpose: message.purpose, generation: protectionGeneration };
+  const source = predictionSource(ctx, request.page);
+  const job = { ctx, request, sourceID: source.sourceID, purpose: message.purpose, generation: protectionGeneration };
   job.key = exactKey(ctx, request, signature, fingerprint); job.slot = slotKey(ctx, request);
   if (!await current(ctx)) return quietFailure('The active page changed.');
   if (job.generation !== protectionGeneration || !await allowed(ctx.rawURL)) return quietFailure('Automatic protection was paused.');
@@ -576,18 +725,24 @@ async function assessPage(message, sender) {
 }
 async function presentBlock(message, sender) {
   const generation = protectionGeneration, ctx = context(sender, message.nonce), receipt = receipts.get(message.assessment_id);
-  if (!receipt?.extreme || receipt.generation !== protectionGeneration || receipt.expiresAt <= Date.now() ||
-      receipt.ctx.tabId !== ctx.tabId || receipt.ctx.nonce !== ctx.nonce || !C.isConfirmedExtreme(receipt.result) || !await current(ctx, true) || !await allowed(ctx.rawURL)) return { ok: false };
+  const caution = message.type === 'present-warning';
+  if (!receipt || (caution ? receipt.result.risk_level !== 'medium' || !C.isPresentableWarning(receipt.result) : !receipt.extreme || !C.isConfirmedExtreme(receipt.result)) ||
+      receipt.generation !== protectionGeneration || receipt.expiresAt <= Date.now() ||
+      receipt.ctx.tabId !== ctx.tabId || receipt.ctx.nonce !== ctx.nonce || !await current(ctx, true) || !await allowed(ctx.rawURL)) return { ok: false };
   const request = validatedPayload(message, ctx), signature = proofSignature(message, request), fingerprint = actionFingerprint(message);
   if (exactKey(ctx, request, signature, fingerprint) !== receipt.key) return { ok: false };
   if (generation !== protectionGeneration || receipts.get(message.assessment_id) !== receipt) return { ok: false };
   const target = await boundTarget(message, ctx);
   if (generation !== protectionGeneration || !await current(ctx, true) || !await allowed(ctx.rawURL)) return { ok: false };
-  const response = await nativeRequest({ type: 'present-block', mode: 'text', assessment_id: message.assessment_id,
+  const response = await nativeRequest({ type: caution ? 'present-warning' : 'present-block', mode: 'text', assessment_id: message.assessment_id,
     ...sourceFields(ctx, Number.isSafeInteger(message.page_revision) ? message.page_revision : 0), ...(target ? { target } : {}) }, 3000);
   if (!await current(ctx, true) || !await allowed(ctx.rawURL) || generation !== protectionGeneration) {
     if (response.id) void nativeRequest({ type: 'cancel', assessment_id: response.id }, 1500);
     return { ok: false };
+  }
+  if (response.ok === true) {
+    const saved = cache.get(receipt.key);
+    if (saved?.generation === generation && saved.result.id === message.assessment_id) saved.warningDelivered = true;
   }
   if (response.id && response.id !== message.assessment_id && response.ok === true) saveReceipt(response.id, {
     ctx, presented: true, time: Date.now(), generation,
@@ -664,7 +819,7 @@ async function broadcastConfiguration() {
   return results.every(Boolean);
 }
 function clearAutomaticState(message = 'Protection settings changed.') {
-  protectionGeneration++; cache.clear(); latestSlots.clear();
+  protectionGeneration++; cache.clear(); latestSlots.clear(); clearPredictionSources();
   activeAutomatic?.controller.abort();
   for (const job of automaticQueue.values()) job.resolve(quietFailure(message));
   automaticQueue.clear();
@@ -720,7 +875,7 @@ async function handle(message, sender) {
       native_available_until: value.active && nativeAvailableUntil > Date.now() ? nativeAvailableUntil : 0 };
   }
   if (message.type === 'assess') return assessPage(message, sender);
-  if (message.type === 'present-block') return presentBlock(message, sender);
+  if (message.type === 'present-block' || message.type === 'present-warning') return presentBlock(message, sender);
   if (message.type === 'secret-paste') return secretPaste(message, sender);
   if (message.type === 'target-invalidated') return invalidateTarget(message, sender);
   if (message.type === 'target-update') return updateTarget(message, sender);
@@ -741,7 +896,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => { handle(messag
 chrome.storage.onChanged.addListener((_, area) => { if (area === 'local') void protectionChanged(); });
 function forget(tabId) {
   clearTabTarget(tabId);
-  documents.delete(tabId);
+  documents.delete(tabId); predictionSources.delete(tabId);
   if (activeAutomatic?.ctx.tabId === tabId) activeAutomatic.controller.abort();
   for (const [slot, job] of automaticQueue) if (job.ctx.tabId === tabId) { automaticQueue.delete(slot); latestSlots.delete(slot); job.resolve(quietFailure('The tab navigated.')); }
   for (const [id, receipt] of receipts) if (receipt.ctx.tabId === tabId) { receipts.delete(id); if (receipt.presented) void nativeRequest({ type: 'cancel', assessment_id: id }, 1500); }
@@ -749,6 +904,7 @@ function forget(tabId) {
 }
 chrome.tabs.onUpdated.addListener((tabId, change) => {
   if (change.url || change.status === 'loading') forget(tabId);
+  if (change.url || change.title || change.status === 'loading') activatePrediction(tabId);
   if (change.status === 'complete') void ensureTabMonitoring(tabId);
 });
 chrome.tabs.onRemoved.addListener(forget);
@@ -756,6 +912,7 @@ chrome.tabs.onActivated?.addListener(info => {
   for (const tabID of documents.keys()) clearTabTarget(tabID);
   void pumpAutomatic();
   void syncProtectionState().catch(() => {});
+  activatePrediction(info?.tabId);
   void activateTabMonitoring(info?.tabId).catch(() => {});
 });
 chrome.windows.onFocusChanged?.addListener(windowId => {
@@ -766,7 +923,9 @@ chrome.windows.onFocusChanged?.addListener(windowId => {
   for (const [tabID, known] of documents) if (known.windowId !== windowId) clearTabTarget(tabID);
   void syncProtectionState().catch(() => {});
   void chrome.tabs.query({ active: true, windowId }).then(tabs =>
-    Promise.allSettled(tabs.map(tab => activateTabMonitoring(tab.id)))).catch(() => {});
+    Promise.allSettled(tabs.map(tab => {
+      activatePrediction(tab.id); return activateTabMonitoring(tab.id);
+    }))).catch(() => {});
 });
 chrome.tabs.onZoomChange?.addListener(info => clearTabTarget(info.tabId));
 chrome.tabs.onDetached?.addListener(tabID => clearTabTarget(tabID));

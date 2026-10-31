@@ -9,16 +9,18 @@ struct ContextEvidence: Equatable {
     var controlElements: Int
     var truncated: Bool
     var isMeasured: Bool
+    var requiresVisual: Bool
 
     init(semanticTextCharacters: Int = 0, semanticTextElements: Int = 0,
          visualElements: Int = 0, controlElements: Int = 0,
-         truncated: Bool = false, isMeasured: Bool = true) {
+         truncated: Bool = false, isMeasured: Bool = true, requiresVisual: Bool = false) {
         self.semanticTextCharacters = max(0, semanticTextCharacters)
         self.semanticTextElements = max(0, semanticTextElements)
         self.visualElements = max(0, visualElements)
         self.controlElements = max(0, controlElements)
         self.truncated = truncated
         self.isMeasured = isMeasured
+        self.requiresVisual = requiresVisual
     }
 
     static let unknown = ContextEvidence(isMeasured: false)
@@ -35,7 +37,7 @@ struct ContextEvidence: Equatable {
     }
 
     var needsVisualContext: Bool {
-        !hasMeaningfulText || (visualElements > 0 && semanticTextCharacters < 240 &&
+        requiresVisual || !hasMeaningfulText || (visualElements > 0 && semanticTextCharacters < 240 &&
             visualElements >= semanticTextElements)
     }
 
