@@ -1,0 +1,18 @@
+{
+  "metadata": {
+    "path": "/Users/x/Documents/Codex/2026-10-30/referenced-chatgpt-conversation-this-is-an/outputs/plush-character/cream-mascot-showcase.mp4",
+    "size": [
+      1080,
+      1080
+    ],
+    "frames": 360,
+    "fps": 24.0,
+    "duration_seconds": 15.0,
+    "bytes": 3023105,
+    "encode_seconds": 3.6
+  },
+  "decoded_samples": 14,
+  "unique_samples": 14,
+  "maximum_mean_channel_error": 0.7324322702331961,
+  "checks": "resolution, duration, frame rate, distinct decoded motion, and colour preservation passed"
+}

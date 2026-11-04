@@ -1,0 +1,157 @@
+{
+  "blender_version": "5.2.4 LTS Release Candidate",
+  "saved_file": "/Users/x/Documents/Codex/2026-10-30/referenced-chatgpt-conversation-this-is-an/outputs/plush-character/cream-mascot-locomotion.blend",
+  "saved_frame": 1,
+  "view_frame_before_save": 14,
+  "was_playing": false,
+  "active_action": "Showcase - eight directions and stair climb",
+  "range": [
+    1,
+    528
+  ],
+  "fps": 24,
+  "camera": "Locomotion Camera",
+  "bone_count": 16,
+  "reusable_actions": [
+    {
+      "name": "Climb - Two steps",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        144.0
+      ]
+    },
+    {
+      "name": "Walk - Back left",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        48.0
+      ]
+    },
+    {
+      "name": "Walk - Back right",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        48.0
+      ]
+    },
+    {
+      "name": "Walk - Backward",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        48.0
+      ]
+    },
+    {
+      "name": "Walk - Forward",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        48.0
+      ]
+    },
+    {
+      "name": "Walk - Forward left",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        48.0
+      ]
+    },
+    {
+      "name": "Walk - Forward right",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        48.0
+      ]
+    },
+    {
+      "name": "Walk - Left",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        48.0
+      ]
+    },
+    {
+      "name": "Walk - Right",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        48.0
+      ]
+    },
+    {
+      "name": "Walk loop - Back left",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        25.0
+      ]
+    },
+    {
+      "name": "Walk loop - Back right",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        25.0
+      ]
+    },
+    {
+      "name": "Walk loop - Backward",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        25.0
+      ]
+    },
+    {
+      "name": "Walk loop - Forward",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        25.0
+      ]
+    },
+    {
+      "name": "Walk loop - Forward left",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        25.0
+      ]
+    },
+    {
+      "name": "Walk loop - Forward right",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        25.0
+      ]
+    },
+    {
+      "name": "Walk loop - Left",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        25.0
+      ]
+    },
+    {
+      "name": "Walk loop - Right",
+      "fake_user": true,
+      "frame_range": [
+        1.0,
+        25.0
+      ]
+    }
+  ],
+  "packed_resources": true,
+  "missing_external_resources": [],
+  "scene_objects": 45,
+  "hair_curve_objects": 9
+}

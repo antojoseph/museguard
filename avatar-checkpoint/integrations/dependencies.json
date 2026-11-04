@@ -1,0 +1,31 @@
+{
+  "checkpoint_date": "2026-11-01",
+  "blender": {
+    "version": "5.2.4 LTS Release Candidate",
+    "application": "/Applications/Blender.app",
+    "api_socket": {
+      "host": "127.0.0.1",
+      "port": 9876
+    },
+    "addon_source": "integrations/blender/blender_mcp.py",
+    "upstream_mcp_package": "mcp-for-blender==2.2.6"
+  },
+  "pi": {
+    "version": "1.4.0",
+    "executable": "/Users/x/.local/bin/pi",
+    "release_url": "https://github.com/earendil-works/pi/releases/download/v1.4.0/pi-darwin-arm64.tar.gz",
+    "archive_sha256": "79d9979d76a2a5adb7c28e27e9b44629928ccd0dc9fbb6ae7217860bd5e8be5d",
+    "provider": "baseten-hackathon",
+    "model": "meta-models/muse-spark-open-1026",
+    "thinking_level": "xhigh",
+    "reasoning_note": "xhigh is the highest configured supported level; max is mapped to null.",
+    "credential_source_on_this_mac": "/Users/x/.pi/agent/baseten-key.py",
+    "portable_credential_environment": "BASETEN_API_KEY",
+    "credentials_in_repository": false
+  },
+  "native_app": {
+    "target": "Native SwiftUI/AppKit with interactive 3D",
+    "runtime_candidate": "RealityKit",
+    "status": "Blender authoring and animation complete; runtime fur conversion and native app implementation are not done."
+  }
+}

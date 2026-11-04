@@ -1,0 +1,105 @@
+{
+  "bindings": [
+    {
+      "object": "Coat_PlushGroom",
+      "surface": "Coat_FurBindingSurface",
+      "curves": 339241,
+      "max_root_surface_distance": 0.00035016867332160473,
+      "seconds": 1.25
+    },
+    {
+      "object": "Coat_WispyPile",
+      "surface": "Coat_FurBindingSurface",
+      "curves": 310925,
+      "max_root_surface_distance": 0.0002501691342331469,
+      "seconds": 0.59
+    },
+    {
+      "object": "FaceEdge_PlushGroom",
+      "surface": "Coat_FurBindingSurface",
+      "curves": 18000,
+      "max_root_surface_distance": 0.0006907787173986435,
+      "seconds": 0.03
+    },
+    {
+      "object": "Legs_PlushGroom",
+      "surface": "Coat_FurBindingSurface",
+      "curves": 150000,
+      "max_root_surface_distance": 0.0003501339233480394,
+      "seconds": 1.01
+    },
+    {
+      "object": "Legs_WispyPile",
+      "surface": "Coat_FurBindingSurface",
+      "curves": 137527,
+      "max_root_surface_distance": 0.00025012774858623743,
+      "seconds": 0.36
+    },
+    {
+      "object": "Arm_L_PlushGroom",
+      "surface": "Arm_L",
+      "curves": 62074,
+      "max_root_surface_distance": 0.0003501571191009134,
+      "seconds": 0.09
+    },
+    {
+      "object": "Arm_L_WispyPile",
+      "surface": "Arm_L",
+      "curves": 56000,
+      "max_root_surface_distance": 0.000250164041062817,
+      "seconds": 0.06
+    },
+    {
+      "object": "Arm_R_PlushGroom",
+      "surface": "Arm_R",
+      "curves": 61875,
+      "max_root_surface_distance": 0.0003501612227410078,
+      "seconds": 0.09
+    },
+    {
+      "object": "Arm_R_WispyPile",
+      "surface": "Arm_R",
+      "curves": 56000,
+      "max_root_surface_distance": 0.00025017053121700883,
+      "seconds": 0.07
+    }
+  ],
+  "rest_errors": {
+    "FaceEdge_PlushGroom": {
+      "max": 1.1920928955078125e-07,
+      "mean": 3.7251293716344946e-10
+    },
+    "Coat_PlushGroom": {
+      "max": 1.341104507446289e-07,
+      "mean": 1.149057293758915e-09
+    },
+    "Arm_L_PlushGroom": {
+      "max": 4.924151539853483e-07,
+      "mean": 1.0560416541238737e-07
+    },
+    "Arm_R_PlushGroom": {
+      "max": 4.924151539853483e-07,
+      "mean": 1.0637261027568456e-07
+    },
+    "Coat_WispyPile": {
+      "max": 2.3888378564151935e-07,
+      "mean": 2.5274617954096357e-09
+    },
+    "Arm_L_WispyPile": {
+      "max": 5.101335887047753e-07,
+      "mean": 1.0799371352732123e-07
+    },
+    "Arm_R_WispyPile": {
+      "max": 6.222923047971562e-07,
+      "mean": 1.0832837915586424e-07
+    },
+    "Legs_PlushGroom": {
+      "max": 3.4498683021411125e-07,
+      "mean": 3.141557058938815e-08
+    },
+    "Legs_WispyPile": {
+      "max": 6.570043638021161e-07,
+      "mean": 3.853799057651486e-08
+    }
+  }
+}

@@ -1,0 +1,103 @@
+{
+  "video": {
+    "path": "/Users/x/Documents/Codex/2026-10-30/referenced-chatgpt-conversation-this-is-an/outputs/plush-character/cream-mascot-walk-and-climb.mp4",
+    "size": [
+      1080,
+      1080
+    ],
+    "frames": 528,
+    "fps": 24.0,
+    "duration_seconds": 22.0,
+    "bytes": 4189239,
+    "encode_seconds": 5.57
+  },
+  "decoded_frames_checked": 17,
+  "maximum_mean_channel_error": 0.6216669524462735,
+  "comparisons": [
+    {
+      "frame": 12,
+      "mean_channel_error": 0.583281035665295,
+      "sha256": "8ae09dfeb0d1a716afc578d2417c5aacc89c3547f8fd06035c44970162371421"
+    },
+    {
+      "frame": 34,
+      "mean_channel_error": 0.5792289666209419,
+      "sha256": "0f4862369827a0011ea06cf2a29150e1f7118899dfac3939e1f99d57cec2fdf3"
+    },
+    {
+      "frame": 60,
+      "mean_channel_error": 0.565898776863283,
+      "sha256": "b8d3af97f7192eebc0155065e20ca41b30c7e50ad9040b4e41d47b7f5c2176fd"
+    },
+    {
+      "frame": 108,
+      "mean_channel_error": 0.5708802011888432,
+      "sha256": "7c433eb7a7ed98fa52c1890121580bc2862c9181eb49f25703c34544993a63d4"
+    },
+    {
+      "frame": 156,
+      "mean_channel_error": 0.5659370713305899,
+      "sha256": "14b01fcfea31cb5a227d9a60bb51f91a163d94377070ebb6117ffa3a0b41030c"
+    },
+    {
+      "frame": 204,
+      "mean_channel_error": 0.5712822930955647,
+      "sha256": "fe6201b8684b3354827ac1ba42ef39f4bef1cf9b290c61c7189ef0cd412439f1"
+    },
+    {
+      "frame": 252,
+      "mean_channel_error": 0.5804632487425697,
+      "sha256": "d92749741edd7b6afaf634172b7543596fb25c8266dd677f74313a441289bfe3"
+    },
+    {
+      "frame": 300,
+      "mean_channel_error": 0.5764609053497942,
+      "sha256": "3b77099aa35002255885948452ee8163dd37483a5752855dc48b52be5d04d919"
+    },
+    {
+      "frame": 348,
+      "mean_channel_error": 0.5709759373571103,
+      "sha256": "5f361a61655a2130de039ab2ef3cc029aad42493824cd199691cbc8615a500c5"
+    },
+    {
+      "frame": 396,
+      "mean_channel_error": 0.6216669524462735,
+      "sha256": "ddd13d11c95cda33c182155df6e383f3087e42aa55ae0e6e7d7ec8f0fea48a27"
+    },
+    {
+      "frame": 405,
+      "mean_channel_error": 0.6009313557384545,
+      "sha256": "64666f50b041b16f50fa1423c18f24a3ac2d2fe49c2f4bedcbca6f6d350b0801"
+    },
+    {
+      "frame": 415,
+      "mean_channel_error": 0.54944130086877,
+      "sha256": "b0107b78a08bf5e87f1ba35cfc8663f71f38e86f2158c9565b407045fc0ce2fb"
+    },
+    {
+      "frame": 430,
+      "mean_channel_error": 0.6053883744855967,
+      "sha256": "8294a805c859e927c7c03018ac7b833a0a1318a94553a31ad0d1e4d1063970d2"
+    },
+    {
+      "frame": 452,
+      "mean_channel_error": 0.599454732510288,
+      "sha256": "ba5e5aa2a0c1eb019bbfabafeace35871157670551bc6fe968109a2381db8db5"
+    },
+    {
+      "frame": 470,
+      "mean_channel_error": 0.5965792181069959,
+      "sha256": "d487a049dca539dccc77e71eb2c89cd3043f1224c19dd04575b12c86deb7c34c"
+    },
+    {
+      "frame": 495,
+      "mean_channel_error": 0.5858867741197988,
+      "sha256": "ace9fde8dd2ffdb540c02bacce611f294d1940fbbd1b02b3e1899f5cf2335bbb"
+    },
+    {
+      "frame": 520,
+      "mean_channel_error": 0.5881387174211249,
+      "sha256": "43228109c9acc8c2ac53bc63f1138c64e776847e9a55e9055ebb668df32d17bb"
+    }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "objects": [
+    "Coat",
+    "Coat_FurBindingSurface"
+  ],
+  "updated_deform_groups": [
+    "Body",
+    "Chest",
+    "Head",
+    "Leg.L",
+    "Shin.L",
+    "Foot.L",
+    "Leg.R",
+    "Shin.R",
+    "Foot.R"
+  ],
+  "source_vertices": 84257,
+  "proxy_vertices": 337755,
+  "method": "Soft-stump Body/Foot blend; thigh and shin skin weights zero",
+  "foot_height_fade_z": [
+    0.085,
+    0.34
+  ],
+  "full_foot_below_z": 0.075,
+  "xy_mask_transition_z": [
+    0.16,
+    0.28
+  ],
+  "rest_coordinate_error_before": 1.519626234052415e-07,
+  "rest_coordinate_error_after": 1.519626234052415e-07,
+  "preserve_volume_unchanged": false,
+  "proxy_weight_sum_error_before_bucketing": 0.00010001659393310547,
+  "preserved": "Geometry, materials, other groups, UVs, hair roots, bones and animation"
+}

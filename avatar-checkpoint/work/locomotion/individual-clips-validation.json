@@ -1,0 +1,254 @@
+[
+  {
+    "name": "Walk - Forward",
+    "frames": [
+      1,
+      48
+    ],
+    "frame_count": 48,
+    "duration_seconds": 2.0,
+    "channels": 116,
+    "keys": 5568,
+    "facial_float_channels": 4,
+    "root_start_local": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "root_end_local": [
+      0.0,
+      0.0,
+      0.20000000298023224
+    ],
+    "root_offset_removed": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "fake_user": true
+  },
+  {
+    "name": "Walk - Backward",
+    "frames": [
+      1,
+      48
+    ],
+    "frame_count": 48,
+    "duration_seconds": 2.0,
+    "channels": 116,
+    "keys": 5568,
+    "facial_float_channels": 4,
+    "root_start_local": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "root_end_local": [
+      0.0,
+      0.0,
+      -0.20000000298023224
+    ],
+    "root_offset_removed": [
+      0.0,
+      0.0,
+      0.20000000298023224
+    ],
+    "fake_user": true
+  },
+  {
+    "name": "Walk - Left",
+    "frames": [
+      1,
+      48
+    ],
+    "frame_count": 48,
+    "duration_seconds": 2.0,
+    "channels": 116,
+    "keys": 5568,
+    "facial_float_channels": 4,
+    "root_start_local": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "root_end_local": [
+      -0.20000000298023224,
+      0.0,
+      0.0
+    ],
+    "root_offset_removed": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "fake_user": true
+  },
+  {
+    "name": "Walk - Right",
+    "frames": [
+      1,
+      48
+    ],
+    "frame_count": 48,
+    "duration_seconds": 2.0,
+    "channels": 116,
+    "keys": 5568,
+    "facial_float_channels": 4,
+    "root_start_local": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "root_end_local": [
+      0.20000000298023224,
+      0.0,
+      0.0
+    ],
+    "root_offset_removed": [
+      -0.20000000298023224,
+      0.0,
+      0.0
+    ],
+    "fake_user": true
+  },
+  {
+    "name": "Walk - Forward left",
+    "frames": [
+      1,
+      48
+    ],
+    "frame_count": 48,
+    "duration_seconds": 2.0,
+    "channels": 116,
+    "keys": 5568,
+    "facial_float_channels": 4,
+    "root_start_local": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "root_end_local": [
+      -0.1414213627576828,
+      0.0,
+      0.1414213627576828
+    ],
+    "root_offset_removed": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "fake_user": true
+  },
+  {
+    "name": "Walk - Forward right",
+    "frames": [
+      1,
+      48
+    ],
+    "frame_count": 48,
+    "duration_seconds": 2.0,
+    "channels": 116,
+    "keys": 5568,
+    "facial_float_channels": 4,
+    "root_start_local": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "root_end_local": [
+      0.1414213627576828,
+      0.0,
+      0.1414213627576828
+    ],
+    "root_offset_removed": [
+      -0.1414213627576828,
+      0.0,
+      0.1414213627576828
+    ],
+    "fake_user": true
+  },
+  {
+    "name": "Walk - Back left",
+    "frames": [
+      1,
+      48
+    ],
+    "frame_count": 48,
+    "duration_seconds": 2.0,
+    "channels": 116,
+    "keys": 5568,
+    "facial_float_channels": 4,
+    "root_start_local": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "root_end_local": [
+      -0.1414213627576828,
+      0.0,
+      -0.1414213627576828
+    ],
+    "root_offset_removed": [
+      0.0,
+      0.0,
+      0.2828427255153656
+    ],
+    "fake_user": true
+  },
+  {
+    "name": "Walk - Back right",
+    "frames": [
+      1,
+      48
+    ],
+    "frame_count": 48,
+    "duration_seconds": 2.0,
+    "channels": 116,
+    "keys": 5568,
+    "facial_float_channels": 4,
+    "root_start_local": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "root_end_local": [
+      0.1414213627576828,
+      0.0,
+      -0.1414213627576828
+    ],
+    "root_offset_removed": [
+      -0.1414213627576828,
+      0.0,
+      0.1414213627576828
+    ],
+    "fake_user": true
+  },
+  {
+    "name": "Climb - Two steps",
+    "frames": [
+      1,
+      144
+    ],
+    "frame_count": 144,
+    "duration_seconds": 6.0,
+    "channels": 116,
+    "keys": 16704,
+    "facial_float_channels": 4,
+    "root_start_local": [
+      0.0,
+      -2.7939677238464355e-09,
+      1.490116086078075e-10
+    ],
+    "root_end_local": [
+      0.0,
+      0.10999999940395355,
+      0.7399999499320984
+    ],
+    "root_offset_removed": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "fake_user": true
+  }
+]

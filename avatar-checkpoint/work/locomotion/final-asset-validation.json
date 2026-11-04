@@ -1,0 +1,204 @@
+{
+  "evaluated_walk_loops": [
+    {
+      "action": "Walk loop - Back left",
+      "evaluated_ankle_error_m": 2.0061302211636692e-07,
+      "evaluated_loop_endpoint_matrix_error": 1.341104507446289e-07
+    },
+    {
+      "action": "Walk loop - Back right",
+      "evaluated_ankle_error_m": 1.9880628681371114e-07,
+      "evaluated_loop_endpoint_matrix_error": 9.313225746154785e-08
+    },
+    {
+      "action": "Walk loop - Backward",
+      "evaluated_ankle_error_m": 2.078498338842887e-07,
+      "evaluated_loop_endpoint_matrix_error": 1.1920928955078125e-07
+    },
+    {
+      "action": "Walk loop - Forward",
+      "evaluated_ankle_error_m": 2.8322007967156487e-07,
+      "evaluated_loop_endpoint_matrix_error": 1.1920928955078125e-07
+    },
+    {
+      "action": "Walk loop - Forward left",
+      "evaluated_ankle_error_m": 2.1390433937245e-07,
+      "evaluated_loop_endpoint_matrix_error": 1.2665987014770508e-07
+    },
+    {
+      "action": "Walk loop - Forward right",
+      "evaluated_ankle_error_m": 2.1348221275053028e-07,
+      "evaluated_loop_endpoint_matrix_error": 7.264316082000732e-08
+    },
+    {
+      "action": "Walk loop - Left",
+      "evaluated_ankle_error_m": 1.887807169455279e-07,
+      "evaluated_loop_endpoint_matrix_error": 1.862645149230957e-07
+    },
+    {
+      "action": "Walk loop - Right",
+      "evaluated_ankle_error_m": 1.887807169455279e-07,
+      "evaluated_loop_endpoint_matrix_error": 1.1175870895385742e-07
+    }
+  ],
+  "evaluated_soles": [
+    {
+      "frame": 1,
+      "side": "L",
+      "sole_minimum_z": 0.013000089675188065,
+      "target_bottom_z": 0.012999997615814211,
+      "error_m": 9.205937385320384e-08
+    },
+    {
+      "frame": 1,
+      "side": "R",
+      "sole_minimum_z": 0.013000089675188065,
+      "target_bottom_z": 0.012999997615814211,
+      "error_m": 9.205937385320384e-08
+    },
+    {
+      "frame": 12,
+      "side": "L",
+      "sole_minimum_z": 0.013000013306736946,
+      "target_bottom_z": 0.012999997615814211,
+      "error_m": 1.5690922734734603e-08
+    },
+    {
+      "frame": 12,
+      "side": "R",
+      "sole_minimum_z": 0.013000118546187878,
+      "target_bottom_z": 0.012999997615814211,
+      "error_m": 1.2093037366628367e-07
+    },
+    {
+      "frame": 24,
+      "side": "L",
+      "sole_minimum_z": 0.013000091537833214,
+      "target_bottom_z": 0.012999997615814211,
+      "error_m": 9.39220190024348e-08
+    },
+    {
+      "frame": 24,
+      "side": "R",
+      "sole_minimum_z": 0.013000021688640118,
+      "target_bottom_z": 0.012999997615814211,
+      "error_m": 2.407282590627391e-08
+    },
+    {
+      "frame": 396,
+      "side": "L",
+      "sole_minimum_z": 0.01300002634525299,
+      "target_bottom_z": 0.012999997615814211,
+      "error_m": 2.8729438779351302e-08
+    },
+    {
+      "frame": 396,
+      "side": "R",
+      "sole_minimum_z": 0.08199987560510635,
+      "target_bottom_z": 0.08200000333786012,
+      "error_m": 1.2773275376298798e-07
+    },
+    {
+      "frame": 405,
+      "side": "L",
+      "sole_minimum_z": 0.013000046834349632,
+      "target_bottom_z": 0.012999997615814211,
+      "error_m": 4.921853542089183e-08
+    },
+    {
+      "frame": 405,
+      "side": "R",
+      "sole_minimum_z": 0.0683567225933075,
+      "target_bottom_z": 0.0683567609190941,
+      "error_m": 3.8325786599902045e-08
+    },
+    {
+      "frame": 415,
+      "side": "L",
+      "sole_minimum_z": 0.08199989795684814,
+      "target_bottom_z": 0.08200000333786012,
+      "error_m": 1.053810119722165e-07
+    },
+    {
+      "frame": 415,
+      "side": "R",
+      "sole_minimum_z": 0.0679999515414238,
+      "target_bottom_z": 0.067999997317791,
+      "error_m": 4.5776367196825873e-08
+    },
+    {
+      "frame": 430,
+      "side": "L",
+      "sole_minimum_z": 0.06799985468387604,
+      "target_bottom_z": 0.067999997317791,
+      "error_m": 1.4263391495683564e-07
+    },
+    {
+      "frame": 430,
+      "side": "R",
+      "sole_minimum_z": 0.0679999440908432,
+      "target_bottom_z": 0.067999997317791,
+      "error_m": 5.32269477937497e-08
+    },
+    {
+      "frame": 452,
+      "side": "L",
+      "sole_minimum_z": 0.0679999366402626,
+      "target_bottom_z": 0.067999997317791,
+      "error_m": 6.067752839067353e-08
+    },
+    {
+      "frame": 452,
+      "side": "R",
+      "sole_minimum_z": 0.1229998990893364,
+      "target_bottom_z": 0.12299999701976777,
+      "error_m": 9.793043137529267e-08
+    },
+    {
+      "frame": 470,
+      "side": "L",
+      "sole_minimum_z": 0.12309208512306213,
+      "target_bottom_z": 0.1230922054052353,
+      "error_m": 1.2028217316606415e-07
+    },
+    {
+      "frame": 470,
+      "side": "R",
+      "sole_minimum_z": 0.1229998841881752,
+      "target_bottom_z": 0.12299999701976777,
+      "error_m": 1.1283159256914033e-07
+    },
+    {
+      "frame": 495,
+      "side": "L",
+      "sole_minimum_z": 0.12299984693527222,
+      "target_bottom_z": 0.12299999701976777,
+      "error_m": 1.5008449555375947e-07
+    },
+    {
+      "frame": 495,
+      "side": "R",
+      "sole_minimum_z": 0.12299984693527222,
+      "target_bottom_z": 0.12299999701976777,
+      "error_m": 1.5008449555375947e-07
+    },
+    {
+      "frame": 520,
+      "side": "L",
+      "sole_minimum_z": 0.12299984693527222,
+      "target_bottom_z": 0.12299999701976777,
+      "error_m": 1.5008449555375947e-07
+    },
+    {
+      "frame": 520,
+      "side": "R",
+      "sole_minimum_z": 0.12299984693527222,
+      "target_bottom_z": 0.12299999701976777,
+      "error_m": 1.5008449555375947e-07
+    }
+  ],
+  "active_action": "Showcase - eight directions and stair climb",
+  "new_reusable_actions": 17,
+  "combined_frames": 528,
+  "fps": 24
+}

@@ -1,0 +1,33 @@
+{
+  "objects": [
+    "Coat",
+    "Coat_FurBindingSurface"
+  ],
+  "updated_deform_groups": [
+    "Body",
+    "Chest",
+    "Head",
+    "Leg.L",
+    "Shin.L",
+    "Foot.L",
+    "Leg.R",
+    "Shin.R",
+    "Foot.R"
+  ],
+  "leg_fade_z": [
+    0.27,
+    0.46
+  ],
+  "old_leg_fade_z": [
+    0.32,
+    0.62
+  ],
+  "source_vertices": 84257,
+  "proxy_vertices": 337755,
+  "rest_coordinate_error_before": 1.60663266873716e-07,
+  "rest_coordinate_error_after": 1.519626234052415e-07,
+  "proxy_weight_sum_error_before_bucketing": 0.00010013580322265625,
+  "weight_bucket_step": 0.0001,
+  "skinning": "Existing linear blend skinning retained",
+  "preserved": "Geometry, materials, other groups, UVs and all hair-root data"
+}

@@ -1,0 +1,51 @@
+{
+  "providers": {
+    "baseten-hackathon": {
+      "name": "Baseten Meta Hackathon",
+      "baseUrl": "https://inference.baseten.co/v1",
+      "api": "openai-completions",
+      "apiKey": "BASETEN_API_KEY",
+      "authHeader": true,
+      "models": [
+        {
+          "id": "meta-models/muse-spark-open-1026",
+          "name": "Muse Spark Open (Meta Hackathon)",
+          "reasoning": true,
+          "input": [
+            "text",
+            "image"
+          ],
+          "contextWindow": 1048576,
+          "maxTokens": 32768,
+          "thinkingLevelMap": {
+            "off": null,
+            "minimal": null,
+            "low": "low",
+            "medium": "medium",
+            "high": "high",
+            "xhigh": "xhigh",
+            "max": null
+          },
+          "cost": {
+            "input": 1.25,
+            "output": 4.25,
+            "cacheRead": 0.15,
+            "cacheWrite": 1.25
+          },
+          "compat": {
+            "thinkingFormat": "openai",
+            "supportsReasoningEffort": true,
+            "supportsDeveloperRole": false,
+            "supportsStore": false,
+            "maxTokensField": "max_tokens"
+          },
+          "inputLimits": {
+            "images": {
+              "maxPerRequest": 8
+            }
+          }
+        }
+      ]
+    }
+  }
+}

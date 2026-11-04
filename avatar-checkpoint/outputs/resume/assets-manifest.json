@@ -1,0 +1,176 @@
+{
+  "created_utc": "2026-11-04T21:27:21.389217+00:00",
+  "algorithm": "SHA-256",
+  "files": [
+    {
+      "path": "outputs/plush-character/checkpoints/before-fine-fiber-polish.blend",
+      "bytes": 71996543,
+      "sha256": "f2b732878e27e97e3accb4b3bcaaf4889e1bbe9064ec9211a714640afb71aaf6"
+    },
+    {
+      "path": "outputs/plush-character/checkpoints/before-fine-fiber-polish.png",
+      "bytes": 1216829,
+      "sha256": "8af3622b5b23d35bce29ddbf99681a06944f3dd06d53a11580605af35547379e"
+    },
+    {
+      "path": "outputs/plush-character/checkpoints/before-integral-legs.blend",
+      "bytes": 122981133,
+      "sha256": "f4d5895f1b0c22fa2eb1f4fc0f02361083fafcc65d28e1e695df36948bb80e4a"
+    },
+    {
+      "path": "outputs/plush-character/checkpoints/before-integral-legs.png",
+      "bytes": 1936782,
+      "sha256": "16dd350ad74ef4212056511db7488d2c85719198c7038dbcaa73fc7d5ced33db"
+    },
+    {
+      "path": "outputs/plush-character/checkpoints/before-new-reference-refinement.blend",
+      "bytes": 65277161,
+      "sha256": "6016c5d003cbc338127379931f6cbce5f27cb25528bdcbbc55528312fce6ba9a"
+    },
+    {
+      "path": "outputs/plush-character/checkpoints/before-new-reference-refinement.png",
+      "bytes": 1436831,
+      "sha256": "d26f0e322325930547263331f4f5bc07a6ec1e7f710a02246d6f17ead8617482"
+    },
+    {
+      "path": "outputs/plush-character/checkpoints/before-plush-fur.blend",
+      "bytes": 966361,
+      "sha256": "d8cee7251b5bc0d4cf147a7153a9816dab2856875bdfdeb818d77abaedb14f28"
+    },
+    {
+      "path": "outputs/plush-character/checkpoints/before-plush-fur.png",
+      "bytes": 986105,
+      "sha256": "8b2526ffafc61f503c1a05d5ef42b4e5d8f991568452637ec8db021aec615b52"
+    },
+    {
+      "path": "outputs/plush-character/checkpoints/before-shorter-recess.blend",
+      "bytes": 965558,
+      "sha256": "34b030844aa27e153ad4835d688e3940957d9c3413692603fc44bf890cfb01c1"
+    },
+    {
+      "path": "outputs/plush-character/checkpoints/before-shorter-recess.png",
+      "bytes": 387268,
+      "sha256": "09af1ad8d6f55d6109d9860fc6e7bf9cbae5b54c9fe16824f0fa123ed7ce788c"
+    },
+    {
+      "path": "outputs/plush-character/checkpoints/before-upper-corner-refinement.blend",
+      "bytes": 964975,
+      "sha256": "2267bf7d7e354d146b9ad78650c17fa3707c293b08cd086fafe7d804fccca891"
+    },
+    {
+      "path": "outputs/plush-character/checkpoints/before-upper-corner-refinement.png",
+      "bytes": 987899,
+      "sha256": "7c04401bfd58eb8cdc7b3641d11569479d98bf36d9adf65e3b24534f9a1ed97f"
+    },
+    {
+      "path": "outputs/plush-character/checkpoints/recessed-face-approved-direction.blend",
+      "bytes": 908952,
+      "sha256": "66b54c74013b5a40fd7b211afba6a53000443fd2116d56f504b4261eaf6bf2e3"
+    },
+    {
+      "path": "outputs/plush-character/checkpoints/recessed-face-approved-direction.png",
+      "bytes": 384079,
+      "sha256": "5e54681c1b802834909e3066f6af4761548e40449bdf02bae473d18273f694e0"
+    },
+    {
+      "path": "outputs/plush-character/cream-mascot-locomotion.blend",
+      "bytes": 159598306,
+      "sha256": "69551fb11f5ea07bbd2e152968f032c5de2bbd82109c2f769a4dc72ec06d9825"
+    },
+    {
+      "path": "outputs/plush-character/cream-mascot-rigged.blend",
+      "bytes": 157995780,
+      "sha256": "a7d23c991bd144d943c3b68f7cfa41702f60003a4c30b2f1b05b464e5694d086"
+    },
+    {
+      "path": "outputs/plush-character/cream-mascot-showcase-poster.png",
+      "bytes": 836914,
+      "sha256": "d76f1a65b89d8a12cb7b2b7d7b5473b5decfb7bebc7f09fbf1aa3b3314df4799"
+    },
+    {
+      "path": "outputs/plush-character/cream-mascot-showcase.blend",
+      "bytes": 158078423,
+      "sha256": "e7e8b15d2ecd3b63ac7386643898f3f16103060e1f1a6d5590295ea8c2abae11"
+    },
+    {
+      "path": "outputs/plush-character/cream-mascot-showcase.mp4",
+      "bytes": 3023105,
+      "sha256": "68ff6471d07813f63df62c41f5dcfe0bcd0fbd7acd3b9107aa80ec49493f3155"
+    },
+    {
+      "path": "outputs/plush-character/cream-mascot-three-quarter.png",
+      "bytes": 1351670,
+      "sha256": "0a7b815c09ddff45e2865bdeb18abed73063fb6405a50da0b69d29670a20092c"
+    },
+    {
+      "path": "outputs/plush-character/cream-mascot-walk-and-climb-poster.png",
+      "bytes": 746383,
+      "sha256": "dc56e3e8a777bdb6f6e3698075897078e69b108c0f2667fcc7e9105c11fdc2fe"
+    },
+    {
+      "path": "outputs/plush-character/cream-mascot-walk-and-climb.mp4",
+      "bytes": 4189239,
+      "sha256": "9a35669975f5967a794ab2e535e9f1d4a4b9a67b9791490b819b6eb08c5e8a8b"
+    },
+    {
+      "path": "outputs/plush-character/cream-mascot.blend",
+      "bytes": 127247911,
+      "sha256": "6be4921f60956339a8ec9bd5963ceff7784e29f97bad612cc577857ebb0eb3f4"
+    },
+    {
+      "path": "outputs/plush-character/cream-mascot.png",
+      "bytes": 1953850,
+      "sha256": "91bfcb9edfa081f671702c0e1f7de6538e5f3646c25f36d8b6c5b496291e75d5"
+    },
+    {
+      "path": "outputs/plush-character/fur-detail.png",
+      "bytes": 1145222,
+      "sha256": "28daaeb4282e18f0c23884db2ab136eda1e60623674075f5c072dae28dfb3761"
+    },
+    {
+      "path": "outputs/plush-character/legs-detail.png",
+      "bytes": 841260,
+      "sha256": "32f6412861cc6132cb32197c61ea49d62a121f2e572b9047db034140aa76ad0b"
+    },
+    {
+      "path": "outputs/plush-character/reference.png",
+      "bytes": 2008274,
+      "sha256": "b2b380a9fe80ccb18ceb64afcb66e059699ab5ac2b222d2daa7d91d6b5bc7541"
+    },
+    {
+      "path": "outputs/plush-character/references/blue-mascot.png",
+      "bytes": 642912,
+      "sha256": "5ceaeb28905677e07322c4bb5af77c2c65a27b1aca4d84107f3559796c32699c"
+    },
+    {
+      "path": "outputs/plush-character/references/caped-mascot.png",
+      "bytes": 247510,
+      "sha256": "ef8f3694add36d9e2bcc18cfcfa67d73f22a5550f98d6cf8e8f04efed0d851c8"
+    },
+    {
+      "path": "outputs/plush-character/references/cream-mascot.png",
+      "bytes": 863346,
+      "sha256": "d698dd99c299933f4b3dd09280b040e75e56fd4bbb976274df727b8cd7fb3d76"
+    },
+    {
+      "path": "outputs/plush-character/rig-step-preview.png",
+      "bytes": 826844,
+      "sha256": "799c479978734d622e82e26b72414638f23dd38f468a8238aaf8b8932d0eefe3"
+    },
+    {
+      "path": "outputs/plush-character/rig-wave-preview.png",
+      "bytes": 831687,
+      "sha256": "73b48587640f311ae5989460128382de203bb21b590adbdd737e8b3efc4fd8da"
+    },
+    {
+      "path": "outputs/resume/RESUME.md",
+      "bytes": 8211,
+      "sha256": "57ffd22cafecdf075ff232a74ff5e00a5e008f170009dcf83afffa3c51aad9cc"
+    },
+    {
+      "path": "outputs/resume/blender-checkpoint.json",
+      "bytes": 2816,
+      "sha256": "771ec94ad33f6e023b8ad4c429caac4ebb3f74e8a13074ca3a22cd2ee7c6cb50"
+    }
+  ]
+}
