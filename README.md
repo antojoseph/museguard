@@ -1,8 +1,17 @@
 # Muse Guard
 
-Muse Guard is a macOS companion with a live 3D Muse avatar, local Muse Glimmer inference, and a Chrome extension. It watches the app you are using, checks browser content in the background, and brings the avatar forward to explain confirmed high-risk findings. Chat can also use fresh context from the current app.
+Muse Guard is a macOS companion with a live 3D Muse avatar, local Muse Glimmer inference, and a Chrome extension. It checks the app or tab you are using and brings the avatar forward to explain medium and high risk findings. You can also ask Muse about the current app or page.
 
-This is a hackathon source release. Building the renderer requires Unreal Engine 5.8; the resulting app bundles its cooked standalone renderer and runs without Unreal installed. The approved avatar is included in this repository and does not require a second checkout.
+## Install Muse Guard
+
+Use the arm64 installer on an Apple Silicon Mac with macOS 14 or newer. We recommend at least 32 GB of unified memory and 22 GB of free storage for the local model. The installer includes the standalone 3D renderer, the inference runtime, and the Chrome integration. Unreal Editor, Python, Homebrew, and Xcode are only relevant to the source workflow.
+
+1. Open `MuseGuard-0.1.0-arm64.pkg` and install the app. Open **Muse Guard** from Applications to see **Get started**.
+2. Choose **Download model**. Muse downloads 19.8 GB of pinned model files from the official [Muse Glimmer repository](https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF), verifies each download, and starts the model locally. You can pause and resume the download. An existing complete installation is reused.
+3. Choose **Open Chrome setup**. Muse registers its local Chrome connection and copies the bundled extension folder path. In Chrome, enable **Developer mode**, choose **Load unpacked**, press **⌘⇧G**, and paste the copied path. If you previously loaded a development copy, remove that unpacked entry before loading the bundled one.
+4. For checks in other Mac apps, grant **Accessibility** under **Screen access**. You can also enable **Screen Recording** for visual checks when text is insufficient. Chrome text checks work without either permission.
+
+The hackathon installer is currently unsigned. Distribution builds can use Developer ID signing and notarization when the required Apple credentials are available. See [installer packaging](docs/installer.md) and the [three-minute demo guide](docs/demo-recording.md).
 
 ## Build from source
 
@@ -24,7 +33,7 @@ open build/Release/MuseGuard.app
 
 Setup downloads the pinned official llama.cpp runtime, Muse Glimmer Q4_K_M target, vision projector, and matching DFlash draft. The files occupy about 20 GB; inference needs additional memory. The current setup was tested on an M5 Max with 128 GB unified memory. DFlash uses at most three draft tokens and both models run on Metal. The installation verifies the draft checksum.
 
-The release build uses Swift optimization and excludes Studio, Mock Lab, pose previews, motion recording, and the screenshot-test override. `MUSE_CODESIGN_IDENTITY` selects a signing identity; otherwise the builder uses an available Apple Development identity or local ad-hoc signing. Ad-hoc rebuilds can require renewal of macOS screen permissions: remove the old Muse Guard entry and add the rebuilt release app in both Accessibility and Screen Recording settings, then restart Muse. Switching an old entry off and on may retain the previous signature. This workflow does not notarize or distribute the app.
+The release build uses Swift optimization and excludes Studio, Mock Lab, pose previews, motion recording, and the screenshot-test override. `MUSE_CODESIGN_IDENTITY` selects a signing identity; otherwise the builder uses an available Apple Development identity or local ad-hoc signing. Ad-hoc rebuilds can require renewal of macOS screen permissions: remove the old Muse Guard entry and add the rebuilt release app in both Accessibility and Screen Recording settings, then restart Muse. Switching an old entry off and on may retain the previous signature. Use the installer builder to package this app for distribution.
 
 The release renderer is packaged inside `MuseGuard.app/Contents/Helpers/MuseRenderer.app`. Its writable frame/command bridge stays under Application Support; model files and the private local credential live under `~/Library/Application Support/MuseGuard/LocalModel`. The model listens only on `127.0.0.1:8787`. The existing `com.sentinelpet.app` bundle identity and `SentinelPet` executable name are retained for permission continuity.
 
@@ -32,7 +41,7 @@ Readiness checks the expected target path and the running server's actual specul
 
 ## Connect Chrome
 
-Prepare the host package, review it, and register it for this user:
+The installer registers the native host from **Open Chrome setup**. For a source checkout, prepare the development host package, review it, and register it for this user:
 
 ```sh
 python3 scripts/install-browser-host.py

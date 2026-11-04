@@ -13,11 +13,11 @@ import Foundation
         let screenshotText = """
         Why is this message in spam? This message is similar to messages that were identified as spam in the past.
         Translated: Japanese → English. Translate can make mistakes, so verify translations.
-        Thank you very much for contacting us through the Tendent International Co., Ltd. website.
+        Thank you very much for contacting us through the Example International website.
         We will contact you shortly after reviewing your message. Please wait a moment.
         The information you entered is shown below.
-        Name: Good afternoon user! You got +110475 dollars. Funds transfer initiated: Verify your request. Continue --- www.id4201.pages.dev/v3fu0q
-        Visible link destinations: www.id4201.pages.dev/v3fu0q → https://www.id4201.pages.dev/v3fu0q
+        Name: Good afternoon user! You got +110475 dollars. Funds transfer initiated: Verify your request. Continue --- payout-verify.example.test/claim
+        Visible link destinations: payout-verify.example.test/claim → https://payout-verify.example.test/claim
         Visible forms:
         """
         let mainText = "Automatic reply: Thank you for contacting us Why is this message in spam? This message is similar to messages that were identified as spam in the past. Thank you for contacting us through the Example International website. We will contact you shortly after reviewing your message. The information you entered is shown below. Name: Good afternoon! You got +110475 dollars. Funds transfer initiated: Verify your request. Continue — payout-verify.example.test/verify Inquiry details: Verify this unexpected funds transfer using the external link above."
@@ -33,7 +33,7 @@ import Foundation
                 expectsAlert: true),
             Scenario(name: "unauthenticated signature request with stripped links",
                 page: .init(url: "https://mail.google.com/mail/u/1/", title: "Finish by adding your signature.", text: """
-                DocuSign: Sign Document <DocuSign.Security@ydocs.net>
+                DocuSign: Sign Document <signing-security@unverified.example.test>
                 To: reader@example.test
                 Be careful with this message. This message isn't authenticated and sender can't be verified. Use caution when clicking links, downloading attachments or replying with personal info.
                 docusign. Please review your document. You have a shared document to review. Please add your signature. It only takes 2 minutes. Expires November 1, 2026.
@@ -60,7 +60,7 @@ import Foundation
                 """), expectsAlert: false),
             Scenario(name: "security article quotes the same payout lure",
                 page: .init(url: "https://training.example.test/phishing", title: "Recognizing email scams", text: """
-                Read-only security training article. Quoted scam example: You got +110475 dollars. Funds transfer initiated: Verify your request. Continue --- www.id4201.pages.dev/v3fu0q.
+                Read-only security training article. Quoted scam example: You got +110475 dollars. Funds transfer initiated: Verify your request. Continue --- payout-verify.example.test/claim.
                 This example is not an offer or pending action directed at the reader. Never follow unsolicited payout verification links. This article explains how to recognize that scam.
                 """), expectsAlert: false),
             Scenario(name: "spam label on an ordinary newsletter",

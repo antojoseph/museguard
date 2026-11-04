@@ -6,17 +6,60 @@ final class LocalModelService: ObservableObject {
     static let shared = LocalModelService()
     @Published private(set) var isReady = false
     @Published private(set) var status = "Local model stopped"
+    @Published private(set) var installationMessage: String?
+    @Published private(set) var installationProgress: Double?
     private var process: Process?
     private var healthTask: Task<Void, Never>?
+    private var installationTask: Task<Void, Never>?
     private var startupID = UUID()
     private var log: FileHandle?
     var canRestart: Bool { process?.isRunning == true }
+    var supportsInstallation: Bool { LocalModelProvisioning.bundledServer != nil }
+    var isInstalling: Bool { installationProgress != nil }
+    private var serverExecutable: URL? {
+        if let bundled = LocalModelProvisioning.bundledServer { return bundled }
+        let legacy = LocalModelConfiguration.directory.appendingPathComponent("runtime/llama-server")
+        return FileManager.default.isExecutableFile(atPath: legacy.path) ? legacy : nil
+    }
     var isInstalled: Bool {
         let root = LocalModelConfiguration.directory
-        return LocalModelConfiguration.requiredFiles.allSatisfy { FileManager.default.fileExists(atPath: root.appendingPathComponent($0).path) }
+        return serverExecutable != nil && LocalModelProvisioning.weightsReady(in: root)
+            && FileManager.default.isReadableFile(atPath: root.appendingPathComponent("api-key").path)
+    }
+    func installModel() {
+        guard supportsInstallation, installationTask == nil else { return }
+        installationMessage = "Preparing download…"
+        installationProgress = 0
+        installationTask = Task { [weak self] in
+            guard let self else { return }
+            defer { self.installationProgress = nil; self.installationTask = nil }
+            do {
+                try await LocalModelProvisioning.install(in: LocalModelConfiguration.directory) { [weak self] message, bytes in
+                    await self?.updateInstallation(message: message, bytes: bytes)
+                }
+                try Task.checkCancellation()
+                self.installationMessage = "Model files verified. Starting Muse Glimmer…"
+                self.installationTask = nil
+                self.start()
+            } catch is CancellationError {
+                self.installationMessage = "Download paused. You can resume from here."
+            } catch {
+                self.installationMessage = error.localizedDescription
+            }
+        }
+    }
+    private func updateInstallation(message: String, bytes: Int64) {
+        if installationMessage != message { installationMessage = message }
+        installationProgress = Double(bytes) / Double(LocalModelProvisioning.totalSize)
+    }
+    func pauseInstallation() { installationTask?.cancel() }
+    func finishInstallationOnQuit() async {
+        let task = installationTask
+        task?.cancel()
+        await task?.value
     }
     func start() {
-        guard healthTask == nil else { return }
+        guard healthTask == nil, installationTask == nil else { return }
         let id = UUID(); startupID = id
         healthTask = Task { [weak self] in
             guard let self else { return }
@@ -26,7 +69,10 @@ final class LocalModelService: ObservableObject {
             if existing == .ready { self.status = "Muse Glimmer · on this Mac"; self.isReady = true; return }
             self.isReady = false
             if existing == .incompatible { self.status = self.canRestart ? "Restart the local model to apply the current settings." : "Another model server uses different settings. Close it, then retry."; return }
-            guard self.isInstalled else { self.status = "Run scripts/setup-local-model.sh to install Muse Glimmer and its draft model"; return }
+            guard self.isInstalled, let executable = self.serverExecutable else {
+                self.status = self.supportsInstallation ? "Download Muse Glimmer in Settings" : "Run scripts/setup-local-model.sh to install Muse Glimmer and its draft model"
+                return
+            }
             guard self.process == nil else {
                 self.status = "Muse Glimmer is not responding yet; check model logs"
                 return
@@ -40,7 +86,7 @@ final class LocalModelService: ObservableObject {
             let root = LocalModelConfiguration.directory
             do {
                 let task = Process()
-                task.executableURL = root.appendingPathComponent("runtime/llama-server")
+                task.executableURL = executable
                 task.arguments = LocalModelConfiguration.serverArguments(directory: root)
                 let logURL = root.appendingPathComponent("server.log")
                 FileManager.default.createFile(atPath: logURL.path, contents: nil, attributes: [.posixPermissions: 0o600])

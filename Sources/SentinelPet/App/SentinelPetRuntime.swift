@@ -20,6 +20,7 @@ final class SentinelPetRuntime: ObservableObject {
     #endif
     @Published private(set) var downloadStatus = DownloadInspector.installedScanner() == nil ? "Download antivirus unavailable · set up the local scanner" : "Local download scanner installed"
     @Published private(set) var browserStatus = "Browser guard stopped"
+    var chromeConnected: Bool { monitoringControl.browserConnected }
     private let browserBridge = BrowserBridgeServer()
     private let browserChatContext = BrowserChatContextBroker()
     private let downloadInspector = DownloadInspector()

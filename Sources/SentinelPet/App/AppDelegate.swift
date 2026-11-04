@@ -19,6 +19,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let overlay = PetOverlayController(viewModel: runtime.petViewModel)
         overlay.show()
         self.overlay = overlay
+        if LocalModelService.shared.supportsInstallation,
+           !UserDefaults.standard.bool(forKey: "museFirstRunSetupShown") {
+            UserDefaults.standard.set(true, forKey: "museFirstRunSetupShown")
+            runtime.showSettings()
+        }
         #if MUSE_DEVELOPMENT
         if ProcessInfo.processInfo.arguments.contains("--chat-corner-check") { overlay.showChatCornerCheck() }
         if ProcessInfo.processInfo.arguments.contains("--mock-lab") { MockLab.shared.show() }
@@ -30,6 +35,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         runtime.stopBrowserBridge()
         UnrealCharacterRenderer.shared.stop()
         LocalModelService.shared.stop()
+    }
+
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard LocalModelService.shared.isInstalling else { return .terminateNow }
+        Task {
+            await LocalModelService.shared.finishInstallationOnQuit()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
+        return .terminateLater
     }
 
     func applicationDidBecomeActive(_ notification: Notification) {

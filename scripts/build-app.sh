@@ -70,6 +70,7 @@ fi
 cp "$MUSE_ROOT/Sources/SentinelPet/Secrets/bip39-english.txt" "$contents/Resources/"
 cp "$MUSE_ROOT/Sources/SentinelPet/Secrets/BIP39_ATTRIBUTION.txt" "$contents/Resources/"
 cp "$MUSE_ROOT/Configuration/Info.plist" "$contents/Info.plist"
+/usr/bin/plutil -insert MuseBuildConfiguration -string "$configuration" "$contents/Info.plist"
 
 sources=()
 while IFS= read -r -d '' source; do sources+=("$source"); done < <(

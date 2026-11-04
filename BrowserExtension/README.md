@@ -56,7 +56,7 @@ The extension never copies form values, submits a form itself, or replays a clic
 
 ## Install and update
 
-Build the desktop app and register the native host using the repository's browser-bridge setup instructions. Load **this folder** as an unpacked extension from `chrome://extensions`. Its public manifest key provides a stable development ID; the host installer derives its exact allowed origin from that key. No private extension signing key is included.
+For the installed app, use Muse Guard's Chrome setup to register the bundled host and locate the bundled extension folder. In Chrome, open `chrome://extensions`, enable **Developer mode**, and select that folder with **Load unpacked**. For source development, [register the development host](../BrowserNativeHost/README.md#source-development) and select **this folder** instead. Both folders use the same stable ID derived from the public manifest key.
 
 After loading, open a normal website and the extension's toolbar popup. It should say **Muse is ready** once the desktop app and local model are available, and monitoring should show **Active**. No site approval button is needed. A preserved disabled setting instead shows **Paused** with Resume available.
 
