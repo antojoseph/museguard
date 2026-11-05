@@ -8,10 +8,10 @@
     <key>CFBundleDisplayName</key><string>Muse Guard</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>0.1.0</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleVersion</key><string>2</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSUIElement</key><true/>
     <key>NSScreenCaptureUsageDescription</key>
-    <string>Muse Guard analyzes screen images locally when you request a screenshot or explicitly enable continuous screen monitoring.</string>
+    <string>Muse Guard analyzes images of your current window when text is insufficient for safety checks or your question. Analysis stays on this Mac.</string>
 </dict>
 </plist>

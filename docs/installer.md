@@ -1,6 +1,6 @@
 # Muse Guard installer
 
-The installer places Muse Guard in Applications on Apple Silicon Macs running macOS 14 or newer. It includes the cooked 3D renderer, the pinned llama.cpp server, and Chrome’s native host and unpacked extension. First launch offers a resumable 19.8 GB model download and optional Chrome setup. See the [installation steps](../README.md#install-muse-guard).
+The installer places Muse Guard in Applications on Apple Silicon Macs running macOS 14 or newer. It includes the cooked 3D renderer, the pinned llama.cpp server, and Chrome’s native host and unpacked extension. On first launch, **Get started** offers optional screen access for desktop checks, a resumable 19.8 GB model download, and Chrome setup. The installed app requests access when the user chooses a permission. Analysis runs on the Mac. [Installation steps](../README.md#install-muse-guard)
 
 The package carries the avatar, glasses, Unreal Engine, and llama.cpp credits under `MuseGuard.app/Contents/Resources/Attribution`. The installer payload consists of the app bundle. Muse creates its local API credential on the destination Mac and registers the Chrome host when the user selects **Open Chrome setup**.
 

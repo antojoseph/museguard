@@ -8,7 +8,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var overlay: PetOverlayController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        // Agent app: never bounce into the foreground or show in the Dock.
+        // Keep the companion out of the Dock. First-run setup can take focus.
         NSApp.setActivationPolicy(.accessory)
 
         runtime.refreshAccessibilityStatus()
@@ -19,9 +19,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let overlay = PetOverlayController(viewModel: runtime.petViewModel)
         overlay.show()
         self.overlay = overlay
+        // Show access choices once at the installed location. Launching a
+        // different copy for verification must not mark the install as set up.
+        let appPath = Bundle.main.bundleURL.standardizedFileURL.path
         if LocalModelService.shared.supportsInstallation,
-           !UserDefaults.standard.bool(forKey: "museFirstRunSetupShown") {
-            UserDefaults.standard.set(true, forKey: "museFirstRunSetupShown")
+           UserDefaults.standard.string(forKey: "museFirstRunPermissionsPath") != appPath {
+            UserDefaults.standard.set(appPath, forKey: "museFirstRunPermissionsPath")
             runtime.showSettings()
         }
         #if MUSE_DEVELOPMENT

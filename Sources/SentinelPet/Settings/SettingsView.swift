@@ -13,9 +13,11 @@ struct SettingsView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
                 Text("Muse Guard Settings").font(.title2.bold())
-                Text("Muse watches the app you’re using and speaks up for serious risks. Everything is analyzed on this Mac.")
+                Text("Muse analyzes window text, images, and browser content on this Mac. It downloads the model files during setup.")
                     .foregroundStyle(.secondary)
+                Link("View source code on GitHub", destination: URL(string: "https://github.com/antojoseph/museguard/tree/app")!)
                 if modelService.supportsInstallation { setup }
+                else { GroupBox("Screen access") { screenAccess.padding(8) } }
                 GroupBox("Monitoring") {
                     VStack(alignment: .leading, spacing: 10) {
                         Label(runtime.monitoringStatus, systemImage: runtime.monitoringPaused ? "pause.circle" : "shield.lefthalf.filled")
@@ -39,32 +41,6 @@ struct SettingsView: View {
                             Text("Keep here").tag(false)
                         }.pickerStyle(.segmented)
                         Text("Drag Muse to choose a spot. Muse naps when you are inactive; monitoring continues.")
-                            .font(.callout).foregroundStyle(.secondary)
-                    }.padding(8)
-                }
-                GroupBox("Screen access") {
-                    VStack(alignment: .leading, spacing: 12) {
-                        Text("Chrome text checks and browser chat work through the extension without screen access.")
-                            .font(.callout).foregroundStyle(.secondary)
-                        HStack {
-                            Label("Screen Recording", systemImage: "rectangle.dashed.badge.record")
-                            Spacer()
-                            if runtime.screenCaptureTrusted {
-                                Text("Enabled").foregroundStyle(.secondary)
-                            } else {
-                                Button("Enable…") { runtime.requestScreenCapturePermission() }
-                            }
-                        }
-                        HStack {
-                            Label("Accessibility", systemImage: "accessibility")
-                            Spacer()
-                            if runtime.accessibilityTrusted {
-                                Text("Enabled").foregroundStyle(.secondary)
-                            } else {
-                                Button("Enable…") { runtime.requestAccessibilityPermission() }
-                            }
-                        }
-                        Text("Accessibility lets Muse read other apps’ window text. Screen Recording supplies visual context when text is missing or you ask for a closer look.")
                             .font(.callout).foregroundStyle(.secondary)
                     }.padding(8)
                 }
@@ -107,7 +83,11 @@ struct SettingsView: View {
     private var setup: some View {
         GroupBox("Get started") {
             VStack(alignment: .leading, spacing: 12) {
-                Label("1. Prepare the local model", systemImage: modelService.isReady ? "checkmark.circle.fill" : "cpu")
+                Label("1. Choose screen access", systemImage: "lock.shield")
+                    .font(.headline)
+                screenAccess
+                Divider()
+                Label("2. Prepare the local model", systemImage: modelService.isReady ? "checkmark.circle.fill" : "cpu")
                     .font(.headline)
                 Text(modelService.isReady ? "Muse Glimmer is ready on this Mac." : modelService.status)
                     .foregroundStyle(.secondary)
@@ -129,7 +109,7 @@ struct SettingsView: View {
                     Button("Retry local model") { modelService.start() }
                 }
                 Divider()
-                Label("2. Connect Chrome", systemImage: runtime.chromeConnected ? "checkmark.circle.fill" : "globe")
+                Label("3. Connect Chrome", systemImage: runtime.chromeConnected ? "checkmark.circle.fill" : "globe")
                     .font(.headline)
                 Text(runtime.chromeConnected ? "Chrome is connected." : "Connect Chrome, then turn on Developer mode and choose Load unpacked. Paste the extension folder path in the folder picker with ⌘⇧G.")
                     .font(.callout).foregroundStyle(.secondary)
@@ -140,9 +120,40 @@ struct SettingsView: View {
                         .disabled(extensionFolder == nil)
                 }
                 if let message = chromeSetupMessage { Text(message).font(.callout).foregroundStyle(.secondary) }
-                Text("Use Screen access below to add checks in other apps.")
-                    .font(.callout).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, alignment: .leading).padding(8)
+        }
+    }
+
+    private var screenAccess: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Choose access for checks in other Mac apps. Chrome text checks work through the extension without either permission.")
+                .font(.callout).foregroundStyle(.secondary)
+            permissionRow("Accessibility", icon: "accessibility",
+                detail: "Read window text and check keyboard pastes for secrets.", enabled: runtime.accessibilityTrusted,
+                request: runtime.requestAccessibilityPermission)
+            permissionRow("Screen Recording", icon: "rectangle.dashed.badge.record",
+                detail: "Analyze an image of the current window when text is insufficient.", enabled: runtime.screenCaptureTrusted,
+                request: runtime.requestScreenCapturePermission)
+            if !runtime.accessibilityTrusted || !runtime.screenCaptureTrusted {
+                Text("You can grant either permission later. If macOS asks you to quit and reopen Muse Guard, follow that prompt.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    private func permissionRow(_ name: String, icon: String, detail: String, enabled: Bool,
+                               request: @escaping () -> Void) -> some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Label(name, systemImage: icon).font(.callout.weight(.medium))
+                Text(detail).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 12)
+            if enabled {
+                Label("Enabled", systemImage: "checkmark.circle.fill").font(.callout).foregroundStyle(.secondary)
+            } else {
+                Button("Enable \(name)…", action: request)
+            }
         }
     }
 

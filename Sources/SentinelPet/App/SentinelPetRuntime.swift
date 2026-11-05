@@ -284,12 +284,13 @@ final class SentinelPetRuntime: ObservableObject {
     func requestAccessibilityPermission() {
         accessibilityTrusted = AccessibilityPermissionController.requestAccess()
         reconcileDesktopMonitoring()
-        petViewModel.show(accessibilityTrusted ? "Accessibility is enabled. I can read focused-window text." : "Enable Muse Guard in Privacy & Security → Accessibility, then restart the app.", mood: .idle, clearAfter: 8)
+        if accessibilityTrusted { startSecretPasteMonitoring() }
+        petViewModel.show(accessibilityTrusted ? "Accessibility is enabled. I can read focused-window text." : "Allow Muse Guard in Privacy & Security → Accessibility, then return to Muse Guard.", mood: .idle, clearAfter: 8)
     }
     func requestScreenCapturePermission() {
         screenCaptureTrusted = ScreenCapturePermissionController.requestAccess()
         reconcileDesktopMonitoring()
-        petViewModel.show(screenCaptureTrusted ? "Screen Recording is enabled. Analysis stays on this Mac." : "Enable Muse Guard in Privacy & Security → Screen Recording, then restart the app.", mood: .idle, clearAfter: 8)
+        petViewModel.show(screenCaptureTrusted ? "Screen Recording is enabled. Analysis stays on this Mac." : "Allow Muse Guard in Privacy & Security → Screen Recording. Quit and reopen if macOS asks.", mood: .idle, clearAfter: 8)
     }
     func openAccessibilitySettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!) }
     func openScreenRecordingSettings() { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!) }
@@ -1201,12 +1202,15 @@ final class SentinelPetRuntime: ObservableObject {
                     heading: "Chrome · waiting for current tab")
             }
         } else if !isMonitoring, !monitoringPaused, LocalModelService.shared.isReady {
-            let key = "app:\(app.processIdentifier)"
+            let hasDesktopAccess = accessibilityTrusted || screenCaptureTrusted
+            let key = "desktop-unavailable:\(app.processIdentifier):\(hasDesktopAccess)"
             predictionDebugState.setCurrentSource(key: key, kind: .desktopText, heading: app.localizedName ?? "Current app")
             if predictionDebugState.snapshot().phase == .waiting {
                 let request = UUID().uuidString
+                let detail = hasDesktopAccess ? "Desktop checks aren’t running. Open Muse Guard Settings." :
+                    "Enable Accessibility or Screen Recording in Muse Guard Settings."
                 _ = predictionDebugState.begin(sourceKey: key, requestID: request)
-                _ = predictionDebugState.fail(sourceKey: key, requestID: request)
+                _ = predictionDebugState.fail(sourceKey: key, requestID: request, detail: detail)
             }
         }
         publishPredictionDebug()

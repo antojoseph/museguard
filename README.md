@@ -7,9 +7,11 @@ Muse Guard is a macOS companion with a live 3D Muse avatar, local Muse Glimmer i
 Use the arm64 installer on an Apple Silicon Mac with macOS 14 or newer. We recommend at least 32 GB of unified memory and 22 GB of free storage for the local model. The installer includes the standalone 3D renderer, the inference runtime, and the Chrome integration. Unreal Editor, Python, Homebrew, and Xcode are only relevant to the source workflow.
 
 1. Open `MuseGuard-0.1.0-arm64.pkg` and install the app. Open **Muse Guard** from Applications to see **Get started**.
-2. Choose **Download model**. Muse downloads 19.8 GB of pinned model files from the official [Muse Glimmer repository](https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF), verifies each download, and starts the model locally. You can pause and resume the download. An existing complete installation is reused.
-3. Choose **Open Chrome setup**. Muse registers its local Chrome connection and copies the bundled extension folder path. In Chrome, enable **Developer mode**, choose **Load unpacked**, press **⌘⇧G**, and paste the copied path. If you previously loaded a development copy, remove that unpacked entry before loading the bundled one.
-4. For checks in other Mac apps, grant **Accessibility** under **Screen access**. You can also enable **Screen Recording** for visual checks when text is insufficient. Chrome text checks work without either permission.
+2. Under **Choose screen access**, enable **Accessibility** for window text and **Screen Recording** for visual checks when text is insufficient. macOS asks you to approve each permission. Follow its prompt if it asks you to quit and reopen Muse Guard. Chrome text checks work without either permission.
+3. Choose **Download model**. Muse downloads 19.8 GB of pinned model files, verifies each download, and starts the model locally. You can pause and resume the download. An existing complete installation is reused. [Muse Glimmer model files](https://huggingface.co/meta-models/Muse-Glimmer-30B-GGUF)
+4. Choose **Open Chrome setup**. Muse registers its local Chrome connection and copies the bundled extension folder path. In Chrome, enable **Developer mode**, choose **Load unpacked**, press **⌘⇧G**, and paste the copied path. If you previously loaded a development copy, remove that unpacked entry before loading the bundled one.
+
+Muse analyzes window text, images, and browser content on the Mac. The installer and first-run settings link to the source code so you can inspect how it works. [Muse Guard source](https://github.com/antojoseph/museguard/tree/app)
 
 The hackathon installer is currently unsigned. Distribution builds can use Developer ID signing and notarization when the required Apple credentials are available. See [installer packaging](docs/installer.md) and the [three-minute demo guide](docs/demo-recording.md).
 

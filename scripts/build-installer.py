@@ -113,13 +113,15 @@ def build_package(stage, app, version, options):
         "<html><body><h1>Muse Guard</h1>"
         "<p>Install the local desktop companion and its 3D avatar in Applications.</p>"
         "<p>Requires an Apple Silicon Mac with macOS 14 or later.</p>"
-        "<p>The first launch guides you through a model download of about 20 GB "
-        "and the optional Chrome connection.</p></body></html>",
+        "<p>On first launch, choose Accessibility for window text and Screen Recording for visual checks. "
+        "macOS asks you to approve each permission. Chrome text checks work through the extension without either.</p>"
+        "<p>Muse downloads about 20 GB of model files during setup. Window and browser analysis runs on this Mac.</p>"
+        '<p><a href="https://github.com/antojoseph/museguard/tree/app">View the source code</a>.</p></body></html>',
         encoding="utf-8",
     )
     (resources / "Conclusion.html").write_text(
         "<html><body><h1>Open Muse Guard</h1>"
-        "<p>Open Muse Guard in Applications and follow the setup in its menu bar icon. "
+        "<p>Open Muse Guard in Applications. Get started walks you through screen access, the local model, and Chrome setup. "
         "Quit an older running copy before opening the installed app.</p></body></html>",
         encoding="utf-8",
     )
