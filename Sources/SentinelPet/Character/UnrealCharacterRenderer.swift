@@ -112,7 +112,8 @@ final class UnrealCharacterRenderer: ObservableObject {
             let task = Process()
             task.executableURL = config.executableURL
             task.currentDirectoryURL = config.executableURL.deletingLastPathComponent()
-            task.arguments = config.arguments + ["-MuseBridge=\(directory.path)", "-log", "-abslog=\(directory.appendingPathComponent("unreal.log").path)"]
+            // Unreal's -log flag opens a separate console window.
+            task.arguments = config.arguments + ["-MuseBridge=\(directory.path)", "-abslog=\(directory.appendingPathComponent("unreal.log").path)"]
             let stdoutURL = directory.appendingPathComponent("stdout.log")
             FileManager.default.createFile(atPath: stdoutURL.path, contents: nil)
             logHandle = try FileHandle(forWritingTo: stdoutURL)
